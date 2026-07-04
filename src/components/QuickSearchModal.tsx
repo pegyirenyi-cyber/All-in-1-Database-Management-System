@@ -88,7 +88,7 @@ const StudentDetailView = ({
           <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">Latest Invoices</span>
           <div className="border border-slate-200/60 rounded-lg overflow-hidden divide-y divide-slate-100 bg-white">
             {studentBills.map(b => {
-              const amountDue = (b.schoolFees || 0) + (b.utilityBill || 0) + (b.sportsFees || 0) + (b.ptaDues || 0) + (b.otherFee || 0);
+              const amountDue = (b.schoolFees || 0) + (b.utilityBill || 0) + (b.sportsFees || 0) + (b.ptaDues || 0) + (b.transportationBill || 0) + (b.otherFee || 0);
               const amountPaid = b.payments ? b.payments.reduce((sum, p) => sum + p.amount, 0) : 0;
               const status = amountPaid >= amountDue ? 'Fully Paid' : amountPaid > 0 ? 'Partially Paid' : 'Unpaid';
               
@@ -192,7 +192,7 @@ const TeacherDetailView = ({ t, onAction }: { t: Teacher, onAction: () => void }
 };
 
 const BillDetailView = ({ b, studentName, onAction }: { b: StudentFeeBill, studentName: string, onAction: () => void }) => {
-  const amountDue = (b.schoolFees || 0) + (b.utilityBill || 0) + (b.sportsFees || 0) + (b.ptaDues || 0) + (b.otherFee || 0);
+  const amountDue = (b.schoolFees || 0) + (b.utilityBill || 0) + (b.sportsFees || 0) + (b.ptaDues || 0) + (b.transportationBill || 0) + (b.otherFee || 0);
   const amountPaid = b.payments ? b.payments.reduce((sum, p) => sum + p.amount, 0) : 0;
   const status = amountPaid >= amountDue ? 'Fully Paid' : amountPaid > 0 ? 'Partially Paid' : 'Unpaid';
 
@@ -444,7 +444,7 @@ export default function QuickSearchModal({
     billMatches.forEach(bl => {
       const student = studentMap.get(bl.studentId);
       const name = student ? getStudentFullName(student) : bl.studentId;
-      const amountDue = (bl.schoolFees || 0) + (bl.utilityBill || 0) + (bl.sportsFees || 0) + (bl.ptaDues || 0) + (bl.otherFee || 0);
+      const amountDue = (bl.schoolFees || 0) + (bl.utilityBill || 0) + (bl.sportsFees || 0) + (bl.ptaDues || 0) + (bl.transportationBill || 0) + (bl.otherFee || 0);
       const amountPaid = bl.payments ? bl.payments.reduce((sum, p) => sum + p.amount, 0) : 0;
       const status = amountPaid >= amountDue ? 'Fully Paid' : amountPaid > 0 ? 'Partially Paid' : 'Unpaid';
 

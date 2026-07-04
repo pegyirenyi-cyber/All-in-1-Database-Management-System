@@ -5,35 +5,14 @@ import {
 } from './types';
 import { DbController } from './db';
 import { onAuthStateChanged } from 'firebase/auth';
+import firebaseConfig from '../firebase-applet-config.json';
 import { THEME_CONFIGS, ThemeStyles } from './components/ThemeWrapper';
 import DeveloperStatus from './components/DeveloperStatus';
 // @ts-ignore
 import geetechLogo from './assets/images/geetech_new_logo_1782900372763.jpg';
 const SchoolProfileTab = React.lazy(() => import('./components/SchoolProfileTab'));
 const ParentPortal = React.lazy(() => import('./components/ParentPortal'));
-import { generateSecureToken } from './utils';
-
-// WhatsApp sharing utility as requested
-export const shareParentPortalWhatsApp = (student: Student, year: string, term: string) => {
-  const token = generateSecureToken(student.id, year, term);
-  const parentUrl = `${window.location.origin}/?studentId=${student.id}&year=${encodeURIComponent(year)}&term=${encodeURIComponent(term)}&token=${token}&parentMode=true`;
-  
-  const message = `Hello ${student.guardianName || 'Guardian'},\n\n` +
-    `Here is the secure Parent Portal link for *${student.firstName} ${student.lastName}* (${student.id}) to securely view and download the:\n` +
-    `• *Official Term Report Card*\n` +
-    `• *School Fees Statement & Payment Receipts*\n` +
-    `• *Academic Performance Analytics & Remarks*\n\n` +
-    `Access Link: ${parentUrl}\n\n` +
-    `Thank you.`;
-
-  let formattedPhone = (student.guardianTelephone || '').trim().replace(/[\s\-\(\)\+]/g, '');
-  if (formattedPhone.startsWith('0') && formattedPhone.length === 10) {
-    formattedPhone = '233' + formattedPhone.substring(1);
-  }
-  
-  const whatsappUrl = `https://wa.me/${formattedPhone}?text=${encodeURIComponent(message)}`;
-  window.open(whatsappUrl, '_blank');
-};
+import { generateSecureToken, getWhatsAppShareData, shareParentPortalWhatsApp, WhatsAppTemplate, triggerToast } from './utils';
 
 const StudentsTab = React.lazy(() => import('./components/StudentsTab'));
 const TeachersTab = React.lazy(() => import('./components/TeachersTab'));
@@ -52,27 +31,29 @@ import { evaluateSubscription } from './subscription';
 import SubscriptionLockModal from './components/SubscriptionLockModal';
 import { PrintPreviewModal } from './components/PrintPreviewModal';
 import QuickSearchModal from './components/QuickSearchModal';
+import QRBadgeScanner from './components/QRBadgeScanner';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Landmark, Users, UserCheck, CalendarCheck, FileSpreadsheet, Settings, 
   LogOut, ShieldAlert, Lock, Mail, User, BookOpen, GraduationCap, Sparkles, Coins, RotateCcw,
   ChevronDown, MoreHorizontal, TrendingUp, Power, Smartphone, CalendarDays, Menu, X, ClipboardCheck,
-  CreditCard, Fingerprint, Check, Save, Database, GripVertical, Eye, EyeOff, Search, Share, RefreshCw
+  CreditCard, Fingerprint, Check, Save, Database, GripVertical, Eye, EyeOff, Search, Share, RefreshCw, ExternalLink, ChevronRight,
+  LayoutDashboard, ShieldCheck, Award, MessageSquare, QrCode
 } from 'lucide-react';
 
 const AVAILABLE_TABS = [
-  { id: 'dashboard', label: 'Dashboard Summary', icon: TrendingUp, refresh: true },
-  { id: 'admin_dashboard', label: 'Admin Panel', icon: ShieldAlert, refresh: false },
+  { id: 'dashboard', label: 'Dashboard Summary', icon: LayoutDashboard, refresh: true },
+  { id: 'admin_dashboard', label: 'Admin Panel', icon: ShieldCheck, refresh: false },
   { id: 'school_profile', label: 'School Profile', icon: Landmark, refresh: false },
   { id: 'calendar', label: 'Academic Calendar', icon: CalendarDays, refresh: false },
-  { id: 'students', label: 'Student Profiles', icon: Users, refresh: false },
+  { id: 'students', label: 'Student Profiles', icon: GraduationCap, refresh: false },
   { id: 'teachers', label: 'Teacher Profiles', icon: UserCheck, refresh: false },
   { id: 'attendance', label: 'Class Attendance Roster', icon: CalendarCheck, refresh: false },
-  { id: 'assessments', label: 'Academic Assessments', icon: FileSpreadsheet, refresh: true },
+  { id: 'assessments', label: 'Academic Assessments', icon: Award, refresh: true },
   { id: 'fees', label: 'School Fees Ledger', icon: Coins, refresh: true },
   { id: 'paystack', label: 'Paystack Ledger', icon: CreditCard, refresh: true },
-  { id: 'communications', label: 'Parent Messages', icon: Smartphone, refresh: false },
-  { id: 'emis', label: 'GES EMIS Census', icon: ClipboardCheck, refresh: false },
+  { id: 'communications', label: 'Parent Messages', icon: MessageSquare, refresh: false },
+  { id: 'emis', label: 'GES EMIS Census', icon: Database, refresh: false },
   { id: 'settings', label: 'System Controls', icon: Settings, refresh: false }
 ];
 
@@ -159,16 +140,19 @@ function AppContent() {
     const subjects = Array.isArray(assignedSubjects) ? assignedSubjects : [];
 
     return AVAILABLE_TABS.filter(tab => {
-      if (subscriptionStatus && subscriptionStatus.isLocked) {
-        return tab.id === 'settings';
-      }
       if (currentUser?.role === 'Teacher') {
+        if (subscriptionStatus && subscriptionStatus.isLocked) {
+          return tab.id === 'dashboard';
+        }
         const hasAssignments = classes.length > 0 || subjects.length > 0;
         const allowedTabs = ['dashboard', 'students', 'attendance', 'assessments'];
         if (hasAssignments) {
           allowedTabs.push('calendar');
         }
         return allowedTabs.includes(tab.id);
+      }
+      if (subscriptionStatus && subscriptionStatus.isLocked) {
+        return tab.id === 'settings';
       }
       if (tab.id === 'admin_dashboard') return isAdmin;
       if (tab.id === 'paystack') return isAdmin;
@@ -182,7 +166,14 @@ function AppContent() {
   }, [subscriptionStatus, currentUser, assignedClasses, assignedSubjects, isAdmin]);
 
   // Settings & Customization
-  const [activeTheme, setActiveTheme] = useState<ThemeType>('Sophisticated Dark');
+  const [activeTheme, setActiveTheme] = useState<ThemeType>(() => {
+    try {
+      const settings = DbController.getSystemSettings();
+      return settings?.theme || 'Sophisticated Dark';
+    } catch {
+      return 'Sophisticated Dark';
+    }
+  });
   const [isAutoSave, setIsAutoSave] = useState<boolean>(true);
   const [activeTab, setActiveTab] = useState<string>(() => {
     try {
@@ -192,7 +183,7 @@ function AppContent() {
       return 'dashboard';
     }
   });
-  const [settingsSubTab, setSettingsSubTab] = useState<'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers'>('general');
+  const [settingsSubTab, setSettingsSubTab] = useState<'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers' | 'security'>('general');
   const [showBillingEvenIfLocked, setShowBillingEvenIfLocked] = useState<boolean>(false);
   const [selectedYear, setSelectedYear] = useState<AcademicYearType>('2026/2027');
   const [selectedTerm, setSelectedTerm] = useState<TermType>('Term 1');
@@ -203,6 +194,10 @@ function AppContent() {
   // Drag and Drop Tab Reordering State & Handlers
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [tabOrder, setTabOrder] = useState<string[]>([]);
+  
+  // Contextual Visibility States
+  const [hiddenTabs, setHiddenTabs] = useState<string[]>([]);
+  const [isVisibilityMenuOpen, setIsVisibilityMenuOpen] = useState(false);
 
   // Global Advanced Print Preview System State
   const [globalPrintPreview, setGlobalPrintPreview] = useState<{
@@ -218,11 +213,11 @@ function AppContent() {
 
   // Sync state if subscription is locked
   useEffect(() => {
-    if (subscriptionStatus && subscriptionStatus.isLocked) {
+    if (subscriptionStatus && subscriptionStatus.isLocked && currentUser?.role === 'Admin') {
       setActiveTab('settings');
       setSettingsSubTab('billing');
     }
-  }, [subscriptionStatus]);
+  }, [subscriptionStatus, currentUser]);
 
   // Intercept all print requests in the app and route to custom Print Preview Modal
   useEffect(() => {
@@ -336,15 +331,23 @@ function AppContent() {
     try {
       const email = currentUser?.email || 'guest';
       const saved = localStorage.getItem(`tab_order_${email}`);
+      const savedHidden = localStorage.getItem(`hidden_tabs_${email}`);
       setTabOrder(saved ? JSON.parse(saved) : []);
+      setHiddenTabs(savedHidden ? JSON.parse(savedHidden) : []);
     } catch {
       setTabOrder([]);
+      setHiddenTabs([]);
     }
   }, [currentUser]);
 
   const orderedVisibleTabs = useMemo(() => {
-    if (tabOrder.length === 0) return visibleTabs;
-    return [...visibleTabs].sort((a, b) => {
+    let tabs = visibleTabs.filter(tab => !hiddenTabs.includes(tab.id));
+    if (tabs.length === 0 && visibleTabs.length > 0) {
+      tabs = [visibleTabs.find(t => t.id === 'dashboard') || visibleTabs[0]];
+    }
+
+    if (tabOrder.length === 0) return tabs;
+    return [...tabs].sort((a, b) => {
       const indexA = tabOrder.indexOf(a.id);
       const indexB = tabOrder.indexOf(b.id);
       if (indexA !== -1 && indexB !== -1) return indexA - indexB;
@@ -352,7 +355,19 @@ function AppContent() {
       if (indexB !== -1) return 1;
       return 0;
     });
-  }, [visibleTabs, tabOrder]);
+  }, [visibleTabs, tabOrder, hiddenTabs]);
+
+  const toggleTabVisibility = (tabId: string) => {
+    const email = currentUser?.email || 'guest';
+    let newHidden = [...hiddenTabs];
+    if (newHidden.includes(tabId)) {
+      newHidden = newHidden.filter(id => id !== tabId);
+    } else {
+      newHidden.push(tabId);
+    }
+    setHiddenTabs(newHidden);
+    localStorage.setItem(`hidden_tabs_${email}`, JSON.stringify(newHidden));
+  };
 
   const handleDragStart = (e: DragEvent, id: string) => {
     setDraggedTabId(id);
@@ -386,12 +401,24 @@ function AppContent() {
   const currentActiveTab = orderedVisibleTabs.find(t => t.id === activeTab) || orderedVisibleTabs[0];
   const CurrentActiveIcon = currentActiveTab.icon;
 
+  useEffect(() => {
+    if (orderedVisibleTabs.length > 0 && !orderedVisibleTabs.find(t => t.id === activeTab)) {
+      setActiveTab(orderedVisibleTabs[0].id);
+    }
+  }, [orderedVisibleTabs, activeTab]);
+
   // Login & Registration state for both Local and secure full-stack Firebase Authentication
   const [isRegisterMode, setIsRegisterMode] = useState(false);
   const [regName, setRegName] = useState('');
   const [regEmail, setRegEmail] = useState('');
   const [regPassword, setRegPassword] = useState('');
   const [showRegPassword, setShowRegPassword] = useState(false);
+  
+  const [loginPathway, setLoginPathway] = useState<'Admin' | 'Headteacher' | 'Teacher'>('Admin');
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginSchoolId, setLoginSchoolId] = useState('');
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [regRole, setRegRole] = useState<UserRole>('Headteacher');
   const [authError, setAuthError] = useState<ReactNode | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
@@ -412,6 +439,34 @@ function AppContent() {
   const [isBiometricAuthModalOpen, setIsBiometricAuthModalOpen] = useState(false);
   const [biometricAuthStep, setBiometricAuthStep] = useState<'idle' | 'scanning' | 'success' | 'failed'>('idle');
   const [biometricAuthType, setBiometricAuthType] = useState<'finger' | 'face'>('finger');
+
+  // === QR BADGE SCANNER STATES ===
+  const [isQRScannerOpen, setIsQRScannerOpen] = useState(false);
+
+  const handleQRBadgeScanSuccess = async (decodedValue: string) => {
+    setIsQRScannerOpen(false);
+    setAuthError(null);
+    setAuthLoading(true);
+    try {
+      const account = await DbController.teacherLoginByBadge(decodedValue);
+      setCurrentUser(account);
+      
+      if (DbController.isFirebaseEnabled()) {
+        DbController.syncAllDataFromFirebase().then(() => {
+          refreshAllLogs();
+        }).catch(err => console.warn("Post-login sync error:", err));
+      } else {
+        refreshAllLogs();
+      }
+      triggerToast(`Successfully logged in as Teacher: ${account.name}`, 'success');
+    } catch (err: any) {
+      console.error(err);
+      setAuthError(sanitizeAuthError(err));
+      triggerToast(err.message || 'Failed to authenticate via badge scan.', 'error');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
 
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [printNotification, setPrintNotification] = useState<string | null>(null);
@@ -709,11 +764,15 @@ function AppContent() {
               // and to allow multi-user session isolation per tab.
             } else {
               // Create default fallback profile
+              const fallbackEmail = firebaseUser.email?.toLowerCase().trim() || '';
+              const fallbackRole = fallbackEmail === 'pegyirenyi@gmail.com' 
+                ? 'Admin' 
+                : (fallbackEmail === 'sammyotoo06@gmail.com' ? 'Headteacher' : 'Teacher');
               const fallback: UserAccount = {
                 uid: firebaseUser.uid,
                 email: firebaseUser.email || '',
                 name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
-                role: (firebaseUser.email?.toLowerCase().trim() === 'pegyirenyi@gmail.com') ? 'Admin' : 'Teacher',
+                role: fallbackRole,
                 createdAt: new Date().toISOString()
               };
               await DbController.saveGoogleProfile(fallback);
@@ -918,7 +977,7 @@ function AppContent() {
     };
   }, [refreshAllLogs]);
 
-  const handleResetAndClear = () => {
+  const handleResetAndClear = async () => {
     // Clear all fields State
     setIsRegisterMode(false);
     setRegName('');
@@ -928,7 +987,7 @@ function AppContent() {
     setAuthError(null);
     
     // Clear the active session and trigger storage wipe
-    DbController.clearAllData();
+    await DbController.clearAllData();
     setCurrentUser(null);
     
     // Set datasets to blank / initial fallback states
@@ -1097,41 +1156,146 @@ function AppContent() {
       refreshAllLogs();
     } catch (err: any) {
       console.error(err);
-      setAuthError(err.message || "Failed to register new account. Minimum password length is 6 characters.");
+      setAuthError(sanitizeAuthError(err));
     } finally {
       setAuthLoading(false);
     }
   };
 
+  const sanitizeAuthError = (err: any): ReactNode | string => {
+    if (!err) return null;
+    const code = err.code || '';
+    const message = err.message || '';
+
+    if (code === 'auth/operation-not-allowed' || message.includes('operation-not-allowed')) {
+      return renderOperationNotAllowedError();
+    }
+    if (code === 'auth/unauthorized-domain' || message.includes('unauthorized-domain') || message.includes('auth/unauthorized-client-identifier')) {
+      return renderUnauthorizedDomainError();
+    }
+    if (code === 'auth/popup-blocked' || message.includes('popup-blocked') || message.includes('popup closed') || message.includes('cancelled-by-user')) {
+      return renderPopupBlockedError();
+    }
+    if (code === 'auth/email-already-in-use' || message.includes('email-already-in-use')) {
+      return "The email address you entered is already registered. Please check the address or log in using your existing account.";
+    }
+    if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found' || message.includes('invalid-credential') || message.includes('wrong-password') || message.includes('user-not-found')) {
+      return "Unauthorized Access: Invalid email or password. Please verify your credentials and try again.";
+    }
+    if (code === 'auth/weak-password' || message.includes('weak-password')) {
+      return "The password provided is too weak. Please use a password with at least 6 characters.";
+    }
+    if (code === 'auth/invalid-email' || message.includes('invalid-email')) {
+      return "The email address format is invalid. Please enter a valid email address.";
+    }
+    if (code === 'auth/user-disabled' || message.includes('user-disabled')) {
+      return "Unauthorized Access: This user account has been disabled. Please contact support.";
+    }
+    if (code === 'auth/too-many-requests' || message.includes('too-many-requests')) {
+      return "Too many failed login attempts. Access is temporarily restricted. Please try again later.";
+    }
+
+    return "Unauthorized Access: Access is restricted or temporarily unavailable. Please verify your credentials or contact support.";
+  };
+
   const renderUnauthorizedDomainError = () => {
-    const hostname = typeof window !== 'undefined' ? window.location.hostname : 'your-domain.run.app';
     return (
-      <div className="space-y-3 mt-1 text-xs text-slate-300 font-sans">
-        <p className="font-semibold text-amber-400">
-          ⚠️ Firebase Unauthorized Domain Error Detected!
+      <div className="space-y-2 mt-1 text-xs text-slate-300 font-sans">
+        <p className="font-semibold text-amber-400 flex items-center gap-1.5">
+          <span>⚠️ Access Restricted (Unauthorized Domain)</span>
         </p>
         <p>
-          Firebase blocks third-party popups on domains that have not been explicitly authorized in your Firebase console.
+          Your login request cannot be authorized from this web address. Please verify that you are accessing the portal from the official secured domain or contact the system administrator.
         </p>
-        <div className="p-2.5 bg-slate-900/80 border border-slate-800 rounded-lg font-mono text-[11px] text-indigo-300 select-all leading-tight break-all">
-          {hostname}
-        </div>
-        <div className="space-y-1.5 pl-4 list-decimal text-slate-400">
-          <div>
-            1. Visit the <a href="https://console.firebase.google.com/" target="_blank" rel="noopener noreferrer" className="text-sky-400 hover:underline font-bold">Firebase Console</a>.
-          </div>
-          <div>
-            2. Go to <strong className="text-slate-200">Authentication</strong> &gt; <strong className="text-slate-200">Settings</strong> &gt; <strong className="text-slate-200">Authorized domains</strong>.
-          </div>
-          <div>
-            3. Click <strong className="text-slate-200">Add Domain</strong> and copy-paste the domain above.
-          </div>
-        </div>
-        <p className="text-[11px] text-amber-500/90 font-medium">
-          💡 Quick Alternative: Sign up or Sign in using the <strong className="text-amber-400">Standard Email & Password</strong> form above, which works instantly without any domain authorization!
+        <p className="text-[11px] text-slate-400 mt-1">
+          💡 <strong>Alternative:</strong> If you are testing the system, you can sign in directly using your <strong>Email & Password</strong> credentials which require no domain authorizations.
         </p>
       </div>
     );
+  };
+
+  const renderPopupBlockedError = () => {
+    return (
+      <div className="space-y-2 mt-1 text-xs text-slate-300 font-sans">
+        <p className="font-semibold text-amber-400 flex items-center gap-1.5">
+          <span>🔒 Secure Popup Blocked</span>
+        </p>
+        <p>
+          The authentication window was blocked by your browser. Please ensure popups are allowed for this portal, or open the application directly in a new dedicated tab.
+        </p>
+        <div className="flex flex-col sm:flex-row gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => window.open(window.location.href, '_blank')}
+            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg text-[11px] transition cursor-pointer flex items-center justify-center gap-1.5 active:translate-y-0.5 shadow-xs"
+          >
+            <ExternalLink size={12} /> Open Portal in New Tab
+          </button>
+          <button
+            type="button"
+            onClick={() => setAuthError(null)}
+            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-lg text-[11px] transition cursor-pointer"
+          >
+            Dismiss
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderOperationNotAllowedError = () => {
+    return (
+      <div className="space-y-2 mt-1 text-xs text-slate-300 font-sans">
+        <p className="font-semibold text-amber-400 flex items-center gap-1.5">
+          <span>⚠️ Unauthorized Access</span>
+        </p>
+        <p>
+          This authentication provider is currently disabled or restricted on this domain. Please verify your credentials or contact your administrator to enable access.
+        </p>
+      </div>
+    );
+  };
+
+  const handleLoginSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!loginEmail) return;
+
+    // Enforce Admin Email restriction
+    if (loginPathway === 'Admin' && loginEmail.toLowerCase().trim() !== 'pegyirenyi@gmail.com') {
+      setAuthError("Administrative Access Restricted: This portal is reserved for authorized system administrators only.");
+      return;
+    }
+
+    setAuthError(null);
+    setAuthLoading(true);
+
+    try {
+      if (loginPathway === 'Teacher') {
+        const account = await DbController.teacherLogin(loginEmail, loginSchoolId);
+        setCurrentUser(account);
+      } else {
+        if (DbController.isFirebaseEnabled()) {
+          const account = await DbController.firebaseLogin(loginEmail, loginPassword);
+          setCurrentUser(account);
+        } else {
+          const account = DbController.login(loginEmail, loginPathway === 'Admin' ? 'Admin' : 'Headteacher');
+          setCurrentUser(account);
+        }
+      }
+      
+      if (DbController.isFirebaseEnabled()) {
+        DbController.syncAllDataFromFirebase().then(() => {
+          refreshAllLogs();
+        }).catch(err => console.warn("Post-login sync error:", err));
+      } else {
+        refreshAllLogs();
+      }
+    } catch (err: any) {
+      console.error(err);
+      setAuthError(sanitizeAuthError(err));
+    } finally {
+      setAuthLoading(false);
+    }
   };
 
   const handleGoogleLogin = async () => {
@@ -1151,14 +1315,7 @@ function AppContent() {
       });
     } catch (err: any) {
       console.error(err);
-      if (err.code === 'auth/unauthorized-domain' || (err.message && err.message.includes('unauthorized-domain'))) {
-        setAuthError(renderUnauthorizedDomainError());
-      } else {
-        setAuthError(
-          err.message || 
-          "Sign in with Google cancelled. If inside a sandboxed preview frame, please try again or click the popups key symbol."
-        );
-      }
+      setAuthError(sanitizeAuthError(err));
     } finally {
       setAuthLoading(false);
     }
@@ -1171,6 +1328,49 @@ function AppContent() {
 
   // Get active branding styles
   const themeStyles = THEME_CONFIGS[activeTheme] || THEME_CONFIGS['Sophisticated Dark'];
+
+  // SECURITY: Global Idle Timeout Monitoring (Auto-Logout)
+  useEffect(() => {
+    if (!currentUser || currentUser.role === 'Admin') return; // Only for teachers/staff as requested
+
+    const sysSettings = DbController.getSystemSettings();
+    const idleLimitMinutes = sysSettings.idleLogoutTimer || 30;
+    const idleLimitMs = idleLimitMinutes * 60 * 1000;
+
+    let idleTimeout: any = null;
+
+    const resetTimer = () => {
+      if (idleTimeout) clearTimeout(idleTimeout);
+      idleTimeout = setTimeout(() => {
+        console.log(`Idle timeout reached (${idleLimitMinutes}m). Executing secure auto-logout...`);
+        
+        DbController.writeActivityLog(
+          'Security Auto-Logout',
+          `Session for ${currentUser.name} terminated due to ${idleLimitMinutes} minutes of inactivity.`,
+          'medium'
+        );
+        
+        handleLogout();
+      }, idleLimitMs);
+    };
+
+    // Events that signify activity
+    const activityEvents = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart', 'click'];
+    
+    activityEvents.forEach(evt => {
+      document.addEventListener(evt, resetTimer, true);
+    });
+
+    // Start initial timer
+    resetTimer();
+
+    return () => {
+      if (idleTimeout) clearTimeout(idleTimeout);
+      activityEvents.forEach(evt => {
+        document.removeEventListener(evt, resetTimer, true);
+      });
+    };
+  }, [currentUser]);
 
   if (isExited) {
     return (
@@ -1229,42 +1429,87 @@ function AppContent() {
 
   // Secure Authorization Gate (Renders login panel if not authenticated)
   if (!currentUser) {
-    return (
-      <div className={`min-h-screen bg-slate-950 font-sans flex items-center justify-center p-4 relative overflow-hidden`}>
-        {/* Abstract background gradient accent flares */}
-        <div className="absolute top-[-20%] left-[-10%] w-96 h-96 rounded-full bg-indigo-900/10 blur-3xl" />
-        <div className="absolute bottom-[-20%] right-[-10%] w-96 h-96 rounded-full bg-violet-900/10 blur-3xl" />
+    const isDarkTheme = activeTheme === 'Sophisticated Dark' || activeTheme === 'Midnight';
+    const activeStyles = THEME_CONFIGS[activeTheme] || THEME_CONFIGS['Sophisticated Dark'];
 
-        <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl relative z-10 space-y-6 fade-in text-slate-100">
+    return (
+      <div className={`min-h-screen font-sans flex items-center justify-center p-4 relative overflow-hidden transition-all duration-700 ${
+        isDarkTheme 
+          ? (activeTheme === 'Midnight' ? 'bg-[#0f172a]' : 'bg-[#020617]') 
+          : `${activeStyles.heroBg} bg-slate-100`
+      }`}>
+        {/* Dynamic theme backdrop circles */}
+        {isDarkTheme ? (
+          <>
+            <div className="absolute top-[-20%] left-[-10%] w-96 h-96 rounded-full bg-indigo-950/20 blur-3xl transition-all duration-500" />
+            <div className="absolute bottom-[-20%] right-[-10%] w-96 h-96 rounded-full bg-violet-950/20 blur-3xl transition-all duration-500" />
+          </>
+        ) : (
+          <>
+            <div className={`absolute top-[-20%] left-[-10%] w-96 h-96 rounded-full opacity-60 blur-3xl transition-all duration-500 ${activeTheme === 'Emerald' ? 'bg-emerald-200' : activeTheme === 'Ruby' ? 'bg-rose-200' : activeTheme === 'Cosmic' ? 'bg-purple-200' : activeTheme === 'Gold' ? 'bg-amber-200' : activeTheme === 'Sunset' ? 'bg-orange-200' : activeTheme === 'Ocean' ? 'bg-cyan-200' : 'bg-blue-200'}`} />
+            <div className={`absolute bottom-[-20%] right-[-10%] w-96 h-96 rounded-full opacity-60 blur-3xl transition-all duration-500 ${activeTheme === 'Emerald' ? 'bg-teal-200' : activeTheme === 'Ruby' ? 'bg-red-200' : activeTheme === 'Cosmic' ? 'bg-indigo-200' : activeTheme === 'Gold' ? 'bg-yellow-200' : activeTheme === 'Sunset' ? 'bg-amber-200' : activeTheme === 'Ocean' ? 'bg-sky-200' : 'bg-indigo-200'}`} />
+          </>
+        )}
+
+        <div className={`max-w-sm w-full rounded-2xl p-6 shadow-2xl relative z-10 space-y-4 fade-in transition-all duration-500 ${
+          isDarkTheme 
+            ? 'bg-slate-900/90 border border-slate-800 text-slate-100 shadow-slate-950/60' 
+            : activeTheme === 'Crystal Glass'
+              ? 'bg-white/45 backdrop-blur-md border border-white/50 text-slate-800 shadow-xl shadow-sky-950/5'
+              : 'bg-white border border-slate-200/80 text-slate-800 shadow-2xl shadow-slate-200/50'
+        }`}>
           
-          <div className="text-center space-y-1.5">
-            <div className="relative w-32 h-32 rounded-3xl border border-slate-700/50 overflow-hidden mx-auto mb-6 bg-white flex items-center justify-center shadow-2xl p-2">
+          <div className="text-center space-y-1">
+            <div className={`relative w-16 h-16 rounded-2xl border overflow-hidden mx-auto mb-2 bg-white flex items-center justify-center p-1.5 transition-all duration-500 ${
+              isDarkTheme ? 'border-slate-800 shadow-xl' : 'border-slate-200 shadow-sm'
+            }`}>
               <img 
                 src={geetechLogo} 
                 alt="GEETECH MULTIMEDIA Logo" 
                 className="w-full h-full object-contain"
               />
             </div>
-            <h1 className="text-2xl font-display font-black tracking-tight text-white mb-1">GEETECH MULTIMEDIA</h1>
-            <p className="text-xs text-slate-500 font-mono uppercase tracking-widest">Innovative Solutions, Creative Media</p>
+            <h1 className={`text-lg font-display font-black tracking-tight mb-0.5 transition-all duration-500 ${
+              isDarkTheme ? 'text-white' : 'text-slate-900'
+            }`}>GEETECH MULTIMEDIA</h1>
+            <p className={`text-[9px] font-mono uppercase tracking-widest transition-all duration-500 ${
+              isDarkTheme ? 'text-slate-500' : 'text-slate-400'
+            }`}>Innovative Solutions, Creative Media</p>
           </div>
 
+
           {authError && (
-            <div className="p-3.5 bg-red-950/50 border border-red-900/60 rounded-xl text-red-400 text-xs leading-relaxed font-sans space-y-1">
-              <div className="font-bold flex items-center gap-1.5 text-[11px] uppercase tracking-wide">
+            <motion.div 
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              className={`p-3 border rounded-xl text-xs leading-relaxed font-sans space-y-1 transition-all duration-500 overflow-hidden ${
+                isDarkTheme 
+                  ? 'bg-red-950/40 border-red-900/40 text-red-400' 
+                  : 'bg-red-50 border-red-200 text-red-700 shadow-xs'
+              }`}
+            >
+              <div className="font-bold flex items-center gap-1.5 text-[10px] uppercase tracking-wide">
                 <ShieldAlert size={14} /> Authentication Notice
               </div>
               <div>{authError}</div>
-            </div>
+            </motion.div>
           )}
 
           {wipeSuccessMessage && (
-            <div className="p-3.5 bg-emerald-950/40 border border-emerald-900/40 rounded-xl text-emerald-400 text-xs leading-relaxed font-sans space-y-1">
-              <div className="font-bold flex items-center gap-1.5 text-[11px] uppercase tracking-wide">
-                <Sparkles size={14} className="text-emerald-400 animate-pulse" /> Reset Status
+            <motion.div 
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              className={`p-3 border rounded-xl text-xs leading-relaxed font-sans space-y-1 transition-all duration-500 overflow-hidden ${
+                isDarkTheme 
+                  ? 'bg-emerald-950/40 border-emerald-900/40 text-emerald-400' 
+                  : 'bg-emerald-50 border-emerald-200 text-emerald-700 shadow-xs'
+              }`}
+            >
+              <div className="font-bold flex items-center gap-1.5 text-[10px] uppercase tracking-wide">
+                <Sparkles size={14} className="animate-pulse" /> Reset Status
               </div>
               <div>{wipeSuccessMessage}</div>
-            </div>
+            </motion.div>
           )}
 
           <AnimatePresence mode="wait">
@@ -1272,62 +1517,257 @@ function AppContent() {
               // STEP: Standard / Firebase Login form
               <motion.div 
                 key="login-form"
-                initial={{ opacity: 0, y: 5 }}
+                initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -5 }}
-                className="space-y-4 text-xs"
+                exit={{ opacity: 0, y: -10 }}
+                className="space-y-5 text-xs"
               >
-                {DbController.isFirebaseEnabled() ? (
+                {/* Compact Professional Pathway Switcher */}
+                <div className="relative flex bg-slate-100 dark:bg-slate-800 rounded-xl p-1 overflow-hidden h-10 border border-slate-200 dark:border-slate-750">
+                  <motion.div
+                    className="absolute top-1 bottom-1 bg-white dark:bg-slate-700 shadow-sm rounded-lg z-0 border border-slate-200/50 dark:border-slate-600/50"
+                    initial={false}
+                    animate={{
+                      left: loginPathway === 'Admin' ? '4px' : loginPathway === 'Headteacher' ? '33.33%' : '66.66%',
+                      width: 'calc(33.33% - 4px)'
+                    }}
+                    transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+                  />
                   <button 
-                    type="button"
-                    onClick={handleGoogleLogin}
-                    disabled={authLoading}
-                    className="w-full py-3.5 bg-white hover:bg-slate-100 text-slate-900 border border-slate-200 rounded-xl transition-all shadow-md flex items-center justify-center gap-2.5 font-bold text-xs cursor-pointer disabled:opacity-50 active:scale-[0.99]"
+                    type="button" 
+                    onClick={() => setLoginPathway('Admin')}
+                    className={`flex-1 relative z-10 text-[9px] font-black uppercase tracking-wider transition-colors duration-300 ${loginPathway === 'Admin' ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}
                   >
-                    <svg className="w-4.5 h-4.5 flex-shrink-0" viewBox="0 0 24 24">
-                      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22c-.62-.06-1.19-.28-1.68-.63z"/>
-                      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53 z"/>
-                    </svg>
-                    <span>Login with Google</span>
+                    Admin
                   </button>
-                ) : (
-                  <div className="text-center text-xs text-amber-500 font-semibold p-4 bg-amber-500/10 rounded-xl">
-                    Firebase is offline. Google Login unavailable.
-                  </div>
-                )}
-
-                <div className="pt-2 flex flex-col gap-3">
                   <button 
-                    type="button"
-                    onClick={handleBiometricLoginTrigger}
-                    disabled={authLoading}
-                    className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-100 font-bold rounded-xl transition shadow-md flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 text-xs border border-slate-700"
+                    type="button" 
+                    onClick={() => setLoginPathway('Headteacher')}
+                    className={`flex-1 relative z-10 text-[9px] font-black uppercase tracking-wider transition-colors duration-300 ${loginPathway === 'Headteacher' ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}
                   >
-                    <Fingerprint size={14} className="text-indigo-400" />
-                    <span>Login with Biometric Key</span>
+                    HeadTeacher
+                  </button>
+                  <button 
+                    type="button" 
+                    onClick={() => setLoginPathway('Teacher')}
+                    className={`flex-1 relative z-10 text-[9px] font-black uppercase tracking-wider transition-colors duration-300 ${loginPathway === 'Teacher' ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}
+                  >
+                    Teacher
+                  </button>
+                </div>
+                <form onSubmit={handleLoginSubmit} className="space-y-3">
+                  <div className="space-y-3">
+                    <div className="relative group">
+                      <label className={`text-[9px] font-extrabold uppercase tracking-wider ml-1 mb-1 block transition-colors ${isDarkTheme ? 'text-slate-500 group-focus-within:text-indigo-400' : 'text-slate-400 group-focus-within:text-indigo-600'}`}>
+                        Email Address
+                      </label>
+                      <div className="relative">
+                        <Mail className={`absolute left-3 top-2.5 transition-colors ${isDarkTheme ? 'text-slate-600' : 'text-slate-400'}`} size={14} />
+                        <input 
+                          type="email" 
+                          required
+                          placeholder="e.g. administrator@ges-school.gov.gh"
+                          value={loginEmail}
+                          onChange={(e) => setLoginEmail(e.target.value)}
+                          className={`w-full pl-9 pr-3 py-2 border rounded-xl transition-all outline-none font-sans font-medium text-xs ${
+                            isDarkTheme 
+                              ? 'border-slate-800 bg-slate-950/50 text-slate-200 focus:border-indigo-500/50 focus:bg-slate-950 ring-1 ring-transparent focus:ring-indigo-500/20' 
+                              : 'border-slate-200 bg-slate-50 text-slate-800 focus:bg-white focus:border-indigo-500 focus:shadow-md focus:shadow-indigo-500/5 ring-1 ring-transparent focus:ring-indigo-500/10'
+                          }`}
+                        />
+                      </div>
+                    </div>
+
+                    <AnimatePresence mode="popLayout" initial={false}>
+                      {loginPathway === 'Teacher' ? (
+                        <motion.div 
+                          key="school-id-field"
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: 10 }}
+                          className="relative group"
+                        >
+                          <label className={`text-[9px] font-extrabold uppercase tracking-wider ml-1 mb-1 block transition-colors ${isDarkTheme ? 'text-slate-500 group-focus-within:text-indigo-400' : 'text-slate-400 group-focus-within:text-indigo-600'}`}>
+                            Access ID (School ID)
+                          </label>
+                          <div className="relative">
+                            <Lock className={`absolute left-3 top-2.5 transition-colors ${isDarkTheme ? 'text-slate-600' : 'text-slate-400'}`} size={14} />
+                            <input 
+                              type="text" 
+                              required
+                              placeholder="e.g. SMS-ABC12345"
+                              value={loginSchoolId}
+                              onChange={(e) => setLoginSchoolId(e.target.value)}
+                              className={`w-full pl-9 pr-12 py-2 border rounded-xl transition-all outline-none font-mono font-bold text-xs uppercase tracking-wider ${
+                                isDarkTheme 
+                                  ? 'border-slate-800 bg-slate-950/50 text-slate-200 focus:border-indigo-500/50 focus:bg-slate-950 ring-1 ring-transparent focus:ring-indigo-500/20' 
+                                  : 'border-slate-200 bg-slate-50 text-slate-800 focus:bg-white focus:border-indigo-500 focus:shadow-md focus:shadow-indigo-500/5 ring-1 ring-transparent focus:ring-indigo-500/10'
+                              }`}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setIsQRScannerOpen(true)}
+                              title="Scan Badge QR Code"
+                              className={`absolute right-3 top-2.5 transition-colors cursor-pointer hover:scale-105 active:scale-95 ${
+                                isDarkTheme ? 'text-indigo-400 hover:text-indigo-300' : 'text-indigo-600 hover:text-indigo-800'
+                              }`}
+                            >
+                              <QrCode size={15} />
+                            </button>
+                          </div>
+                          <div className="mt-1 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => setIsQRScannerOpen(true)}
+                              className={`inline-flex items-center gap-1 text-[8.5px] font-bold uppercase tracking-wider transition ${
+                                isDarkTheme ? 'text-indigo-400 hover:text-indigo-300' : 'text-indigo-600 hover:text-indigo-800'
+                              }`}
+                            >
+                              <QrCode size={10} /> Scan school credential badge
+                            </button>
+                          </div>
+                        </motion.div>
+                      ) : (
+                        <motion.div 
+                          key="password-field"
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: 10 }}
+                          className="relative group"
+                        >
+                          <label className={`text-[9px] font-extrabold uppercase tracking-wider ml-1 mb-1 block transition-colors ${isDarkTheme ? 'text-slate-500 group-focus-within:text-indigo-400' : 'text-slate-400 group-focus-within:text-indigo-600'}`}>
+                            Secret Key (Password)
+                          </label>
+                          <div className="relative">
+                            <Lock className={`absolute left-3 top-2.5 transition-colors ${isDarkTheme ? 'text-slate-600' : 'text-slate-400'}`} size={14} />
+                            <input 
+                              type={showLoginPassword ? "text" : "password"} 
+                              required
+                              placeholder="••••••••"
+                              value={loginPassword}
+                              onChange={(e) => setLoginPassword(e.target.value)}
+                              className={`w-full pl-9 pr-10 py-2 border rounded-xl transition-all outline-none font-sans font-medium text-xs ${
+                                isDarkTheme 
+                                  ? 'border-slate-800 bg-slate-950/50 text-slate-200 focus:border-indigo-500/50 focus:bg-slate-950 ring-1 ring-transparent focus:ring-indigo-500/20' 
+                                  : 'border-slate-200 bg-slate-50 text-slate-800 focus:bg-white focus:border-indigo-500 focus:shadow-md focus:shadow-indigo-500/5 ring-1 ring-transparent focus:ring-indigo-500/10'
+                              }`}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowLoginPassword(!showLoginPassword)}
+                              className={`absolute right-3 top-2.5 transition-colors cursor-pointer ${isDarkTheme ? 'text-slate-600 hover:text-slate-300' : 'text-slate-400 hover:text-slate-700'}`}
+                            >
+                              {showLoginPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                            </button>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+
+                  <button 
+                    type="submit"
+                    disabled={authLoading}
+                    className={`group w-full py-2.5 font-bold uppercase tracking-wider rounded-xl transition-all duration-300 shadow-md flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 text-[10px] overflow-hidden relative ${
+                      isDarkTheme 
+                        ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-500/10' 
+                        : 'bg-slate-900 hover:bg-slate-800 text-white shadow-slate-900/10'
+                    }`}
+                  >
+                    <div className="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300" />
+                    <span className="relative z-10">Access Dashboard</span>
+                    {authLoading ? (
+                      <RefreshCw size={13} className="animate-spin relative z-10" />
+                    ) : (
+                      <ChevronRight size={13} className="relative z-10 group-hover:translate-x-1 transition-transform" />
+                    )}
+                  </button>
+                </form>
+
+                <div className="relative flex items-center justify-center py-0.5">
+                  <div className={`absolute inset-x-0 h-px ${isDarkTheme ? 'bg-slate-800' : 'bg-slate-200/60'}`} />
+                  <span className={`relative px-3 font-mono text-[7.5px] font-black uppercase tracking-[0.25em] leading-none ${
+                    isDarkTheme ? 'bg-slate-900 text-slate-600' : 'bg-white text-slate-300'
+                  }`}>System Gateways</span>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    {DbController.isFirebaseEnabled() ? (
+                      <button 
+                        type="button"
+                        onClick={handleGoogleLogin}
+                        disabled={authLoading}
+                        className={`py-2 px-1.5 border rounded-xl transition-all shadow-xs flex items-center justify-center gap-1.5 font-bold text-[9px] uppercase tracking-wider cursor-pointer disabled:opacity-50 active:scale-[0.98] ${
+                          isDarkTheme 
+                            ? 'bg-slate-800 hover:bg-slate-700 text-slate-100 border-slate-700' 
+                            : 'bg-white hover:bg-slate-50 text-slate-800 border-slate-200'
+                        }`}
+                      >
+                        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-3.5 h-3.5" alt="Google" />
+                        <span>Google SSO</span>
+                      </button>
+                    ) : (
+                      <div className={`text-center py-2 px-1.5 rounded-xl border flex items-center justify-center gap-1 font-bold text-[8.5px] uppercase tracking-wider ${
+                        isDarkTheme 
+                          ? 'text-amber-400 bg-amber-950/20 border-amber-900/20' 
+                          : 'text-amber-700 bg-amber-50/50 border-amber-200/50 shadow-xs'
+                      }`}>
+                        <ShieldAlert size={11} className="shrink-0" />
+                        <span>Offline Mode</span>
+                      </div>
+                    )}
+
+                    <button 
+                      type="button"
+                      onClick={handleBiometricLoginTrigger}
+                      disabled={authLoading}
+                      className={`py-2 px-1.5 border rounded-xl transition-all shadow-xs flex items-center justify-center gap-1.5 font-bold text-[9px] uppercase tracking-wider cursor-pointer disabled:opacity-50 active:scale-[0.98] ${
+                        isDarkTheme 
+                          ? 'bg-slate-800 hover:bg-slate-700 text-slate-100 border-slate-700' 
+                          : 'bg-white hover:bg-slate-50 text-slate-800 border-slate-200'
+                      }`}
+                    >
+                      <Fingerprint size={13} className={isDarkTheme ? 'text-indigo-400' : 'text-indigo-600'} />
+                      <span>Biometrics</span>
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsQRScannerOpen(true)}
+                    disabled={authLoading}
+                    className={`w-full py-2 border rounded-xl transition-all duration-300 font-bold flex items-center justify-center gap-1.5 cursor-pointer text-[9px] uppercase tracking-wider ${
+                      isDarkTheme 
+                        ? 'bg-indigo-950/20 hover:bg-indigo-950/35 text-indigo-400 border-indigo-900/30' 
+                        : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200 shadow-sm hover:shadow-md'
+                    }`}
+                  >
+                    <QrCode size={13} className={isDarkTheme ? 'text-indigo-400' : 'text-indigo-600'} />
+                    <span>Quick QR Badge Login</span>
                   </button>
 
                   <button 
                     type="button"
                     onClick={() => setIsExited(true)}
-                    className="w-full py-2.5 bg-rose-950/20 hover:bg-rose-950/30 text-rose-400 hover:text-rose-350 border border-rose-900/30 rounded-xl transition font-semibold flex items-center justify-center gap-1.5 cursor-pointer text-xs"
+                    className={`w-full py-2 border rounded-xl transition-all duration-300 font-bold flex items-center justify-center gap-1.5 cursor-pointer text-[9px] uppercase tracking-wider ${
+                      isDarkTheme 
+                        ? 'bg-rose-950/20 hover:bg-rose-950/35 text-rose-400 border-rose-900/30' 
+                        : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200'
+                    }`}
                   >
                     <Power size={11} />
                     <span>Exit Platform</span>
                   </button>
                 </div>
-
-
               </motion.div>
             ) : (
               <motion.div
                 key="register-form"
-                initial={{ opacity: 0, y: 5 }}
+                initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -5 }}
-                className="space-y-4 text-xs"
+                exit={{ opacity: 0, y: -10 }}
+                className="space-y-5 text-xs"
               >
                 {DbController.isFirebaseEnabled() && (
                   <>
@@ -1335,20 +1775,19 @@ function AppContent() {
                       type="button"
                       onClick={handleGoogleLogin}
                       disabled={authLoading}
-                      className="w-full py-3.5 bg-white hover:bg-slate-100 text-slate-900 border border-slate-200 rounded-xl transition-all shadow-md flex items-center justify-center gap-2.5 font-bold text-xs cursor-pointer disabled:opacity-50 active:scale-[0.99]"
+                      className={`w-full py-3.5 bg-white hover:bg-slate-50 text-slate-900 border rounded-2xl transition-all shadow-sm flex items-center justify-center gap-3 font-bold text-[11px] cursor-pointer disabled:opacity-50 active:scale-[0.98] ${
+                        isDarkTheme ? 'border-slate-800' : 'border-slate-200'
+                      }`}
                     >
-                      <svg className="w-4.5 h-4.5 flex-shrink-0" viewBox="0 0 24 24">
-                        <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                        <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                        <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22c-.62-.06-1.19-.28-1.68-.63z"/>
-                        <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53 z"/>
-                      </svg>
-                      <span>Sign Up with Google</span>
+                      <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="Google" />
+                      <span>Sign Up with Identity Provider</span>
                     </button>
 
-                    <div className="relative flex items-center justify-center py-2">
-                      <div className="absolute inset-x-0 h-px bg-slate-800/60" />
-                      <span className="relative px-3 bg-slate-900 text-slate-500 font-mono text-[9px] uppercase tracking-widest leading-none">or email</span>
+                    <div className="relative flex items-center justify-center py-1">
+                      <div className={`absolute inset-x-0 h-px ${isDarkTheme ? 'bg-slate-800' : 'bg-slate-200/60'}`} />
+                      <span className={`relative px-4 font-mono text-[8px] font-black uppercase tracking-[0.3em] leading-none ${
+                        isDarkTheme ? 'bg-slate-900 text-slate-600' : 'bg-white text-slate-300'
+                      }`}>or utilize email</span>
                     </div>
                   </>
                 )}
@@ -1357,91 +1796,118 @@ function AppContent() {
                   onSubmit={handleRegisterSubmit} 
                   className="space-y-4"
                 >
-                <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Account Full Name</label>
-                  <div className="relative">
-                    <User className="absolute left-3 top-2.5 text-slate-600" size={15} />
-                    <input 
-                      type="text" 
-                      required
-                      placeholder="e.g. Paul Egyirenyi"
-                      value={regName}
-                      onChange={(e) => setRegName(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 focus:outline-none focus:border-indigo-500"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-slate-400 font-semibold mb-1">Access Email Address</label>
-                  <div className="relative">
-                    <Mail className="absolute left-3 top-2.5 text-slate-600" size={15} />
-                    <input 
-                      type="email" 
-                      required
-                      placeholder="e.g. pegyirenyi@gmail.com"
-                      value={regEmail}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setRegEmail(val);
-                        setRegRole('Headteacher');
-                      }}
-                      className="w-full pl-9 pr-3 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
-                    />
-                  </div>
-                </div>
-
-                {DbController.isFirebaseEnabled() && (
-                  <div>
-                    <label className="block text-slate-400 font-semibold mb-1">Set Secure Password (Min 6 chars)</label>
-                    <div className="relative">
-                      <Lock className="absolute left-3 top-2.5 text-slate-600" size={15} />
-                      <input 
-                        type={showRegPassword ? "text" : "password"} 
-                        required
-                        placeholder="••••••••"
-                        value={regPassword}
-                        onChange={(e) => setRegPassword(e.target.value)}
-                        className="w-full pl-9 pr-10 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowRegPassword(!showRegPassword)}
-                        className="absolute right-3 top-2 text-slate-600 hover:text-slate-400 transition cursor-pointer"
-                        title={showRegPassword ? "Hide password" : "Show password"}
-                      >
-                        {showRegPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                      </button>
+                  <div className="space-y-4">
+                    <div className="relative group">
+                      <label className={`text-[10px] font-bold uppercase tracking-widest ml-1 mb-1.5 block transition-colors ${isDarkTheme ? 'text-slate-500 group-focus-within:text-indigo-400' : 'text-slate-400 group-focus-within:text-indigo-600'}`}>
+                        Account Holder Name
+                      </label>
+                      <div className="relative">
+                        <User className={`absolute left-3.5 top-3 transition-colors ${isDarkTheme ? 'text-slate-600' : 'text-slate-400'}`} size={16} />
+                        <input 
+                          type="text" 
+                          required
+                          placeholder="e.g. Paul Egyirenyi"
+                          value={regName}
+                          onChange={(e) => setRegName(e.target.value)}
+                          className={`w-full pl-11 pr-4 py-3 border rounded-2xl transition-all outline-none font-sans font-medium text-sm ${
+                            isDarkTheme 
+                              ? 'border-slate-800 bg-slate-950/50 text-slate-200 focus:border-indigo-500/50 focus:bg-slate-950 ring-1 ring-transparent focus:ring-indigo-500/20' 
+                              : 'border-slate-200 bg-slate-50 text-slate-800 focus:bg-white focus:border-indigo-500 focus:shadow-lg focus:shadow-indigo-500/5 ring-1 ring-transparent focus:ring-indigo-500/10'
+                          }`}
+                        />
+                      </div>
                     </div>
+
+                    <div className="relative group">
+                      <label className={`text-[10px] font-bold uppercase tracking-widest ml-1 mb-1.5 block transition-colors ${isDarkTheme ? 'text-slate-500 group-focus-within:text-indigo-400' : 'text-slate-400 group-focus-within:text-indigo-600'}`}>
+                        Access Email Address
+                      </label>
+                      <div className="relative">
+                        <Mail className={`absolute left-3.5 top-3 transition-colors ${isDarkTheme ? 'text-slate-600' : 'text-slate-400'}`} size={16} />
+                        <input 
+                          type="email" 
+                          required
+                          placeholder="e.g. headteacher@ges-school.gov.gh"
+                          value={regEmail}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setRegEmail(val);
+                            setRegRole('Headteacher');
+                          }}
+                          className={`w-full pl-11 pr-4 py-3 border rounded-2xl transition-all outline-none font-sans font-medium text-sm ${
+                            isDarkTheme 
+                              ? 'border-slate-800 bg-slate-950/50 text-slate-200 focus:border-indigo-500/50 focus:bg-slate-950 ring-1 ring-transparent focus:ring-indigo-500/20' 
+                              : 'border-slate-200 bg-slate-50 text-slate-800 focus:bg-white focus:border-indigo-500 focus:shadow-lg focus:shadow-indigo-500/5 ring-1 ring-transparent focus:ring-indigo-500/10'
+                          }`}
+                        />
+                      </div>
+                    </div>
+
+                    {DbController.isFirebaseEnabled() && (
+                      <div className="relative group">
+                        <label className={`text-[10px] font-bold uppercase tracking-widest ml-1 mb-1.5 block transition-colors ${isDarkTheme ? 'text-slate-500 group-focus-within:text-indigo-400' : 'text-slate-400 group-focus-within:text-indigo-600'}`}>
+                          Secure Gateway Password
+                        </label>
+                        <div className="relative">
+                          <Lock className={`absolute left-3.5 top-3 transition-colors ${isDarkTheme ? 'text-slate-600' : 'text-slate-400'}`} size={16} />
+                          <input 
+                            type={showRegPassword ? "text" : "password"} 
+                            required
+                            placeholder="Min 6 characters"
+                            value={regPassword}
+                            onChange={(e) => setRegPassword(e.target.value)}
+                            className={`w-full pl-11 pr-12 py-3 border rounded-2xl transition-all outline-none font-sans font-medium text-sm ${
+                              isDarkTheme 
+                                ? 'border-slate-800 bg-slate-950/50 text-slate-200 focus:border-indigo-500/50 focus:bg-slate-950 ring-1 ring-transparent focus:ring-indigo-500/20' 
+                                : 'border-slate-200 bg-slate-50 text-slate-800 focus:bg-white focus:border-indigo-500 focus:shadow-lg focus:shadow-indigo-500/5 ring-1 ring-transparent focus:ring-indigo-500/10'
+                            }`}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowRegPassword(!showRegPassword)}
+                            className={`absolute right-4 top-3 transition-colors cursor-pointer ${isDarkTheme ? 'text-slate-600 hover:text-slate-300' : 'text-slate-400 hover:text-slate-700'}`}
+                          >
+                            {showRegPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                )}
 
-                <div className="space-y-2 pt-2">
-                  <button 
-                    type="submit"
-                    disabled={authLoading}
-                    className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition shadow-md disabled:opacity-50"
-                  >
-                    {authLoading ? "Provisioning System Setup..." : "Create and Provision Account"}
-                  </button>
-                </div>
+                  <div className="pt-2">
+                    <button 
+                      type="submit"
+                      disabled={authLoading}
+                      className={`group w-full py-4 font-black uppercase tracking-widest rounded-2xl transition-all duration-300 shadow-lg shadow-indigo-500/10 flex items-center justify-center gap-3 cursor-pointer disabled:opacity-50 text-[11px] overflow-hidden relative ${
+                        isDarkTheme 
+                          ? 'bg-indigo-600 hover:bg-indigo-500 text-white' 
+                          : 'bg-slate-900 hover:bg-slate-800 text-white shadow-slate-900/10'
+                      }`}
+                    >
+                      <div className="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300" />
+                      <span className="relative z-10">{authLoading ? "Provisioning..." : "Create Account"}</span>
+                      {!authLoading && <ChevronRight size={14} className="relative z-10 group-hover:translate-x-1 transition-transform" />}
+                    </button>
+                  </div>
 
-                <div className="text-center pt-2">
-                  <span className="text-slate-500">Already registered? </span>
-                  <button 
-                    type="button" 
-                    onClick={() => { setIsRegisterMode(false); setAuthError(null); }}
-                    className="text-indigo-400 hover:underline font-bold"
-                  >
-                    Login here
-                  </button>
-                </div>
+                  <div className="text-center pt-2">
+                    <span className={`text-[10px] font-medium ${isDarkTheme ? 'text-slate-500' : 'text-slate-400'}`}>Already a registered user? </span>
+                    <button 
+                      type="button" 
+                      onClick={() => { setIsRegisterMode(false); setAuthError(null); }}
+                      className={`text-[10px] font-black uppercase tracking-wider hover:underline transition-colors ${isDarkTheme ? 'text-indigo-400 hover:text-indigo-300' : 'text-indigo-600 hover:text-indigo-700'}`}
+                    >
+                      Login Here
+                    </button>
+                  </div>
                 </form>
               </motion.div>
             )}
           </AnimatePresence>
 
-          <div className="pt-4 border-t border-slate-800 text-center font-mono text-[10px] text-slate-500">
+          <div className={`pt-4 border-t text-center font-mono text-[10px] transition-colors duration-500 ${
+            isDarkTheme ? 'border-slate-800 text-slate-500' : 'border-slate-200 text-slate-400'
+          }`}>
             <div>
               <p>EGYIRENYI PAUL | GEETECH MULTIMEDIA</p>
               <p>+233 544 052 717 | pegyirenyi@gmail.com | © 2026</p>
@@ -1625,7 +2091,7 @@ function AppContent() {
                       <input 
                         type="email"
                         required
-                        placeholder="e.g. pegyirenyi@gmail.com"
+                        placeholder="e.g. user@ges-school.gov.gh"
                         value={resetEmail}
                         onChange={(e) => setResetEmail(e.target.value)}
                         className="w-full pl-9 pr-3 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
@@ -1652,6 +2118,13 @@ function AppContent() {
               )}
             </motion.div>
           </div>
+        )}
+
+        {isQRScannerOpen && (
+          <QRBadgeScanner
+            onScanSuccess={handleQRBadgeScanSuccess}
+            onClose={() => setIsQRScannerOpen(false)}
+          />
         )}
 
 
@@ -2002,6 +2475,49 @@ function AppContent() {
               )}
 
               <div className="h-5 w-px bg-slate-200 dark:bg-slate-700 mx-0.5" />
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setIsVisibilityMenuOpen(!isVisibilityMenuOpen)}
+                  className={`p-1.5 border rounded-lg transition cursor-pointer flex items-center justify-center shrink-0 ${isVisibilityMenuOpen ? 'bg-indigo-50 border-indigo-200 text-indigo-600' : 'bg-slate-50 hover:bg-slate-100 border-slate-200/80 text-slate-500 hover:text-slate-700'}`}
+                  title="Contextual Visibility"
+                >
+                  {hiddenTabs.length > 0 ? <EyeOff size={13} /> : <Eye size={13} />}
+                </button>
+                <AnimatePresence>
+                  {isVisibilityMenuOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 10 }}
+                      className="absolute right-0 top-full mt-2 w-64 bg-white border border-slate-200 shadow-xl rounded-xl z-[100] p-3 overflow-hidden"
+                    >
+                      <div className="flex items-center justify-between mb-3 border-b border-slate-100 pb-2">
+                        <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Contextual Visibility</span>
+                        <button onClick={() => setIsVisibilityMenuOpen(false)} className="text-slate-400 hover:text-slate-600">
+                          <X size={14} />
+                        </button>
+                      </div>
+                      <div className="max-h-64 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
+                        {visibleTabs.map(tab => (
+                          <label key={`vis-${tab.id}`} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded-lg cursor-pointer transition">
+                            <span className={`text-xs font-bold flex items-center gap-2 ${hiddenTabs.includes(tab.id) ? 'text-slate-400' : 'text-slate-700'}`}>
+                              <tab.icon size={12} className={hiddenTabs.includes(tab.id) ? 'text-slate-300' : 'text-indigo-500'} />
+                              {tab.label}
+                            </span>
+                            <input 
+                              type="checkbox" 
+                              checked={!hiddenTabs.includes(tab.id)} 
+                              onChange={() => toggleTabVisibility(tab.id)}
+                              className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4"
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
               <button
                 type="button"
                 onClick={() => {
@@ -2044,6 +2560,49 @@ function AppContent() {
                   <Search size={16} />
                 </button>
               )}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setIsVisibilityMenuOpen(!isVisibilityMenuOpen)}
+                  className={`p-2 rounded-xl border transition cursor-pointer flex items-center justify-center shrink-0 ${isVisibilityMenuOpen ? 'bg-indigo-50 border-indigo-200 text-indigo-600' : 'bg-slate-50 hover:bg-slate-100 border-slate-100 text-slate-700'}`}
+                  title="Contextual Visibility"
+                >
+                  {hiddenTabs.length > 0 ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+                <AnimatePresence>
+                  {isVisibilityMenuOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 10 }}
+                      className="absolute right-0 top-full mt-2 w-64 bg-white border border-slate-200 shadow-xl rounded-xl z-[100] p-3 overflow-hidden"
+                    >
+                      <div className="flex items-center justify-between mb-3 border-b border-slate-100 pb-2">
+                        <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Contextual Visibility</span>
+                        <button onClick={() => setIsVisibilityMenuOpen(false)} className="text-slate-400 hover:text-slate-600">
+                          <X size={14} />
+                        </button>
+                      </div>
+                      <div className="max-h-64 overflow-y-auto space-y-1 pr-1 custom-scrollbar text-left">
+                        {visibleTabs.map(tab => (
+                          <label key={`vis-mob-${tab.id}`} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded-lg cursor-pointer transition">
+                            <span className={`text-xs font-bold flex items-center gap-2 ${hiddenTabs.includes(tab.id) ? 'text-slate-400' : 'text-slate-700'}`}>
+                              <tab.icon size={12} className={hiddenTabs.includes(tab.id) ? 'text-slate-300' : 'text-indigo-500'} />
+                              {tab.label}
+                            </span>
+                            <input 
+                              type="checkbox" 
+                              checked={!hiddenTabs.includes(tab.id)} 
+                              onChange={() => toggleTabVisibility(tab.id)}
+                              className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4"
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
               <button
                 onClick={() => setIsMobileMenuOpen(true)}
                 className="p-2 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-100 text-slate-700 transition cursor-pointer flex items-center gap-1.5 active:scale-95"

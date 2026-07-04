@@ -137,6 +137,297 @@ export default function SchoolFeesTab({
 
   const [bulkReceiptData, setBulkReceiptData] = useState<{ bill: StudentFeeBill; payment: FeePayment }[]>([]);
 
+  // Debtors Analyzer states
+  const [showDebtorsModal, setShowDebtorsModal] = useState(false);
+  const [debtorMinAmount, setDebtorMinAmount] = useState('1');
+  const [debtorSelectedClassFilter, setDebtorSelectedClassFilter] = useState<ClassType | 'All'>('All');
+  const [debtorSearchQuery, setDebtorSearchQuery] = useState('');
+
+  // Report Center states
+  const [showReportCenterModal, setShowReportCenterModal] = useState(false);
+  const [reportCenterType, setReportCenterType] = useState<'student' | 'class' | 'school'>('student');
+  const [reportCenterSelectedStudentId, setReportCenterSelectedStudentId] = useState<string>('');
+  const [reportCenterSelectedClass, setReportCenterSelectedClass] = useState<ClassType | 'All'>('All');
+  const [reportCenterSearchQuery, setReportCenterSearchQuery] = useState('');
+
+  // Custom Confirmation Dialog State
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmText?: string;
+    cancelText?: string;
+    danger?: boolean;
+    onConfirm: () => void;
+  } | null>(null);
+
+  // Initialize Report Center student when modal opens
+  useEffect(() => {
+    if (showReportCenterModal) {
+      if (activeStudentId) {
+        setReportCenterSelectedStudentId(activeStudentId);
+      } else if (students.length > 0) {
+        setReportCenterSelectedStudentId(students[0].id);
+      }
+    }
+  }, [showReportCenterModal, activeStudentId, students]);
+
+  // Report Center calculations
+  const reportCenterSelectedStudent = useMemo(() => {
+    return students.find(s => s.id === reportCenterSelectedStudentId);
+  }, [students, reportCenterSelectedStudentId]);
+
+  const reportCenterSelectedStudentBill = useMemo(() => {
+    if (!reportCenterSelectedStudent) return null;
+    return getStudentBill(reportCenterSelectedStudent);
+  }, [reportCenterSelectedStudent, feeBills, selectedAcademicYear, selectedTerm]);
+
+  const reportCenterSelectedStudentStats = useMemo(() => {
+    if (!reportCenterSelectedStudent || !reportCenterSelectedStudentBill) return { expected: 0, paid: 0, bal: 0 };
+    const expected = (reportCenterSelectedStudentBill.schoolFees || 0) +
+                     (reportCenterSelectedStudentBill.utilityBill || 0) +
+                     (reportCenterSelectedStudentBill.sportsFees || 0) +
+                     (reportCenterSelectedStudentBill.ptaDues || 0) +
+                     (reportCenterSelectedStudentBill.transportationBill || 0) +
+                     (reportCenterSelectedStudentBill.otherFee || 0);
+    const paid = reportCenterSelectedStudentBill.payments.reduce((sum, p) => sum + p.amount, 0);
+    const bal = expected - paid;
+    return { expected, paid, bal };
+  }, [reportCenterSelectedStudent, reportCenterSelectedStudentBill]);
+
+  const reportCenterClassStudents = useMemo(() => {
+    if (reportCenterSelectedClass === 'All') return students;
+    return students.filter(s => s.class === reportCenterSelectedClass);
+  }, [students, reportCenterSelectedClass]);
+
+  const reportCenterClassData = useMemo(() => {
+    const list = reportCenterClassStudents.map(student => {
+      const bill = getStudentBill(student);
+      const expected = (bill.schoolFees || 0) + (bill.utilityBill || 0) + (bill.sportsFees || 0) + (bill.ptaDues || 0) + (bill.transportationBill || 0) + (bill.otherFee || 0);
+      const paid = bill.payments ? bill.payments.reduce((sum, p) => sum + p.amount, 0) : 0;
+      const owed = expected - paid;
+      return {
+        student,
+        bill,
+        expected,
+        paid,
+        owed
+      };
+    });
+
+    const totalExpected = list.reduce((sum, item) => sum + item.expected, 0);
+    const totalPaid = list.reduce((sum, item) => sum + item.paid, 0);
+    const totalOwed = list.reduce((sum, item) => sum + item.owed, 0);
+
+    return {
+      list,
+      totalExpected,
+      totalPaid,
+      totalOwed
+    };
+  }, [reportCenterClassStudents, feeBills, selectedAcademicYear, selectedTerm]);
+
+  const reportCenterSchoolData = useMemo(() => {
+    const classStats = CLASSES.map(cls => {
+      const classStudents = students.filter(s => s.class === cls);
+      let totalExpected = 0;
+      let totalPaid = 0;
+      classStudents.forEach(student => {
+        const bill = getStudentBill(student);
+        const expected = (bill.schoolFees || 0) + (bill.utilityBill || 0) + (bill.sportsFees || 0) + (bill.ptaDues || 0) + (bill.transportationBill || 0) + (bill.otherFee || 0);
+        const paid = bill.payments ? bill.payments.reduce((sum, p) => sum + p.amount, 0) : 0;
+        totalExpected += expected;
+        totalPaid += paid;
+      });
+      const totalOwed = totalExpected - totalPaid;
+      const rate = totalExpected > 0 ? Math.round((totalPaid / totalExpected) * 100) : 0;
+      return {
+        class: cls,
+        count: classStudents.length,
+        totalExpected,
+        totalPaid,
+        totalOwed,
+        rate
+      };
+    }).filter(s => s.count > 0 || s.totalExpected > 0);
+
+    const overallExpected = classStats.reduce((sum, s) => sum + s.totalExpected, 0);
+    const overallPaid = classStats.reduce((sum, s) => sum + s.totalPaid, 0);
+    const overallOwed = overallExpected - overallPaid;
+    const overallRate = overallExpected > 0 ? Math.round((overallPaid / overallExpected) * 100) : 0;
+
+    return {
+      classStats,
+      overallExpected,
+      overallPaid,
+      overallOwed,
+      overallRate
+    };
+  }, [students, feeBills, selectedAcademicYear, selectedTerm]);
+
+  const handlePrintReportCenter = () => {
+    const printWindow = window.open('about:blank', '_blank');
+    if (!printWindow) {
+      showToast("Popups are blocked by your browser container. Please enable popups to print.", "error");
+      return;
+    }
+
+    const previewElement = document.getElementById('report-center-preview-content');
+    if (!previewElement) {
+      showToast("Report preview content could not be located.", "error");
+      return;
+    }
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>${schoolInfo.name} - Termly Fees Report</title>
+          <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap">
+          <script src="https://cdn.tailwindcss.com"></script>
+          <style>
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;850;900&display=swap');
+            body { font-family: 'Inter', sans-serif; background-color: #ffffff; color: #1e293b; padding: 40px; position: relative; }
+            .font-mono { font-family: 'JetBrains Mono', monospace; }
+            @media print {
+              body { padding: 0; }
+              .no-print { display: none; }
+              @page { size: A4; margin: 15mm 15mm 15mm 15mm; }
+            }
+          </style>
+        </head>
+        <body onload="window.print(); window.close();">
+          ${getWatermarkHtml(schoolInfo.crestUrl)}
+          <div class="max-w-4xl mx-auto">${previewElement.innerHTML}</div>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+    showToast("Report sent to print gateway!");
+  };
+
+  const handleDownloadReportCenterPDF = () => {
+    let filename = '';
+    const cleanFn = (str: string) => str.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+    if (reportCenterType === 'student') {
+      filename = `fees_ledger_${cleanFn(reportCenterSelectedStudent?.firstName || 'student')}_${selectedAcademicYear.replace('/', '_')}_${selectedTerm.toLowerCase().replace(' ', '_')}`;
+    } else if (reportCenterType === 'class') {
+      filename = `class_ledger_${cleanFn(reportCenterSelectedClass)}_${selectedAcademicYear.replace('/', '_')}_${selectedTerm.toLowerCase().replace(' ', '_')}`;
+    } else {
+      filename = `school_ledger_summary_${selectedAcademicYear.replace('/', '_')}_${selectedTerm.toLowerCase().replace(' ', '_')}`;
+    }
+    handleExportFeesPDF('report-center-preview-content', filename);
+  };
+
+  const handleExportReportCenterCSV = () => {
+    const escapeCSV = (val: string | number | undefined | null): string => {
+      if (val === undefined || val === null) return '';
+      const str = String(val);
+      if (str.includes(',') || str.includes('\n') || str.includes('\r') || str.includes('"')) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    let csvContent = "";
+    let filename = "";
+    const cleanFn = (str: string) => str.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+
+    if (reportCenterType === 'student') {
+      if (!reportCenterSelectedStudent || !reportCenterSelectedStudentBill) {
+        showToast("No student selected for CSV export.", "error");
+        return;
+      }
+      const s = reportCenterSelectedStudent;
+      const b = reportCenterSelectedStudentBill;
+      filename = `fees_ledger_${cleanFn(s.firstName)}_${cleanFn(s.lastName)}_${cleanFn(selectedAcademicYear)}_${cleanFn(selectedTerm)}.csv`;
+
+      csvContent += `STUDENT FEES LEDGER STATEMENT\n`;
+      csvContent += `School Name,${escapeCSV(schoolInfo.name || 'GeeTech Academy')}\n`;
+      csvContent += `Academic Year,${escapeCSV(selectedAcademicYear)}\n`;
+      csvContent += `Term,${escapeCSV(selectedTerm)}\n`;
+      csvContent += `Student ID,${escapeCSV(s.id)}\n`;
+      csvContent += `Student Name,${escapeCSV(`${s.firstName} ${s.lastName}`)}\n`;
+      csvContent += `Class,${escapeCSV(s.class)}\n\n`;
+
+      csvContent += `FEE COMPONENT BILLING\n`;
+      csvContent += `Component,Expected Amount (GHS)\n`;
+      csvContent += `School Fees,${(b.schoolFees || 0).toFixed(2)}\n`;
+      csvContent += `Utility Bill,${(b.utilityBill || 0).toFixed(2)}\n`;
+      csvContent += `Sports Fees,${(b.sportsFees || 0).toFixed(2)}\n`;
+      csvContent += `PTA Dues,${(b.ptaDues || 0).toFixed(2)}\n`;
+      csvContent += `Transportation Bill,${(b.transportationBill || 0).toFixed(2)}\n`;
+      csvContent += `Other Fee (${escapeCSV(b.otherFeeDescription || 'Other')}),${(b.otherFee || 0).toFixed(2)}\n`;
+      csvContent += `TOTAL EXPECTED,${reportCenterSelectedStudentStats.expected.toFixed(2)}\n\n`;
+
+      csvContent += `CREDITED INSTALLMENTS RECEIVED\n`;
+      csvContent += `Payment Date,Receipt Code,Allocated Component,Method,Amount Paid (GHS)\n`;
+      if (!b.payments || b.payments.length === 0) {
+        csvContent += `No payments recorded,,,\n`;
+      } else {
+        b.payments.forEach(p => {
+          csvContent += `${escapeCSV(p.date)},${escapeCSV(p.receiptNo)},${escapeCSV(p.component)},${escapeCSV(p.method)},${p.amount.toFixed(2)}\n`;
+        });
+      }
+      csvContent += `TOTAL PAID,,,,${reportCenterSelectedStudentStats.paid.toFixed(2)}\n`;
+      csvContent += `OUTSTANDING ARREARS BALANCE,,,,${reportCenterSelectedStudentStats.bal.toFixed(2)}\n`;
+
+    } else if (reportCenterType === 'class') {
+      filename = `class_ledger_${cleanFn(reportCenterSelectedClass)}_${cleanFn(selectedAcademicYear)}_${cleanFn(selectedTerm)}.csv`;
+
+      csvContent += `CLASS FEES COMPLIANCE LEDGER\n`;
+      csvContent += `School Name,${escapeCSV(schoolInfo.name || 'GeeTech Academy')}\n`;
+      csvContent += `Class,${escapeCSV(reportCenterSelectedClass)}\n`;
+      csvContent += `Academic Year,${escapeCSV(selectedAcademicYear)}\n`;
+      csvContent += `Term,${escapeCSV(selectedTerm)}\n`;
+      csvContent += `Export Date,${escapeCSV(new Date().toLocaleDateString())}\n\n`;
+
+      csvContent += `Student ID,First Name,Last Name,Class,School Fees (GHS),Utility Bill (GHS),Sports Fees (GHS),PTA Dues (GHS),Transportation (GHS),Other Fee (GHS),Other Fee Description,Total Expected (GHS),Total Paid (GHS),Outstanding Arrears (GHS),Payment Status\n`;
+
+      reportCenterClassData.list.forEach(item => {
+        const s = item.student;
+        const b = item.bill;
+        const statusStr = item.owed <= 0 ? 'Cleared' : item.paid > 0 ? 'Partial' : 'No Payment';
+        csvContent += `${escapeCSV(s.id)},${escapeCSV(s.firstName)},${escapeCSV(s.lastName)},${escapeCSV(s.class)},${(b.schoolFees || 0).toFixed(2)},${(b.utilityBill || 0).toFixed(2)},${(b.sportsFees || 0).toFixed(2)},${(b.ptaDues || 0).toFixed(2)},${(b.transportationBill || 0).toFixed(2)},${(b.otherFee || 0).toFixed(2)},${escapeCSV(b.otherFeeDescription || '')},${item.expected.toFixed(2)},${item.paid.toFixed(2)},${item.owed.toFixed(2)},${statusStr}\n`;
+      });
+
+      csvContent += `\nCUMULATIVE TOTALS,,,,,,,,,,,${reportCenterClassData.totalExpected.toFixed(2)},${reportCenterClassData.totalPaid.toFixed(2)},${reportCenterClassData.totalOwed.toFixed(2)},${reportCenterClassData.totalExpected > 0 ? Math.round((reportCenterClassData.totalPaid / reportCenterClassData.totalExpected) * 100) : 0}% Coll.\n`;
+
+    } else if (reportCenterType === 'school') {
+      filename = `school_ledger_summary_${cleanFn(selectedAcademicYear)}_${cleanFn(selectedTerm)}.csv`;
+
+      csvContent += `CAMPUS-WIDE FEES DIRECTORY STATUS\n`;
+      csvContent += `School Name,${escapeCSV(schoolInfo.name || 'GeeTech Academy')}\n`;
+      csvContent += `Academic Year,${escapeCSV(selectedAcademicYear)}\n`;
+      csvContent += `Term,${escapeCSV(selectedTerm)}\n`;
+      csvContent += `Export Date,${escapeCSV(new Date().toLocaleDateString())}\n\n`;
+
+      csvContent += `CLASS DIVISIONAL SUMMARY AGGREGATES\n`;
+      csvContent += `Class Name,Billed Students,Expected Revenue (GHS),Total Collected (GHS),Outstanding Arrears (GHS),Collection Efficiency\n`;
+
+      reportCenterSchoolData.classStats.forEach(s => {
+        csvContent += `${escapeCSV(s.class)},${s.count},${s.totalExpected.toFixed(2)},${s.totalPaid.toFixed(2)},${s.totalOwed.toFixed(2)},${s.rate}%\n`;
+      });
+
+      csvContent += `TOTAL SUMMATIONS,${students.length},${reportCenterSchoolData.overallExpected.toFixed(2)},${reportCenterSchoolData.overallPaid.toFixed(2)},${reportCenterSchoolData.overallOwed.toFixed(2)},${reportCenterSchoolData.overallRate}%\n\n`;
+
+      csvContent += `DETAILED STUDENT FEES REGISTRIES\n`;
+      csvContent += `Student ID,First Name,Last Name,Class,Total Expected (GHS),Total Paid (GHS),Outstanding Arrears (GHS),Payment Status\n`;
+
+      students.forEach(student => {
+        const bill = getStudentBill(student);
+        const expected = (bill.schoolFees || 0) + (bill.utilityBill || 0) + (bill.sportsFees || 0) + (bill.ptaDues || 0) + (bill.transportationBill || 0) + (bill.otherFee || 0);
+        const paid = bill.payments ? bill.payments.reduce((sum, p) => sum + p.amount, 0) : 0;
+        const owed = expected - paid;
+        const statusStr = owed <= 0 ? 'Cleared' : paid > 0 ? 'Partial' : 'No Payment';
+        csvContent += `${escapeCSV(student.id)},${escapeCSV(student.firstName)},${escapeCSV(student.lastName)},${escapeCSV(student.class)},${expected.toFixed(2)},${paid.toFixed(2)},${owed.toFixed(2)},${statusStr}\n`;
+      });
+    }
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    downloadBlobLocally(blob, filename);
+    showToast("Structured CSV ledger exported successfully!");
+  };
+
   useEffect(() => {
     setStorageItem('smsLogs_fees_reminders', smsLogs);
   }, [smsLogs]);
@@ -211,7 +502,7 @@ export default function SchoolFeesTab({
   // Outstanding calculations for selected student
   const activeExpectedAndPaid = useMemo(() => {
     if (!activeStudent || !activeBill) return { expected: 0, paid: 0, bal: 0 };
-    const expected = activeBill.schoolFees + activeBill.utilityBill + activeBill.sportsFees + activeBill.ptaDues + activeBill.otherFee;
+    const expected = activeBill.schoolFees + activeBill.utilityBill + activeBill.sportsFees + activeBill.ptaDues + (activeBill.transportationBill || 0) + activeBill.otherFee;
     const paid = activeBill.payments.reduce((sum, p) => sum + p.amount, 0);
     const bal = expected - paid;
     return { expected, paid, bal };
@@ -381,28 +672,44 @@ export default function SchoolFeesTab({
 
   const handleDeleteActiveSelection = () => {
     if (activeStudentId) {
-      if (window.confirm("Do you want to delete and reset fee accounts billing data for the currently active student?")) {
-        const nextBills = feeBills.filter(b => b.studentId !== activeStudentId);
-        setFeeBills(nextBills);
-        const toDelete = feeBills.filter(b => b.studentId === activeStudentId);
-        toDelete.forEach(b => {
-          if (b.id) DbController.deleteStudentFeeBill(b.id);
-        });
-        setActiveStudentId(null);
-        showToast("Active student fee log successfully reset.", "success");
-      }
+      const targetStuObj = students.find(s => s.id === activeStudentId);
+      const studentName = targetStuObj ? `${targetStuObj.firstName} ${targetStuObj.lastName}` : "the active student";
+      setConfirmModal({
+        isOpen: true,
+        title: "Reset Student Fees Ledger?",
+        message: `Are you sure you want to delete and reset the fees ledger accounts billing and payment history for ${studentName}? This subtraction will affect student balances immediately and void any recorded installments.`,
+        confirmText: "Delete & Reset",
+        danger: true,
+        onConfirm: () => {
+          const nextBills = feeBills.filter(b => b.studentId !== activeStudentId);
+          setFeeBills(nextBills);
+          const toDelete = feeBills.filter(b => b.studentId === activeStudentId);
+          toDelete.forEach(b => {
+            if (b.id) DbController.deleteStudentFeeBill(b.id);
+          });
+          setActiveStudentId(null);
+          showToast("Active student fee log successfully reset.", "success");
+        }
+      });
     } else {
       showToast("Please select a student from the fee ledger directory first.", "error");
     }
   };
 
   const handleDeleteAllFees = () => {
-    if (window.confirm("CRITICAL WARNING: Are you sure you want to completely delete all historical Student Fee Bills and payments transactions ledger? This action is permanent and cannot be undone.")) {
-      DbController.clearAllStudentFeeBills();
-      setFeeBills([]);
-      onManualSave();
-      showToast("Successfully purged all recorded fee logs and ledger transactions.", "success");
-    }
+    setConfirmModal({
+      isOpen: true,
+      title: "CRITICAL: Delete All Fees Section Data?",
+      message: "Are you absolutely sure you want to completely delete all historical Student Fee Bills and payments transactions ledger? This action is permanent, affects the entire school directory, and cannot be undone.",
+      confirmText: "Purge All Data",
+      danger: true,
+      onConfirm: () => {
+        DbController.clearAllStudentFeeBills();
+        setFeeBills([]);
+        onManualSave();
+        showToast("Successfully purged all recorded fee logs and ledger transactions.", "success");
+      }
+    });
   };
 
   // Synchronize state with LocalStorage / Cloud
@@ -423,6 +730,7 @@ export default function SchoolFeesTab({
     utilityBill: number;
     sportsFees: number;
     ptaDues: number;
+    transportationBill: number;
     otherFee: number;
     otherFeeDescription: string;
   }) => {
@@ -478,12 +786,19 @@ export default function SchoolFeesTab({
   };
 
   const handleClearAllFees = () => {
-    if (window.confirm("Are you absolutely sure you want to delete ALL student school fee accounts and payment installments across all terms? This is irreversible.")) {
-      DbController.clearAllStudentFeeBills();
-      setFeeBills([]);
-      setActiveStudentId(null);
-      showToast("All school fees database records have been securely initialized and cleared.", 'success');
-    }
+    setConfirmModal({
+      isOpen: true,
+      title: "Reset Fees Directory?",
+      message: "Are you absolutely sure you want to delete ALL student school fee accounts and payment installments across all academic terms? This action is irreversible and cannot be undone.",
+      confirmText: "Reset Directory",
+      danger: true,
+      onConfirm: () => {
+        DbController.clearAllStudentFeeBills();
+        setFeeBills([]);
+        setActiveStudentId(null);
+        showToast("All school fees database records have been securely initialized and cleared.", 'success');
+      }
+    });
   };
 
   // Find the bill state for a given student
@@ -504,6 +819,7 @@ export default function SchoolFeesTab({
       utilityBill: 0,
       sportsFees: 0,
       ptaDues: 0,
+      transportationBill: 0,
       otherFee: 0,
       otherFeeDescription: '',
       payments: [],
@@ -522,7 +838,7 @@ export default function SchoolFeesTab({
 
     activeTermAccounts.forEach(bill => {
       // expected sum
-      totalExpected += (bill.schoolFees || 0) + (bill.utilityBill || 0) + (bill.sportsFees || 0) + (bill.ptaDues || 0) + (bill.otherFee || 0);
+      totalExpected += (bill.schoolFees || 0) + (bill.utilityBill || 0) + (bill.sportsFees || 0) + (bill.ptaDues || 0) + (bill.transportationBill || 0) + (bill.otherFee || 0);
       // paid sum
       const paidSum = bill.payments.reduce((sum, p) => sum + p.amount, 0);
       totalPaid += paidSum;
@@ -589,16 +905,23 @@ export default function SchoolFeesTab({
 
   const handleDeletePayment = (paymentId: string) => {
     if (!activeBill) return;
-    if (window.confirm("Are you sure you want to void/delete this fee installment payment transaction? This subtraction will affect student balances immediately.")) {
-      const nextPayments = activeBill.payments.filter(p => p.id !== paymentId);
-      const nextBill: StudentFeeBill = {
-        ...activeBill,
-        payments: nextPayments,
-        updatedAt: new Date().toISOString()
-      };
-      handleSaveBill(nextBill);
-      showToast("Installment payment transaction successfully deleted and voided.", "success");
-    }
+    setConfirmModal({
+      isOpen: true,
+      title: "Void Payment Transaction?",
+      message: "Are you sure you want to void/delete this fee installment payment transaction? This subtraction will affect student balances immediately.",
+      confirmText: "Void Payment",
+      danger: true,
+      onConfirm: () => {
+        const nextPayments = activeBill.payments.filter(p => p.id !== paymentId);
+        const nextBill: StudentFeeBill = {
+          ...activeBill,
+          payments: nextPayments,
+          updatedAt: new Date().toISOString()
+        };
+        handleSaveBill(nextBill);
+        showToast("Installment payment transaction successfully deleted and voided.", "success");
+      }
+    });
   };
 
   const handleBulkPrintReceipts = () => {
@@ -750,6 +1073,14 @@ export default function SchoolFeesTab({
       { date: student.academicYear + " - " + student.term, desc: "Sports development dues", debit: student.sportsFees, credit: 0 },
       { date: student.academicYear + " - " + student.term, desc: "PTA annual dues allocation", debit: student.ptaDues, credit: 0 },
     ];
+    if (student.transportationBill && student.transportationBill > 0) {
+      debits.push({
+        date: student.academicYear + " - " + student.term,
+        desc: "Transportation Bill allocation",
+        debit: student.transportationBill,
+        credit: 0
+      });
+    }
     if (student.otherFee > 0) {
       debits.push({
         date: student.academicYear + " - " + student.term,
@@ -798,7 +1129,7 @@ export default function SchoolFeesTab({
 
     csvRows.push([]);
     
-    const expectedTotal = student.schoolFees + student.utilityBill + student.sportsFees + student.ptaDues + student.otherFee;
+    const expectedTotal = student.schoolFees + student.utilityBill + student.sportsFees + student.ptaDues + (student.transportationBill || 0) + student.otherFee;
     const totalPaid = student.payments.reduce((sum, p) => sum + p.amount, 0);
     const outstanding = expectedTotal - totalPaid;
 
@@ -833,6 +1164,180 @@ export default function SchoolFeesTab({
     showToast(`Ledger CSV statement exported successfully!`);
   };
 
+  const handlePrintDebtors = () => {
+    const minAmt = parseFloat(debtorMinAmount) || 0;
+    const printWindow = window.open('about:blank', '_blank');
+    if (!printWindow) {
+      showToast("Popups are blocked by your browser container. Please enable popups to print.", "error");
+      return;
+    }
+    
+    // Generate class summation rows
+    const classRowsHtml = debtorData.classSummaries.map(s => `
+      <tr style="border-bottom: 1px solid #e2e8f0;">
+        <td style="padding: 10px; text-align: left; font-weight: 500;">${s.class}</td>
+        <td style="padding: 10px; text-align: center; font-weight: 600;">${s.count}</td>
+        <td style="padding: 10px; text-align: right; font-family: monospace; font-weight: bold; color: #1e293b;">GHS ${s.totalOwed.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+      </tr>
+    `).join('');
+
+    // Generate detailed rows
+    const detailRowsHtml = filteredDebtors.map(d => `
+      <tr style="border-bottom: 1px solid #e2e8f0;">
+        <td style="padding: 10px; text-align: left;">
+          <strong style="color: #0f172a; font-size: 13px;">${d.student.firstName} ${d.student.lastName}</strong><br/>
+          <small style="color: #64748b; font-family: monospace; font-size: 10px; font-weight: 500;">REG: ${d.student.id}</small>
+        </td>
+        <td style="padding: 10px; text-align: left; font-weight: 500;">${d.student.class}</td>
+        <td style="padding: 10px; text-align: right; font-family: monospace; color: #475569;">GHS ${d.expected.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+        <td style="padding: 10px; text-align: right; font-family: monospace; color: #059669; font-weight: 500;">GHS ${d.paid.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+        <td style="padding: 10px; text-align: right; font-family: monospace; font-weight: bold; color: #dc2626;">GHS ${d.owed.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+      </tr>
+    `).join('');
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>OFFICIAL DEBTORS SUMMARY & DETAILS REPORT</title>
+          <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap">
+          <style>
+            body { font-family: 'Inter', sans-serif; padding: 40px; color: #1e293b; background-color: #ffffff; }
+            h1 { font-size: 20px; text-transform: uppercase; margin: 0; color: #0f172a; font-weight: 800; letter-spacing: -0.025em; }
+            h2 { font-size: 13px; text-transform: uppercase; margin-top: 35px; margin-bottom: 12px; border-bottom: 2px solid #0f172a; padding-bottom: 6px; color: #1e3a8a; font-weight: 700; letter-spacing: 0.05em; }
+            table { width: 100%; border-collapse: collapse; margin-bottom: 25px; font-size: 12px; }
+            th { background-color: #f8fafc; padding: 12px 10px; text-align: left; font-weight: 700; border-bottom: 2px solid #cbd5e1; text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; color: #475569; }
+            td { padding: 12px 10px; border-bottom: 1px solid #e2e8f0; }
+            .total-row { font-weight: bold; background-color: #f8fafc; }
+            .text-center { text-align: center; }
+            .text-right { text-align: right; }
+          </style>
+        </head>
+        <body onload="window.print(); window.close();">
+          <div style="text-align: center; margin-bottom: 30px;">
+            <h1 style="margin: 0; font-size: 24px;">${schoolInfo.name || 'GeeTech Academy'}</h1>
+            <p style="margin: 6px 0 0 0; font-size: 13px; font-style: italic; color: #475569; font-weight: 500;">Motto: "${schoolInfo.motto || 'Excellence and Dignity'}"</p>
+            <p style="margin: 6px 0 0 0; font-size: 11px; color: #64748b; font-weight: 500;">${schoolInfo.gpsAddress || 'Digital Address GPS'} • TEL: ${schoolInfo.telephone || '+233 24 556 7780'}</p>
+          </div>
+          
+          <hr style="border: 0; border-top: 2px solid #0f172a; margin-bottom: 25px;" />
+
+          <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 30px;">
+            <div>
+              <h2 style="margin: 0; border: none; padding: 0; color: #0f172a; font-size: 16px; font-weight: 800; text-transform: uppercase; letter-spacing: -0.01em;">OFFICIAL DEBTOR ACCOUNTS ANALYSIS REPORT</h2>
+              <p style="margin: 6px 0 0 0; font-size: 13px; color: #475569;">Academic Cycle: <strong>${selectedTerm} (${selectedAcademicYear})</strong></p>
+            </div>
+            <div style="text-align: right; font-size: 11px; font-family: monospace; color: #64748b; line-height: 1.5;">
+              Generated: ${new Date().toLocaleString()}<br/>
+              Owed Threshold Limit: <strong>GHS ${minAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</strong>
+            </div>
+          </div>
+
+          <h2>I. Class Summation Summary</h2>
+          <table>
+            <thead>
+              <tr>
+                <th style="text-align: left; width: 40%;">Class / Division Name</th>
+                <th style="text-align: center; width: 25%;">Registered Debtor Count</th>
+                <th style="text-align: right; width: 35%;">Total Outstanding Arrears Balance</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${classRowsHtml || '<tr><td colspan="3" style="text-align: center; color: #64748b; padding: 20px;">No class debtors found matching criteria.</td></tr>'}
+              <tr class="total-row" style="border-top: 2px solid #0f172a; background-color: #f1f5f9; font-size: 13px;">
+                <td style="padding: 12px 10px; text-align: left; font-weight: 800;">TOTAL SUMMARY SUMMATION</td>
+                <td style="padding: 12px 10px; text-align: center; font-weight: 800; color: #1e3a8a;">${debtorData.overallDebtorCount} Students</td>
+                <td style="padding: 12px 10px; text-align: right; font-weight: 900; color: #dc2626; font-family: monospace;">GHS ${debtorData.overallTotalOwed.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h2>II. Itemized Debtor Students Registry (Class Filter: ${debtorSelectedClassFilter})</h2>
+          <table>
+            <thead>
+              <tr>
+                <th style="text-align: left; width: 35%;">Student Particulars</th>
+                <th style="text-align: left; width: 15%;">Class</th>
+                <th style="text-align: right; width: 16%;">Expected Fees</th>
+                <th style="text-align: right; width: 16%;">Paid Installments</th>
+                <th style="text-align: right; width: 18%;">Outstanding Arrears</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${detailRowsHtml || '<tr><td colspan="5" style="text-align: center; color: #64748b; padding: 20px;">No detailed debtor records found matching selections.</td></tr>'}
+            </tbody>
+          </table>
+
+          <div style="margin-top: 70px; display: flex; justify-content: space-between; font-size: 11px; font-weight: 600;">
+            <div style="width: 220px; border-top: 1.5px solid #475569; text-align: center; padding-top: 6px; color: #475569;">
+              Accounts / Billing Desk Officer
+            </div>
+            <div style="width: 220px; border-top: 1.5px solid #475569; text-align: center; padding-top: 6px; color: #475569;">
+              Bursar / Authorized Signature Seal
+            </div>
+          </div>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+    showToast("Debtors analysis dispatch sent to print gateway!");
+  };
+
+  const handleExportDebtorsCSV = () => {
+    const csvRows: string[][] = [];
+    csvRows.push(["SCHOOL FEES DEBTORS SUMMARY & DETAILS REPORT"]);
+    csvRows.push(["Academic Year", selectedAcademicYear]);
+    csvRows.push(["Term", selectedTerm]);
+    csvRows.push(["Report Date", new Date().toISOString().split('T')[0]]);
+    csvRows.push(["Minimum Threshold (GHS)", debtorMinAmount]);
+    csvRows.push([]);
+
+    // 1. Class summation sheet part
+    csvRows.push(["CLASS SUMMATION SUMMARY"]);
+    csvRows.push(["Class", "Debtor Students Count", "Total Outstanding (GHS)"]);
+    debtorData.classSummaries.forEach(s => {
+      csvRows.push([s.class, String(s.count), s.totalOwed.toFixed(2)]);
+    });
+    csvRows.push(["Overall Total", String(debtorData.overallDebtorCount), debtorData.overallTotalOwed.toFixed(2)]);
+    csvRows.push([]);
+    csvRows.push([]);
+
+    // 2. Detailed list sheet part
+    csvRows.push(["DETAILED DEBTOR REGISTER"]);
+    csvRows.push(["Student ID", "Student Name", "Class", "Expected Amount (GHS)", "Paid Amount (GHS)", "Outstanding Arrears (GHS)"]);
+    debtorData.allDebtorStudents.forEach(d => {
+      csvRows.push([
+        d.student.id,
+        `${d.student.firstName} ${d.student.lastName}`,
+        d.student.class,
+        d.expected.toFixed(2),
+        d.paid.toFixed(2),
+        d.owed.toFixed(2)
+      ]);
+    });
+
+    const csvContent = csvRows
+      .map((row) =>
+        row
+          .map((value) => {
+            const escaped = String(value).replace(/"/g, '""');
+            return `"${escaped}"`;
+          })
+          .join(",")
+      )
+      .join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `debtors_report_${selectedAcademicYear.replace('/', '_')}_${selectedTerm.toLowerCase().replace(' ', '_')}.csv`);
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast("Debtors report exported as CSV successfully!");
+  };
+
   // Filter students based on state selections
   const filteredStudents = useMemo(() => {
     return students.filter(student => {
@@ -846,6 +1351,67 @@ export default function SchoolFeesTab({
       return true;
     });
   }, [students, selectedClass, searchQuery]);
+
+  // Debtors Analyzer Memoized Calculations
+  const debtorData = useMemo(() => {
+    const minAmt = parseFloat(debtorMinAmount) || 0;
+    
+    // Calculate expected, paid, and outstanding for all students in selected term/year
+    const allDebtorStudents = students.map(student => {
+      const bill = getStudentBill(student);
+      const expected = (bill.schoolFees || 0) + (bill.utilityBill || 0) + (bill.sportsFees || 0) + (bill.ptaDues || 0) + (bill.transportationBill || 0) + (bill.otherFee || 0);
+      const paid = bill.payments ? bill.payments.reduce((sum, p) => sum + p.amount, 0) : 0;
+      const owed = expected - paid;
+      return {
+        student,
+        bill,
+        expected,
+        paid,
+        owed
+      };
+    }).filter(d => d.owed >= minAmt);
+
+    // Summation of outstanding balances grouped by class
+    const classSummaries = CLASSES.map(cls => {
+      const classDebtors = allDebtorStudents.filter(d => d.student.class === cls);
+      const count = classDebtors.length;
+      const totalOwed = classDebtors.reduce((sum, d) => sum + d.owed, 0);
+      const totalExpected = classDebtors.reduce((sum, d) => sum + d.expected, 0);
+      const totalPaid = classDebtors.reduce((sum, d) => sum + d.paid, 0);
+      return {
+        class: cls,
+        count,
+        totalOwed,
+        totalExpected,
+        totalPaid
+      };
+    }).filter(s => s.count > 0 || s.totalOwed > 0);
+
+    const overallTotalOwed = allDebtorStudents.reduce((sum, d) => sum + d.owed, 0);
+    const overallDebtorCount = allDebtorStudents.length;
+
+    return {
+      allDebtorStudents,
+      classSummaries,
+      overallTotalOwed,
+      overallDebtorCount
+    };
+  }, [students, feeBills, debtorMinAmount, selectedAcademicYear, selectedTerm]);
+
+  const filteredDebtors = useMemo(() => {
+    return debtorData.allDebtorStudents.filter(d => {
+      // 1. Class filter
+      if (debtorSelectedClassFilter !== 'All' && d.student.class !== debtorSelectedClassFilter) return false;
+      // 2. Search query filter
+      if (debtorSearchQuery.trim() !== '') {
+        const fullName = `${d.student.firstName} ${d.student.middleName || ''} ${d.student.lastName}`.toLowerCase();
+        if (!fullName.includes(debtorSearchQuery.toLowerCase()) && !d.student.id.toLowerCase().includes(debtorSearchQuery.toLowerCase())) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [debtorData.allDebtorStudents, debtorSelectedClassFilter, debtorSearchQuery]);
 
   return (
     <div id="fees-registry-view" className="space-y-6">
@@ -957,31 +1523,33 @@ export default function SchoolFeesTab({
       )}
 
       {/* Control Utility bar */}
-      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 flex flex-wrap gap-4 items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1 text-slate-800 font-semibold">
+      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 flex flex-col lg:flex-row gap-4 items-start lg:items-center justify-between no-print">
+        <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
+          <div className="flex items-center gap-1 text-slate-800 font-semibold shrink-0">
             <Filter className="h-4 w-4" />
             <span className="text-sm">Manage Context:</span>
           </div>
           
-          <select 
-            value={selectedAcademicYear}
-            onChange={(e) => setSelectedAcademicYear(e.target.value as AcademicYearType)}
-            className="text-xs border-slate-200 rounded-lg bg-slate-50 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 py-1.5 px-3"
-          >
-            {ACADEMIC_YEARS.map(y => <option key={y} value={y}>{y}</option>)}
-          </select>
+          <div className="flex gap-2 flex-1 sm:flex-none">
+            <select 
+              value={selectedAcademicYear}
+              onChange={(e) => setSelectedAcademicYear(e.target.value as AcademicYearType)}
+              className="text-xs border-slate-200 rounded-lg bg-slate-50 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 py-1.5 px-3 flex-1 sm:flex-none"
+            >
+              {ACADEMIC_YEARS.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
 
-          <select 
-            value={selectedTerm}
-            onChange={(e) => setSelectedTerm(e.target.value as TermType)}
-            className="text-xs border-slate-200 rounded-lg bg-slate-50 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 py-1.5 px-3"
-          >
-            {TERMS.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
+            <select 
+              value={selectedTerm}
+              onChange={(e) => setSelectedTerm(e.target.value as TermType)}
+              className="text-xs border-slate-200 rounded-lg bg-slate-50 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 py-1.5 px-3 flex-1 sm:flex-none"
+            >
+              {TERMS.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
           {/* Bulk Fee Applicator template */}
           <button
             onClick={() => {
@@ -993,35 +1561,43 @@ export default function SchoolFeesTab({
                   utilityBill: 50,
                   sportsFees: 20,
                   ptaDues: 30,
+                  transportationBill: 0,
                   otherFee: 0,
                   otherFeeDescription: 'Excursion'
                 });
               }
             }}
-            className="text-xs inline-flex items-center gap-1.5 bg-slate-800 hover:bg-slate-900 text-white py-1.5 px-3 rounded-lg font-medium transition"
+            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-slate-800 hover:bg-slate-900 text-white py-1.5 px-3 rounded-lg font-medium transition flex-1 sm:flex-none"
           >
             <Plus className="h-3.5 w-3.5" /> Initialize Standard Billing
           </button>
 
           <button
             onClick={handleBulkPrintReceipts}
-            className="text-xs inline-flex items-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 py-1.5 px-3 rounded-lg font-medium transition border border-indigo-200"
+            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 py-1.5 px-3 rounded-lg font-medium transition border border-indigo-200 flex-1 sm:flex-none"
           >
-            <Printer className="h-3.5 w-3.5" /> Bulk Print Receipts
+            <Printer className="h-3.5 w-3.5" /> Bulk Receipts
           </button>
 
           <button
-            onClick={() => handleExportFeesPDF('fees-summary-table-and-view', `school_fees_summary_${selectedAcademicYear.replace('/', '_')}_${selectedTerm.toLowerCase().replace(' ', '_')}`)}
-            className="text-xs inline-flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 py-1.5 px-3 rounded-lg font-medium transition"
+            onClick={() => setShowDebtorsModal(true)}
+            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white py-1.5 px-3 rounded-lg font-medium transition shadow-sm flex-1 sm:flex-none"
           >
-            <FileDown className="h-3.5 w-3.5" /> Export Ledger PDF
+            <AlertTriangle className="h-3.5 w-3.5 animate-bounce-slow" /> Debtors
+          </button>
+
+          <button
+            onClick={() => setShowReportCenterModal(true)}
+            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-violet-600 hover:bg-violet-700 text-white py-1.5 px-3 rounded-lg font-medium transition shadow-sm select-none flex-1 sm:flex-none"
+          >
+            <FileDown className="h-3.5 w-3.5" /> PDF Center
           </button>
 
           <button
             onClick={handleClearAllFees}
-            className="text-xs inline-flex items-center gap-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 py-1.5 px-3 rounded-lg font-medium transition border border-rose-200"
+            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 py-1.5 px-3 rounded-lg font-medium transition border border-rose-200 flex-1 sm:flex-none"
           >
-            <Trash2 className="h-3.5 w-3.5" /> Reset Fees Directory
+            <Trash2 className="h-3.5 w-3.5" /> Reset
           </button>
         </div>
       </div>
@@ -1039,7 +1615,16 @@ export default function SchoolFeesTab({
             </div>
             <button 
               onClick={() => {
-                if (window.confirm("Clear all SMS dispatch logs?")) setSmsLogs([]);
+                setConfirmModal({
+                  isOpen: true,
+                  title: "Clear SMS Delivery Logs?",
+                  message: "Are you sure you want to clear all automated SMS dispatch records? This will purge the live tracking table.",
+                  confirmText: "Clear Logs",
+                  danger: true,
+                  onConfirm: () => {
+                    setSmsLogs([]);
+                  }
+                });
               }}
               className="text-[10px] text-rose-500 hover:text-rose-700 font-bold px-2 py-1 bg-rose-50 rounded"
             >
@@ -1193,44 +1778,44 @@ export default function SchoolFeesTab({
                   </p>
                 </div>
 
-                <div className="flex flex-wrap gap-2 shrink-0">
+                <div className="flex flex-wrap gap-2 shrink-0 w-full md:w-auto">
                   {activeExpectedAndPaid.bal > 0 && (
                     <button
                       onClick={handleOpenReminderModal}
-                      className="text-xs inline-flex items-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white py-2 px-3 rounded-lg font-semibold transition shadow-md select-none active:translate-y-0.5"
+                      className="text-[11px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white py-2 px-3 rounded-lg font-semibold transition shadow-md select-none active:translate-y-0.5 flex-1 md:flex-none"
                     >
-                      <Bell className="h-3.5 w-3.5 animate-bounce-slow" /> Notice & SMS Reminder
+                      <Bell className="h-3.5 w-3.5 animate-bounce-slow" /> <span className="hidden sm:inline">Notice &</span> SMS Reminder
                     </button>
                   )}
 
                   <button
                     onClick={handleOpenInvoice}
-                    className="text-xs inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white py-2 px-3 rounded-lg font-semibold transition shadow-md select-none active:translate-y-0.5"
+                    className="text-[11px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white py-2 px-3 rounded-lg font-semibold transition shadow-md select-none active:translate-y-0.5 flex-1 md:flex-none"
                   >
-                    <Receipt className="h-3.5 w-3.5" /> Generate Fee Invoice
+                    <Receipt className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Generate</span> Invoice
                   </button>
 
                   <button
                     onClick={() => {
                       setActiveLedgerStudent(activeBill);
                     }}
-                    className="text-xs inline-flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 py-2 px-3 rounded-lg font-medium transition"
+                    className="text-[11px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 py-2 px-3 rounded-lg font-medium transition flex-1 md:flex-none"
                   >
-                    <Printer className="h-3.5 w-3.5" /> Full Ledger Report
+                    <Printer className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Full</span> Ledger
                   </button>
 
                   <button
                     onClick={() => setShowPaymentModal(true)}
-                    className="text-xs inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white py-2 px-3 rounded-lg font-medium transition shadow-sm"
+                    className="text-[11px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white py-2 px-3 rounded-lg font-medium transition shadow-sm flex-1 md:flex-none"
                   >
-                    <Plus className="h-3.5 w-3.5" /> Record Installment
+                    <Plus className="h-3.5 w-3.5" /> Record <span className="hidden sm:inline">Installment</span>
                   </button>
                 </div>
               </div>
 
               {/* Installments calculations balances details box */}
               {(() => {
-                const expected = activeBill.schoolFees + activeBill.utilityBill + activeBill.sportsFees + activeBill.ptaDues + activeBill.otherFee;
+                const expected = activeBill.schoolFees + activeBill.utilityBill + activeBill.sportsFees + activeBill.ptaDues + (activeBill.transportationBill || 0) + activeBill.otherFee;
                 const paid = activeBill.payments.reduce((sum, p) => sum + p.amount, 0);
                 const bal = expected - paid;
 
@@ -1307,6 +1892,17 @@ export default function SchoolFeesTab({
                   </div>
 
                   <div>
+                    <label className="block text-[11px] font-medium text-slate-500 mb-1">Transportation Bill (GHS)</label>
+                    <input
+                      type="number"
+                      value={activeBill.transportationBill || 0}
+                      min="0"
+                      onChange={(e) => handleEditBillComponent('transportationBill', parseFloat(e.target.value) || 0)}
+                      className="w-full text-xs font-mono py-1.5 px-3 border border-slate-200 rounded-lg focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                  </div>
+
+                  <div>
                     <label className="block text-[11px] font-medium text-slate-500 mb-1">Other Fee amount (GHS)</label>
                     <input
                       type="number"
@@ -1336,8 +1932,8 @@ export default function SchoolFeesTab({
                   <Receipt className="h-4 w-4" /> Installments payment history (Receipt directory)
                 </h3>
 
-                <div className="border border-slate-200 rounded-lg overflow-hidden">
-                  <table className="w-full text-left border-collapse">
+                <div className="border border-slate-200 rounded-lg overflow-x-auto">
+                  <table className="w-full text-left border-collapse min-w-[600px]">
                     <thead>
                       <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-widest">
                         <th className="py-2.5 px-3">Installment Date</th>
@@ -1407,7 +2003,7 @@ export default function SchoolFeesTab({
               </div>
 
               <div id="school-fees-general-table" className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
+                <table className="w-full text-left border-collapse min-w-[1200px]">
                   <thead>
                     <tr className="bg-slate-100/50 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-200">
                       <th className="p-3">Student Details & Class</th>
@@ -1415,6 +2011,7 @@ export default function SchoolFeesTab({
                       <th className="p-3">Utility Bill</th>
                       <th className="p-3">Sports Fees</th>
                       <th className="p-3">PTA Dues</th>
+                      <th className="p-3">Transport Bill</th>
                       <th className="p-3">Other Fee</th>
                       <th className="p-3 text-right">Term Total</th>
                       <th className="p-3 text-right">Amount Paid</th>
@@ -1424,14 +2021,14 @@ export default function SchoolFeesTab({
                   <tbody className="divide-y divide-slate-100 text-xs">
                     {students.length === 0 ? (
                       <tr>
-                        <td colSpan={9} className="p-8 text-center text-slate-400 font-mono">
+                        <td colSpan={10} className="p-8 text-center text-slate-400 font-mono">
                           Please register students first in the Student profiles registry directory in order to manage billing.
                         </td>
                       </tr>
                     ) : (
                       students.map(student => {
                         const bill = getStudentBill(student);
-                        const expected = bill.schoolFees + bill.utilityBill + bill.sportsFees + bill.ptaDues + bill.otherFee;
+                        const expected = bill.schoolFees + bill.utilityBill + bill.sportsFees + bill.ptaDues + (bill.transportationBill || 0) + bill.otherFee;
                         const paid = bill.payments.reduce((sum, p) => sum + p.amount, 0);
                         const outstanding = expected - paid;
 
@@ -1452,6 +2049,7 @@ export default function SchoolFeesTab({
                             <td className="p-3 font-mono text-[11px] text-slate-500">GHS {bill.utilityBill}</td>
                             <td className="p-3 font-mono text-[11px] text-slate-500">GHS {bill.sportsFees}</td>
                             <td className="p-3 font-mono text-[11px] text-slate-500">GHS {bill.ptaDues}</td>
+                            <td className="p-3 font-mono text-[11px] text-slate-500">GHS {bill.transportationBill || 0}</td>
                             <td className="p-3 font-mono text-[11px] text-slate-500">GHS {bill.otherFee} <span className="text-[9px] text-slate-400 italic block">{bill.otherFeeDescription}</span></td>
                             <td className="p-3 text-right font-mono font-medium text-slate-700 font-semibold bg-slate-50/30">
                               GHS {expected.toFixed(1)}
@@ -1549,6 +2147,7 @@ export default function SchoolFeesTab({
                     <option value="Utility Bill">Utility Bill</option>
                     <option value="Sports Fees">Sports Fees</option>
                     <option value="PTA dues">PTA Dues</option>
+                    <option value="Transportation Bill">Transportation Bill</option>
                     <option value="Other Fee">Other Fee (Excursions/Misc)</option>
                   </select>
                 </div>
@@ -1844,7 +2443,7 @@ export default function SchoolFeesTab({
                   <div className="text-right space-y-1">
                     {(() => {
                       const bill = activeReceiptPayment.bill;
-                      const expectedTotal = bill.schoolFees + bill.utilityBill + bill.sportsFees + bill.ptaDues + bill.otherFee;
+                      const expectedTotal = bill.schoolFees + bill.utilityBill + bill.sportsFees + bill.ptaDues + (bill.transportationBill || 0) + bill.otherFee;
                       const totalPaid = bill.payments.reduce((sum, p) => sum + p.amount, 0);
                       const outstanding = expectedTotal - totalPaid;
 
@@ -1893,35 +2492,35 @@ export default function SchoolFeesTab({
               className="bg-white max-w-2xl w-full rounded-[24px] shadow-2xl border border-slate-100 overflow-hidden flex flex-col max-h-[90vh] cursor-default md:my-8"
             >
               
-              <div className="p-6 pb-4 bg-white border-b border-slate-100/85 flex items-center justify-between shrink-0">
+              <div className="p-4 sm:p-6 pb-4 bg-white border-b border-slate-100/85 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shrink-0">
                 <div>
                   <h3 className="text-[13px] font-bold text-slate-800 uppercase tracking-widest font-sans leading-none">
                     GTIMS LEDGER REPORT
                   </h3>
                   <p className="text-[10px] text-slate-400 mt-1">Review student fee liabilities and payment streams</p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     onClick={() => handlePrintStandard('fee-ledger-print-area')}
-                    className="px-3.5 py-2 hover:bg-slate-50 border border-slate-200 text-slate-500 font-semibold rounded-xl text-xs transition cursor-pointer bg-white"
+                    className="flex-1 sm:flex-none px-3 py-2 hover:bg-slate-50 border border-slate-200 text-slate-500 font-semibold rounded-xl text-[10px] sm:text-xs transition cursor-pointer bg-white"
                   >
-                    <Printer className="h-3.5 w-3.5 inline mr-1" /> Print Details
+                    <Printer className="h-3.5 w-3.5 inline mr-1" /> Print
                   </button>
                   <button
                     onClick={() => handleExportLedgerCSV(activeLedgerStudent)}
-                    className="px-3.5 py-2 hover:bg-slate-50 border border-slate-200 text-slate-600 font-semibold rounded-xl text-xs transition cursor-pointer bg-white"
+                    className="flex-1 sm:flex-none px-3 py-2 hover:bg-slate-50 border border-slate-200 text-slate-600 font-semibold rounded-xl text-[10px] sm:text-xs transition cursor-pointer bg-white"
                   >
-                    <FileSpreadsheet className="h-3.5 w-3.5 inline mr-1 text-[#059669]" /> Download CSV
+                    <FileSpreadsheet className="h-3.5 w-3.5 inline mr-1 text-[#059669]" /> CSV
                   </button>
                   <button
                     onClick={() => handleExportFeesPDF('fee-ledger-print-area', `ledger_${activeLedgerStudent.studentId}`)}
-                    className="px-3.5 py-2 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl text-xs shadow-xs transition cursor-pointer"
+                    className="flex-1 sm:flex-none px-3 py-2 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl text-[10px] sm:text-xs shadow-xs transition cursor-pointer"
                   >
-                    <Eye className="h-3.5 w-3.5 inline mr-1" /> Toggle Preview Mode
+                    <Eye className="h-3.5 w-3.5 inline mr-1" /> PDF
                   </button>
                   <button 
                     onClick={() => setActiveLedgerStudent(null)}
-                    className="p-1 px-1.5 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-600 transition cursor-pointer ml-1 bg-transparent animate-none"
+                    className="p-1 px-1.5 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-600 transition cursor-pointer bg-transparent animate-none hidden sm:block"
                   >
                     <X className="h-4 w-4" />
                   </button>
@@ -1972,6 +2571,10 @@ export default function SchoolFeesTab({
                             <td className="p-1 pl-1.5 text-slate-600">Sports & PTA</td>
                             <td className="p-1 text-right pr-1.5 font-mono">GHS {(activeLedgerStudent.sportsFees + activeLedgerStudent.ptaDues).toFixed(2)}</td>
                           </tr>
+                          <tr className="border-b border-slate-200">
+                            <td className="p-1 pl-1.5 text-slate-600">Transportation</td>
+                            <td className="p-1 text-right pr-1.5 font-mono">GHS {(activeLedgerStudent.transportationBill || 0).toFixed(2)}</td>
+                          </tr>
                           {activeLedgerStudent.otherFee > 0 && (
                             <tr className="border-b border-slate-200">
                               <td className="p-1 pl-1.5 text-slate-600">Other Levy</td>
@@ -1982,7 +2585,7 @@ export default function SchoolFeesTab({
                             <td className="p-1 pl-1.5 text-slate-900">Total Term Bill</td>
                             <td className="p-1 text-right pr-1.5 font-mono text-slate-900">
                               GHS {(() => {
-                                const total = activeLedgerStudent.schoolFees + activeLedgerStudent.utilityBill + activeLedgerStudent.sportsFees + activeLedgerStudent.ptaDues + activeLedgerStudent.otherFee;
+                                const total = activeLedgerStudent.schoolFees + activeLedgerStudent.utilityBill + activeLedgerStudent.sportsFees + activeLedgerStudent.ptaDues + (activeLedgerStudent.transportationBill || 0) + activeLedgerStudent.otherFee;
                                 return total.toFixed(2);
                               })()}
                             </td>
@@ -2030,7 +2633,7 @@ export default function SchoolFeesTab({
                     {/* Overall Statements Summary balances */}
                     <div className="bg-slate-50 p-1.5 rounded space-y-0.5 border border-slate-100">
                       {(() => {
-                        const expectedTotal = activeLedgerStudent.schoolFees + activeLedgerStudent.utilityBill + activeLedgerStudent.sportsFees + activeLedgerStudent.ptaDues + activeLedgerStudent.otherFee;
+                        const expectedTotal = activeLedgerStudent.schoolFees + activeLedgerStudent.utilityBill + activeLedgerStudent.sportsFees + activeLedgerStudent.ptaDues + (activeLedgerStudent.transportationBill || 0) + activeLedgerStudent.otherFee;
                         const totalPaid = activeLedgerStudent.payments.reduce((sum, p) => sum + p.amount, 0);
                         const outstanding = expectedTotal - totalPaid;
 
@@ -2373,6 +2976,15 @@ export default function SchoolFeesTab({
                               <td className="p-2 text-right font-mono text-slate-500">GHS {activeBill.ptaDues.toFixed(2)}</td>
                               <td className="p-2 text-right font-mono text-slate-500">-</td>
                               <td className="p-2 text-right font-mono font-semibold text-rose-600">GHS {activeBill.ptaDues.toFixed(2)}</td>
+                            </tr>
+                          )}
+                          {/* transportationBill row */}
+                          {activeBill.transportationBill > 0 && (
+                            <tr>
+                              <td className="p-2">Transportation Bill allocation</td>
+                              <td className="p-2 text-right font-mono text-slate-500">GHS {activeBill.transportationBill.toFixed(2)}</td>
+                              <td className="p-2 text-right font-mono text-slate-500">-</td>
+                              <td className="p-2 text-right font-mono font-semibold text-rose-600">GHS {activeBill.transportationBill.toFixed(2)}</td>
                             </tr>
                           )}
                           {/* otherFee row */}
@@ -2732,6 +3344,13 @@ export default function SchoolFeesTab({
                             <td className="p-2">PTA Annual Dues Allocation</td>
                             <td className="p-2 text-right font-mono text-slate-800 font-medium">GHS {activeBill.ptaDues.toFixed(2)}</td>
                           </tr>
+                          {/* transportationBill row */}
+                          {activeBill.transportationBill > 0 && (
+                            <tr>
+                              <td className="p-2">Transportation Bill Allocation</td>
+                              <td className="p-2 text-right font-mono text-slate-800 font-medium">GHS {activeBill.transportationBill.toFixed(2)}</td>
+                            </tr>
+                          )}
                           {/* otherFee row */}
                           {activeBill.otherFee > 0 && (
                             <tr>
@@ -2840,6 +3459,996 @@ export default function SchoolFeesTab({
           </motion.div>
         </div>
       )}
+
+      {showDebtorsModal && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs no-print flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowDebtorsModal(false)}
+            className="fixed inset-0 cursor-pointer"
+          />
+
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 15 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 15 }}
+            className="relative w-full max-w-6xl bg-white rounded-3xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col h-[90vh] xl:h-[85vh] z-10 text-left font-sans"
+          >
+            {/* Modal Header */}
+            <div className="p-6 border-b border-slate-100 bg-slate-50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-amber-500/10 border border-amber-500/20 text-amber-600 rounded-xl flex items-center justify-center">
+                  <AlertTriangle size={20} className="text-amber-600 animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900 uppercase tracking-tight">Outstanding Fees & Debtors Analyzer</h3>
+                  <p className="text-[11px] text-slate-500 font-medium">
+                    Analysis for <strong className="text-indigo-600">{selectedTerm}</strong> of the <strong className="text-indigo-600">{selectedAcademicYear}</strong> Academic Session
+                  </p>
+                </div>
+              </div>
+
+              {/* Threshold parameter controls */}
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-2 bg-white px-3 py-1.5 border border-slate-200 rounded-xl shadow-xs">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide whitespace-nowrap">Min Outstanding (GHS):</label>
+                  <input 
+                    type="number"
+                    min="0"
+                    placeholder="0"
+                    value={debtorMinAmount}
+                    onChange={(e) => setDebtorMinAmount(e.target.value)}
+                    className="w-20 font-bold font-mono text-xs text-slate-800 bg-transparent border-0 p-0 focus:ring-0 focus:outline-hidden"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 flex-1 sm:flex-none">
+                  <button
+                    type="button"
+                    onClick={handlePrintDebtors}
+                    className="flex-1 sm:flex-none px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-sm"
+                  >
+                    <Printer size={13} /> <span className="sm:hidden lg:inline">Print Report</span><span className="hidden sm:inline lg:hidden">Print</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleExportDebtorsCSV}
+                    className="flex-1 sm:flex-none px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-sm"
+                  >
+                    <FileSpreadsheet size={13} /> <span className="sm:hidden lg:inline">Export CSV</span><span className="hidden sm:inline lg:hidden">CSV</span>
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowDebtorsModal(false)}
+                  className="w-8 h-8 rounded-full hover:bg-slate-200 flex items-center justify-center text-slate-400 hover:text-slate-600 transition"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body (Responsive Layout) */}
+            <div className="flex-1 overflow-hidden flex flex-col lg:flex-row">
+              {/* Left Column: Class Summation Summary */}
+              <div className="w-full lg:w-5/12 p-6 border-b lg:border-b-0 lg:border-r border-slate-200 overflow-y-auto flex flex-col bg-slate-50/50">
+                <div className="mb-4">
+                  <h4 className="text-xs font-bold uppercase text-slate-700 tracking-wider flex items-center gap-1.5">
+                    <Coins className="text-amber-500" size={14} /> I. Class Summation Summary
+                  </h4>
+                  <p className="text-[10px] text-slate-400 mt-0.5">Click any class row below to filter the detailed register on the right.</p>
+                </div>
+
+                <div className="border border-slate-200 rounded-2xl bg-white overflow-hidden shadow-xs">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-200 font-bold">
+                        <th className="p-3">Class Name</th>
+                        <th className="p-3 text-center">Debtors</th>
+                        <th className="p-3 text-right">Sum Owed (GHS)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                      {debtorData.classSummaries.length === 0 ? (
+                        <tr>
+                          <td colSpan={3} className="p-8 text-center text-slate-400">
+                            No student registries meet the outstanding balance criteria.
+                          </td>
+                        </tr>
+                      ) : (
+                        debtorData.classSummaries.map((s) => {
+                          const isFiltered = debtorSelectedClassFilter === s.class;
+                          return (
+                            <tr 
+                              key={s.class}
+                              onClick={() => setDebtorSelectedClassFilter(isFiltered ? 'All' : s.class)}
+                              className={`cursor-pointer transition ${
+                                isFiltered ? 'bg-indigo-50 hover:bg-indigo-100/80 text-indigo-900 border-l-4 border-indigo-600' : 'hover:bg-slate-50'
+                              }`}
+                            >
+                              <td className="p-3 font-semibold">{s.class}</td>
+                              <td className="p-3 text-center">
+                                <span className="inline-block px-2 py-0.5 bg-slate-100 text-slate-700 font-bold text-[10px] rounded">
+                                  {s.count}
+                                </span>
+                              </td>
+                              <td className="p-3 text-right font-bold font-mono">
+                                GHS {s.totalOwed.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                    {debtorData.classSummaries.length > 0 && (
+                      <tfoot>
+                        <tr className="bg-slate-100/70 border-t-2 border-slate-300 text-xs font-bold text-slate-800">
+                          <td className="p-3 font-extrabold uppercase">Overall Summation</td>
+                          <td className="p-3 text-center font-extrabold text-indigo-700">
+                            {debtorData.overallDebtorCount}
+                          </td>
+                          <td className="p-3 text-right font-extrabold font-mono text-rose-600">
+                            GHS {debtorData.overallTotalOwed.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                </div>
+
+                <div className="mt-4 p-4 bg-amber-50 border border-amber-200/60 rounded-2xl flex items-start gap-2.5">
+                  <Info className="text-amber-600 shrink-0 mt-0.5" size={14} />
+                  <div className="text-[10px] text-amber-800 leading-relaxed font-medium">
+                    💡 <strong>Class Summation Tip:</strong> Select a class above to narrow down the right-hand student register. If "All Classes" is active, you are analyzing the entire school population.
+                  </div>
+                </div>
+              </div>
+
+              {/* Right Column: Detailed list for Entire Class/School */}
+              <div className="flex-1 p-6 overflow-y-auto flex flex-col bg-white">
+                <div className="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                  <div>
+                    <h4 className="text-xs font-bold uppercase text-slate-700 tracking-wider flex items-center gap-1.5">
+                      <User className="text-indigo-500" size={14} /> II. Detailed Debtor Registry
+                    </h4>
+                    <p className="text-[10px] text-slate-400 mt-0.5">
+                      Showing detailed arrears ledger items. Selected Class: <strong className="text-slate-700">{debtorSelectedClassFilter}</strong>
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {/* Search inside debtors */}
+                    <div className="relative">
+                      <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
+                      <input
+                        type="text"
+                        placeholder="Filter list by name..."
+                        value={debtorSearchQuery}
+                        onChange={(e) => setDebtorSearchQuery(e.target.value)}
+                        className="text-[11px] pl-8 pr-2.5 py-1.5 border border-slate-200 rounded-lg bg-slate-50 focus:outline-hidden focus:ring-1 focus:ring-indigo-500 w-44"
+                      />
+                    </div>
+
+                    {/* Quick filter class select */}
+                    <select
+                      value={debtorSelectedClassFilter}
+                      onChange={(e) => setDebtorSelectedClassFilter(e.target.value as ClassType | 'All')}
+                      className="text-[11px] border border-slate-200 rounded-lg bg-slate-50 focus:outline-hidden py-1.5 px-2 font-medium text-slate-700"
+                    >
+                      <option value="All">All Classes</option>
+                      {CLASSES.map(cls => <option key={cls} value={cls}>{cls}</option>)}
+                    </select>
+
+                    {debtorSelectedClassFilter !== 'All' && (
+                      <button
+                        onClick={() => setDebtorSelectedClassFilter('All')}
+                        className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 px-2 py-1 rounded"
+                      >
+                        Reset Filter
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex-1 overflow-x-auto border border-slate-200 rounded-2xl">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-slate-50 text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-200 font-bold">
+                        <th className="p-3">Student / Particulars</th>
+                        <th className="p-3">Class</th>
+                        <th className="p-3 text-right">Expected Fees</th>
+                        <th className="p-3 text-right">Paid to-date</th>
+                        <th className="p-3 text-right">Arrears (Owed)</th>
+                        <th className="p-3 text-center">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                      {filteredDebtors.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="p-8 text-center text-slate-400">
+                            No detailed debtor records match your search or filter settings.
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredDebtors.map((d) => (
+                          <tr key={d.student.id} className="hover:bg-slate-50/70 transition">
+                            <td className="p-3">
+                              <p className="font-bold text-slate-800 capitalize">{d.student.firstName} {d.student.lastName}</p>
+                              <p className="text-[10px] text-slate-400 font-mono mt-0.5">REG ID: {d.student.id}</p>
+                            </td>
+                            <td className="p-3">
+                              <span className="inline-block px-2 py-0.5 bg-indigo-50 text-indigo-700 text-[10px] font-bold rounded">
+                                {d.student.class}
+                              </span>
+                            </td>
+                            <td className="p-3 text-right font-mono text-slate-600">
+                              GHS {d.expected.toFixed(2)}
+                            </td>
+                            <td className="p-3 text-right font-mono text-emerald-600">
+                              GHS {d.paid.toFixed(2)}
+                            </td>
+                            <td className="p-3 text-right font-mono text-rose-600 font-bold">
+                              GHS {d.owed.toFixed(2)}
+                            </td>
+                            <td className="p-3 text-center">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveStudentId(d.student.id);
+                                  setShowDebtorsModal(false);
+                                  showToast(`Selected ${d.student.firstName}'s fees ledger statement!`);
+                                }}
+                                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 hover:text-slate-900 rounded-lg text-[10px] font-bold transition inline-flex items-center gap-1"
+                              >
+                                View Ledger
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="mt-4 flex items-center justify-between text-[11px] text-slate-400 font-mono">
+                  <span>Filtered Debtors Count: <strong>{filteredDebtors.length} students</strong></span>
+                  <span>Total Owed (Filtered): <strong className="text-rose-600 font-bold">GHS {filteredDebtors.reduce((sum, d) => sum + d.owed, 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></span>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowDebtorsModal(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition"
+              >
+                Close Analyzer
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+
+    {/* REPORT CENTER MODAL */}
+    <AnimatePresence>
+      {showReportCenterModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 no-print">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 15 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 15 }}
+            transition={{ duration: 0.22, ease: "easeOut" }}
+            className="relative w-full max-w-[1240px] bg-slate-100 rounded-3xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col lg:flex-row h-[90vh] z-50 text-left font-sans"
+          >
+            {/* Sidebar Controls (Left Column) */}
+            <div className="w-full lg:w-[400px] flex flex-col justify-between border-b lg:border-b-0 lg:border-r border-slate-200 bg-white select-none">
+              <div className="p-5 flex-1 flex flex-col overflow-hidden">
+                {/* Header Title */}
+                <div className="flex items-center gap-3 border-b border-slate-100 pb-4 mb-4">
+                  <div className="p-2.5 bg-violet-50 text-violet-600 rounded-2xl">
+                    <BookOpen size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider">Report & Print Center</h3>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Generate official compliance bills & ledger PDFs</p>
+                  </div>
+                </div>
+
+                {/* Tab Switcher */}
+                <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-50 border border-slate-200/60 rounded-xl mb-4">
+                  <button
+                    onClick={() => setReportCenterType('student')}
+                    className={`py-1.5 px-2 rounded-lg text-[10px] font-bold transition flex flex-col items-center gap-1 cursor-pointer ${
+                      reportCenterType === 'student' ? 'bg-white text-violet-700 shadow-xs' : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    <User size={14} />
+                    <span>Each Student</span>
+                  </button>
+                  <button
+                    onClick={() => setReportCenterType('class')}
+                    className={`py-1.5 px-2 rounded-lg text-[10px] font-bold transition flex flex-col items-center gap-1 cursor-pointer ${
+                      reportCenterType === 'class' ? 'bg-white text-violet-700 shadow-xs' : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    <BookOpen size={14} />
+                    <span>Whole Class</span>
+                  </button>
+                  <button
+                    onClick={() => setReportCenterType('school')}
+                    className={`py-1.5 px-2 rounded-lg text-[10px] font-bold transition flex flex-col items-center gap-1 cursor-pointer ${
+                      reportCenterType === 'school' ? 'bg-white text-violet-700 shadow-xs' : 'text-slate-500 hover:text-slate-700'
+                    }`}
+                  >
+                    <Coins size={14} />
+                    <span>Entire School</span>
+                  </button>
+                </div>
+
+                {/* Tab Parameter Inputs */}
+                <div className="flex-1 overflow-y-auto pr-1 space-y-4">
+                  {reportCenterType === 'student' && (
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">1. Search Student Directory</label>
+                        <div className="relative mt-1">
+                          <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                          <input
+                            type="text"
+                            placeholder="Type name or registration ID..."
+                            value={reportCenterSearchQuery}
+                            onChange={(e) => setReportCenterSearchQuery(e.target.value)}
+                            className="w-full text-xs pl-9 pr-3 py-2 border border-slate-200 rounded-xl bg-slate-50 focus:outline-hidden focus:ring-1 focus:ring-violet-500"
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">2. Select Student Statement</label>
+                        <div className="mt-1.5 border border-slate-100 rounded-xl overflow-hidden divide-y divide-slate-50 max-h-[220px] overflow-y-auto">
+                          {students.filter(student => {
+                            const q = reportCenterSearchQuery.toLowerCase().trim();
+                            if (!q) return true;
+                            const fullName = `${student.firstName} ${student.middleName || ''} ${student.lastName}`.toLowerCase();
+                            return fullName.includes(q) || student.id.toLowerCase().includes(q);
+                          }).length === 0 ? (
+                            <p className="p-4 text-center text-xs text-slate-400 italic">No matching students found</p>
+                          ) : (
+                            students.filter(student => {
+                              const q = reportCenterSearchQuery.toLowerCase().trim();
+                              if (!q) return true;
+                              const fullName = `${student.firstName} ${student.middleName || ''} ${student.lastName}`.toLowerCase();
+                              return fullName.includes(q) || student.id.toLowerCase().includes(q);
+                            }).map(student => (
+                              <button
+                                key={student.id}
+                                onClick={() => setReportCenterSelectedStudentId(student.id)}
+                                className={`w-full text-left p-2.5 transition flex items-center justify-between text-xs cursor-pointer ${
+                                  reportCenterSelectedStudentId === student.id ? 'bg-violet-50 text-violet-900 font-bold border-l-4 border-violet-600' : 'hover:bg-slate-50 text-slate-700'
+                                }`}
+                              >
+                                <div>
+                                  <p className="capitalize font-semibold">{student.firstName} {student.lastName}</p>
+                                  <p className="text-[9px] text-slate-400 font-mono mt-0.5">{student.id} • {student.class}</p>
+                                </div>
+                                <Check size={14} className={reportCenterSelectedStudentId === student.id ? 'opacity-100 text-violet-600' : 'opacity-0'} />
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {reportCenterType === 'class' && (
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">1. Select Target Class Category</label>
+                        <div className="grid grid-cols-2 gap-2 mt-1.5">
+                          {CLASSES.map(cls => (
+                            <button
+                              key={cls}
+                              onClick={() => setReportCenterSelectedClass(cls)}
+                              className={`py-2 px-3 border rounded-xl text-xs font-semibold text-center transition cursor-pointer ${
+                                reportCenterSelectedClass === cls
+                                  ? 'bg-violet-50 border-violet-300 text-violet-700 font-bold shadow-xs'
+                                  : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                              }`}
+                            >
+                              {cls}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {reportCenterType === 'school' && (
+                    <div className="space-y-4">
+                      <div className="p-4 bg-slate-50 border border-slate-200/60 rounded-2xl">
+                        <h4 className="text-xs font-bold text-slate-700 flex items-center gap-1">
+                          <Info size={14} className="text-violet-600" />
+                          <span>Campus-wide Summary</span>
+                        </h4>
+                        <p className="text-[10px] text-slate-500 leading-relaxed mt-1.5">
+                          Pulls an official multi-page comprehensive ledger digest across Creche, Nursery, and Basic divisions 1-9.
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2.5 text-center text-xs">
+                        <div className="p-2.5 bg-slate-50 border border-slate-150 rounded-xl">
+                          <span className="text-[8px] text-slate-400 font-bold uppercase">Total Classes</span>
+                          <p className="text-lg font-bold text-slate-800 mt-0.5">{CLASSES.length}</p>
+                        </div>
+                        <div className="p-2.5 bg-slate-50 border border-slate-150 rounded-xl">
+                          <span className="text-[8px] text-slate-400 font-bold uppercase">Total Billed</span>
+                          <p className="text-lg font-bold text-slate-800 mt-0.5">{students.length} students</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Sidebar Action Buttons Block */}
+              <div className="p-5 border-t border-slate-100 bg-slate-50 space-y-2.5 shrink-0">
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={handleDownloadReportCenterPDF}
+                    disabled={reportCenterType === 'student' && !reportCenterSelectedStudent}
+                    className="w-full inline-flex items-center justify-center gap-1.5 py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white font-bold rounded-xl text-xs transition shadow-xs cursor-pointer select-none"
+                  >
+                    <FileDown size={14} />
+                    <span>Download PDF</span>
+                  </button>
+
+                  <button
+                    onClick={handlePrintReportCenter}
+                    disabled={reportCenterType === 'student' && !reportCenterSelectedStudent}
+                    className="w-full inline-flex items-center justify-center gap-1.5 py-2.5 px-3 bg-violet-600 hover:bg-violet-700 disabled:bg-slate-300 text-white font-bold rounded-xl text-xs transition shadow-xs cursor-pointer select-none"
+                  >
+                    <Printer size={14} />
+                    <span>Direct Print</span>
+                  </button>
+                </div>
+
+                <button
+                  onClick={handleExportReportCenterCSV}
+                  disabled={reportCenterType === 'student' && !reportCenterSelectedStudent}
+                  className="w-full inline-flex items-center justify-center gap-1.5 py-2.5 px-3 bg-amber-600 hover:bg-amber-700 disabled:bg-slate-300 text-white font-bold rounded-xl text-xs transition shadow-xs cursor-pointer select-none"
+                >
+                  <FileSpreadsheet size={14} />
+                  <span>Export Accounting CSV</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowReportCenterModal(false)}
+                  className="w-full py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer text-center"
+                >
+                  Return to Fees Registry
+                </button>
+              </div>
+            </div>
+
+            {/* Document Preview (Right Column) */}
+            <div className="flex-1 bg-slate-200 p-8 overflow-y-auto flex justify-center items-start">
+              <div 
+                id="report-center-preview-content"
+                className="w-[794px] min-h-[1123px] bg-white border border-slate-300 shadow-xl p-10 relative flex flex-col justify-between text-slate-900 text-xs leading-relaxed"
+              >
+                {/* 1. Student Preview */}
+                {reportCenterType === 'student' && reportCenterSelectedStudent && reportCenterSelectedStudentBill ? (
+                  <div className="space-y-6">
+                    {/* Letterhead */}
+                    <div className="flex items-center justify-between border-b-2 border-slate-800 pb-4">
+                      <div className="flex items-center gap-3 text-left">
+                        {schoolInfo.crestUrl || schoolInfo.logoUrl ? (
+                          <img 
+                            src={schoolInfo.crestUrl || schoolInfo.logoUrl} 
+                            alt="School Crest" 
+                            referrerPolicy="no-referrer"
+                            className="w-14 h-14 object-contain rounded-xl"
+                          />
+                        ) : (
+                          <div className="w-14 h-14 bg-slate-900 text-white rounded-xl flex items-center justify-center font-bold text-xl uppercase">
+                            {schoolInfo.name?.substring(0, 2) || 'SC'}
+                          </div>
+                        )}
+                        <div>
+                          <h1 className="text-sm font-black uppercase text-slate-900 tracking-tight">{schoolInfo.name || 'GeeTech Academy'}</h1>
+                          <p className="text-[10px] italic font-medium text-slate-500">Motto: "{schoolInfo.motto || 'Excellence and Dignity'}"</p>
+                          <p className="text-[9px] text-slate-400 font-mono mt-0.5">{schoolInfo.gpsAddress || 'Digital Address System'} • GPS</p>
+                        </div>
+                      </div>
+                      <div className="text-right text-[8.5px] font-mono text-slate-500 space-y-0.5">
+                        <p>TEL: {schoolInfo.telephone || '+233 24 556 7780'}</p>
+                        <p>EMAIL: {schoolInfo.email || 'info@school.edu.gh'}</p>
+                        <p className="font-bold">GEN DATE: {new Date().toLocaleDateString()}</p>
+                      </div>
+                    </div>
+
+                    {/* Document Header Title */}
+                    <div className="text-center bg-slate-100 border border-slate-200 py-1.5 rounded-lg">
+                      <h2 className="text-xs font-black uppercase tracking-wider text-slate-800">
+                        OFFICIAL STUDENT FEES LEDGER STATEMENT
+                      </h2>
+                      <p className="text-[9px] text-slate-500 font-semibold font-mono mt-0.5">
+                        Academic Cycle: {selectedTerm} ({selectedAcademicYear})
+                      </p>
+                    </div>
+
+                    {/* Meta grid */}
+                    <div className="grid grid-cols-2 gap-4 bg-slate-50 p-3 rounded-xl border border-slate-150 text-[11px] text-left">
+                      <div className="space-y-0.5">
+                        <span className="text-[8px] uppercase tracking-wider text-slate-400 font-bold block">Student Particulars</span>
+                        <p className="font-bold text-slate-800">Name: <span className="capitalize">{reportCenterSelectedStudent.firstName} {reportCenterSelectedStudent.lastName}</span></p>
+                        <p className="font-mono">ID: <span className="font-bold">{reportCenterSelectedStudent.id}</span></p>
+                        <p>Class: <span className="font-semibold">{reportCenterSelectedStudent.class}</span></p>
+                      </div>
+                      <div className="space-y-0.5">
+                        <span className="text-[8px] uppercase tracking-wider text-slate-400 font-bold block">Parent/Guardian Details</span>
+                        <p className="font-bold text-slate-800">Guardian: <span className="capitalize">{reportCenterSelectedStudent.guardianName || 'N/A'}</span></p>
+                        <p className="font-mono">Contact: {reportCenterSelectedStudent.guardianTelephone || 'N/A'}</p>
+                        <p>Email: <span className="font-mono text-[10px]">{reportCenterSelectedStudent.guardianEmail || 'N/A'}</span></p>
+                      </div>
+                    </div>
+
+                    {/* Bills table */}
+                    <div className="space-y-2 text-left">
+                      <h3 className="text-[9px] font-bold text-slate-500 uppercase tracking-widest pl-1">I. Itemized Bills Allocation</h3>
+                      <div className="border border-slate-300 rounded-lg overflow-hidden">
+                        <table className="w-full text-left border-collapse text-[10px]">
+                          <thead>
+                            <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-300 text-[9px]">
+                              <th className="p-2">Levy Category Component</th>
+                              <th className="p-2 text-right">Debit Expected (GHS)</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-200">
+                            <tr>
+                              <td className="p-2">Standard School Tuition Fees</td>
+                              <td className="p-2 text-right font-mono text-slate-800 font-semibold">GHS {reportCenterSelectedStudentBill.schoolFees.toFixed(2)}</td>
+                            </tr>
+                            <tr>
+                              <td className="p-2">Facility & Utility Maintenance Levy</td>
+                              <td className="p-2 text-right font-mono text-slate-800 font-semibold">GHS {reportCenterSelectedStudentBill.utilityBill.toFixed(2)}</td>
+                            </tr>
+                            <tr>
+                              <td className="p-2">Sports Development Dues Allocation</td>
+                              <td className="p-2 text-right font-mono text-slate-800 font-semibold">GHS {reportCenterSelectedStudentBill.sportsFees.toFixed(2)}</td>
+                            </tr>
+                            <tr>
+                              <td className="p-2">PTA Annual Dues Allocation</td>
+                              <td className="p-2 text-right font-mono text-slate-800 font-semibold">GHS {reportCenterSelectedStudentBill.ptaDues.toFixed(2)}</td>
+                            </tr>
+                            {reportCenterSelectedStudentBill.transportationBill > 0 && (
+                              <tr>
+                                <td className="p-2">Transportation Bill Allocation</td>
+                                <td className="p-2 text-right font-mono text-slate-800 font-semibold">GHS {reportCenterSelectedStudentBill.transportationBill.toFixed(2)}</td>
+                              </tr>
+                            )}
+                            {reportCenterSelectedStudentBill.otherFee > 0 && (
+                              <tr>
+                                <td className="p-2">Miscellaneous Fee ({reportCenterSelectedStudentBill.otherFeeDescription || 'Other'})</td>
+                                <td className="p-2 text-right font-mono text-slate-800 font-semibold">GHS {reportCenterSelectedStudentBill.otherFee.toFixed(2)}</td>
+                              </tr>
+                            )}
+                            <tr className="bg-slate-50 font-bold border-t border-slate-300">
+                              <td className="p-2 font-bold text-slate-800 uppercase text-[9px]">Total Expected Billings:</td>
+                              <td className="p-2 text-right font-mono font-bold text-slate-900">GHS {reportCenterSelectedStudentStats.expected.toFixed(2)}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    {/* Credit installments table */}
+                    <div className="space-y-2 text-left">
+                      <h3 className="text-[9px] font-bold text-slate-500 uppercase tracking-widest pl-1">II. Credited Installments Received</h3>
+                      <div className="border border-slate-300 rounded-lg overflow-hidden">
+                        <table className="w-full text-left border-collapse text-[10px]">
+                          <thead>
+                            <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-300 text-[9px]">
+                              <th className="p-1.5 pl-2">Payment Date</th>
+                              <th className="p-1.5">Receipt Code</th>
+                              <th className="p-1.5">Allocated Item</th>
+                              <th className="p-1.5">Method</th>
+                              <th className="p-1.5 text-right pr-2">Amount Paid (GHS)</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-200">
+                            {reportCenterSelectedStudentBill.payments.length === 0 ? (
+                              <tr>
+                                <td colSpan={5} className="p-4 text-center text-slate-400 italic font-mono text-[9px]">
+                                  No fee payments recorded for this academic term cycle yet.
+                                </td>
+                              </tr>
+                            ) : (
+                              reportCenterSelectedStudentBill.payments.map(p => (
+                                <tr key={p.id} className="hover:bg-slate-50">
+                                  <td className="p-1.5 pl-2 font-mono">{p.date}</td>
+                                  <td className="p-1.5 font-mono font-semibold">{p.receiptNo}</td>
+                                  <td className="p-1.5 capitalize">{p.component}</td>
+                                  <td className="p-1.5">{p.method}</td>
+                                  <td className="p-1.5 text-right pr-2 font-mono font-semibold text-emerald-700">GHS {p.amount.toFixed(2)}</td>
+                                </tr>
+                              ))
+                            )}
+                            <tr className="bg-slate-50 font-bold border-t border-slate-300">
+                              <td colSpan={4} className="p-1.5 pl-2 text-right font-bold text-slate-800 uppercase text-[8.5px]">Total Payments Received:</td>
+                              <td className="p-1.5 text-right pr-2 font-mono font-bold text-emerald-700">GHS {reportCenterSelectedStudentStats.paid.toFixed(2)}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    {/* Balance panel */}
+                    <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl flex justify-between items-center">
+                      <div className="text-left">
+                        <h3 className="text-[10px] font-black uppercase text-slate-900 tracking-tight">OUTSTANDING ARREARS BALANCE DUE</h3>
+                        <p className="text-[8.5px] text-slate-400 font-mono">Status check: {reportCenterSelectedStudentStats.bal <= 0 ? 'CLEARED' : 'PENDING SETTLEMENT'}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className={`text-base font-black font-mono ${reportCenterSelectedStudentStats.bal > 0 ? 'text-rose-600' : 'text-emerald-700'}`}>
+                          GHS {reportCenterSelectedStudentStats.bal.toFixed(2)}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Verification */}
+                    <div className="flex justify-between items-end text-[9px] border-t border-slate-200 pt-4 shrink-0">
+                      <div className="flex items-center gap-2">
+                        <div className="p-0.5 bg-white border border-slate-200 rounded-md shrink-0">
+                          <QRCodeSVG 
+                            value={`${window.location.origin}/?tab=fees&studentId=${reportCenterSelectedStudent.id}`}
+                            size={36} 
+                            level="M" 
+                          />
+                        </div>
+                        <div className="text-left space-y-0.5">
+                          <p className="text-slate-400 text-[8px] uppercase font-bold tracking-tighter">Verification</p>
+                          <p className="text-[8px] text-slate-500 leading-tight">Scan QR to verify official school ledger standing.</p>
+                        </div>
+                      </div>
+
+                      {/* Signature Area */}
+                      <div className="text-center relative">
+                        {schoolInfo.signatureUrl && (
+                          <img 
+                            src={schoolInfo.signatureUrl} 
+                            alt="Signature" 
+                            referrerPolicy="no-referrer"
+                            className="w-16 h-8 absolute -top-5 left-1/2 -translate-x-1/2 object-contain pointer-events-none opacity-80 animate-none"
+                          />
+                        )}
+                        {schoolInfo.stampUrl && (
+                          <img 
+                            src={schoolInfo.stampUrl} 
+                            alt="Stamp Seal" 
+                            referrerPolicy="no-referrer"
+                            className="w-10 h-10 absolute -top-7 -right-3 object-contain pointer-events-none opacity-70 animate-none"
+                          />
+                        )}
+                        <span className="block italic text-[9.5px] text-slate-800 font-bold border-t border-slate-400 border-dashed pt-1 min-w-[140px]">
+                          {schoolInfo.headteacherName || 'Principal headteacher'}
+                        </span>
+                        <span className="block text-[7.5px] uppercase tracking-wider text-slate-400 mt-0.5">Authorized Seal / Signature</span>
+                      </div>
+                    </div>
+                  </div>
+                ) : reportCenterType === 'student' ? (
+                  <div className="flex flex-col items-center justify-center flex-1 h-full py-20 text-slate-400 italic gap-2">
+                    <User size={36} className="opacity-50" />
+                    <p>Please select a student from the left sidebar to preview statement</p>
+                  </div>
+                ) : null}
+
+                {/* 2. Class Preview */}
+                {reportCenterType === 'class' && (
+                  <div className="space-y-6">
+                    {/* Letterhead */}
+                    <div className="flex items-center justify-between border-b-2 border-slate-800 pb-4">
+                      <div className="flex items-center gap-3 text-left">
+                        {schoolInfo.crestUrl || schoolInfo.logoUrl ? (
+                          <img 
+                            src={schoolInfo.crestUrl || schoolInfo.logoUrl} 
+                            alt="School Crest" 
+                            referrerPolicy="no-referrer"
+                            className="w-14 h-14 object-contain rounded-xl"
+                          />
+                        ) : (
+                          <div className="w-14 h-14 bg-slate-900 text-white rounded-xl flex items-center justify-center font-bold text-xl uppercase">
+                            {schoolInfo.name?.substring(0, 2) || 'SC'}
+                          </div>
+                        )}
+                        <div>
+                          <h1 className="text-sm font-black uppercase text-slate-900 tracking-tight">{schoolInfo.name || 'GeeTech Academy'}</h1>
+                          <p className="text-[10px] italic font-medium text-slate-500">Motto: "{schoolInfo.motto || 'Excellence and Dignity'}"</p>
+                          <p className="text-[9px] text-slate-400 font-mono mt-0.5">{schoolInfo.gpsAddress || 'Digital Address System'} • GPS</p>
+                        </div>
+                      </div>
+                      <div className="text-right text-[8.5px] font-mono text-slate-500 space-y-0.5">
+                        <p>TEL: {schoolInfo.telephone || '+233 24 556 7780'}</p>
+                        <p>EMAIL: {schoolInfo.email || 'info@school.edu.gh'}</p>
+                        <p className="font-bold">GEN DATE: {new Date().toLocaleDateString()}</p>
+                      </div>
+                    </div>
+
+                    {/* Title */}
+                    <div className="text-center bg-slate-100 border border-slate-200 py-1.5 rounded-lg">
+                      <h2 className="text-xs font-black uppercase tracking-wider text-slate-800">
+                        CLASS TERMINAL FEES COMPLIANCE LEDGER
+                      </h2>
+                      <p className="text-[9px] text-slate-500 font-semibold font-mono mt-0.5">
+                        Class Division: {reportCenterSelectedClass} • Academic Year: {selectedAcademicYear} • Term: {selectedTerm}
+                      </p>
+                    </div>
+
+                    {/* Quick stats panel */}
+                    <div className="grid grid-cols-4 gap-2 text-center text-[10px]">
+                      <div className="p-2 bg-slate-50 border border-slate-200 rounded-lg">
+                        <p className="text-slate-400 font-bold uppercase text-[7.5px] tracking-tight">Billed Students</p>
+                        <p className="text-sm font-bold text-slate-800 mt-0.5">{reportCenterClassData.list.length}</p>
+                      </div>
+                      <div className="p-2 bg-slate-50 border border-slate-200 rounded-lg">
+                        <p className="text-slate-400 font-bold uppercase text-[7.5px] tracking-tight">Total Expected</p>
+                        <p className="text-sm font-bold text-slate-800 mt-0.5 font-mono">GHS {reportCenterClassData.totalExpected.toFixed(0)}</p>
+                      </div>
+                      <div className="p-2 bg-slate-50 border border-slate-200 rounded-lg">
+                        <p className="text-slate-400 font-bold uppercase text-[7.5px] tracking-tight">Total Collected</p>
+                        <p className="text-sm font-bold text-emerald-700 mt-0.5 font-mono">GHS {reportCenterClassData.totalPaid.toFixed(0)}</p>
+                      </div>
+                      <div className="p-2 bg-slate-50 border border-slate-200 rounded-lg">
+                        <p className="text-slate-400 font-bold uppercase text-[7.5px] tracking-tight">Total Outstanding</p>
+                        <p className="text-sm font-bold text-rose-600 mt-0.5 font-mono">GHS {reportCenterClassData.totalOwed.toFixed(0)}</p>
+                      </div>
+                    </div>
+
+                    {/* Detail list table */}
+                    <div className="border border-slate-300 rounded-lg overflow-hidden text-left">
+                      <table className="w-full text-left border-collapse text-[10px]">
+                        <thead>
+                          <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-300 text-[8.5px] uppercase">
+                            <th className="p-2 text-center w-8">#</th>
+                            <th className="p-2">Student ID</th>
+                            <th className="p-2">Full Student Name</th>
+                            <th className="p-2 text-right">Expected Fees</th>
+                            <th className="p-2 text-right">Paid To-Date</th>
+                            <th className="p-2 text-right">Arrears Due</th>
+                            <th className="p-2 text-center w-24">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200">
+                          {reportCenterClassData.list.length === 0 ? (
+                            <tr>
+                              <td colSpan={7} className="p-6 text-center text-slate-400 italic font-mono text-[9.5px]">
+                                No registered students found billed under this class category currently.
+                              </td>
+                            </tr>
+                          ) : (
+                            reportCenterClassData.list.map((item, idx) => (
+                              <tr key={item.student.id} className="hover:bg-slate-50">
+                                <td className="p-1.5 text-center text-slate-400 font-mono font-medium">{idx + 1}</td>
+                                <td className="p-1.5 font-mono font-semibold text-slate-600">{item.student.id}</td>
+                                <td className="p-1.5 font-bold uppercase text-slate-900">{item.student.firstName} {item.student.lastName}</td>
+                                <td className="p-1.5 text-right font-mono text-slate-600">GHS {item.expected.toFixed(1)}</td>
+                                <td className="p-1.5 text-right font-mono text-emerald-600">GHS {item.paid.toFixed(1)}</td>
+                                <td className={`p-1.5 text-right font-mono font-bold ${item.owed > 0 ? 'text-rose-600' : 'text-emerald-700'}`}>
+                                  GHS {item.owed.toFixed(1)}
+                                </td>
+                                <td className="p-1.5 text-center">
+                                  <span className={`inline-block px-1.5 py-0.5 rounded text-[7.5px] font-extrabold tracking-wide uppercase border ${
+                                    item.owed <= 0 ? 'bg-emerald-50 text-emerald-800 border-emerald-200' :
+                                    item.paid > 0 ? 'bg-amber-50 text-amber-800 border-amber-200' :
+                                    'bg-rose-50 text-rose-800 border-rose-200'
+                                  }`}>
+                                    {item.owed <= 0 ? 'Cleared' : item.paid > 0 ? 'Partial' : 'No Payment'}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                          <tr className="bg-slate-100 font-extrabold border-t border-slate-300 text-[9.5px]">
+                            <td colSpan={3} className="p-2 text-right uppercase text-slate-800">Class Cumulative Totals:</td>
+                            <td className="p-2 text-right font-mono">GHS {reportCenterClassData.totalExpected.toFixed(1)}</td>
+                            <td className="p-2 text-right font-mono text-emerald-700">GHS {reportCenterClassData.totalPaid.toFixed(1)}</td>
+                            <td className="p-2 text-right font-mono text-rose-600">GHS {reportCenterClassData.totalOwed.toFixed(1)}</td>
+                            <td className="p-2 text-center">
+                              <span className="text-[8px] bg-slate-200 text-slate-800 px-1.5 py-0.5 rounded font-black">
+                                {reportCenterClassData.totalExpected > 0 ? Math.round((reportCenterClassData.totalPaid / reportCenterClassData.totalExpected) * 100) : 0}% COLL.
+                              </span>
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Signature area */}
+                    <div className="pt-8 border-t border-slate-200 flex justify-between items-end text-left text-[9px] shrink-0">
+                      <div className="space-y-1 text-slate-400 font-mono text-[7.5px]">
+                        <p>Class ledger generated by school fees registry</p>
+                        <p>Compliance cycle: {selectedTerm} ({selectedAcademicYear})</p>
+                      </div>
+                      <div className="text-center relative">
+                        {schoolInfo.signatureUrl && (
+                          <img 
+                            src={schoolInfo.signatureUrl} 
+                            alt="Signature" 
+                            referrerPolicy="no-referrer"
+                            className="w-16 h-8 absolute -top-5 left-1/2 -translate-x-1/2 object-contain pointer-events-none opacity-80 animate-none"
+                          />
+                        )}
+                        {schoolInfo.stampUrl && (
+                          <img 
+                            src={schoolInfo.stampUrl} 
+                            alt="Stamp Seal" 
+                            referrerPolicy="no-referrer"
+                            className="w-10 h-10 absolute -top-7 -right-3 object-contain pointer-events-none opacity-70 animate-none"
+                          />
+                        )}
+                        <span className="block italic text-[9.5px] text-slate-800 font-bold border-t border-slate-400 border-dashed pt-1 min-w-[140px]">
+                          {schoolInfo.headteacherName || 'Principal headteacher'}
+                        </span>
+                        <span className="block text-[7.5px] uppercase tracking-wider text-slate-400 mt-0.5">Authorized Seal / Signature</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 3. School Preview */}
+                {reportCenterType === 'school' && (
+                  <div className="space-y-6">
+                    {/* Letterhead */}
+                    <div className="flex items-center justify-between border-b-2 border-slate-800 pb-4">
+                      <div className="flex items-center gap-3 text-left">
+                        {schoolInfo.crestUrl || schoolInfo.logoUrl ? (
+                          <img 
+                            src={schoolInfo.crestUrl || schoolInfo.logoUrl} 
+                            alt="School Crest" 
+                            referrerPolicy="no-referrer"
+                            className="w-14 h-14 object-contain rounded-xl"
+                          />
+                        ) : (
+                          <div className="w-14 h-14 bg-slate-900 text-white rounded-xl flex items-center justify-center font-bold text-xl uppercase">
+                            {schoolInfo.name?.substring(0, 2) || 'SC'}
+                          </div>
+                        )}
+                        <div>
+                          <h1 className="text-sm font-black uppercase text-slate-900 tracking-tight">{schoolInfo.name || 'GeeTech Academy'}</h1>
+                          <p className="text-[10px] italic font-medium text-slate-500">Motto: "{schoolInfo.motto || 'Excellence and Dignity'}"</p>
+                          <p className="text-[9px] text-slate-400 font-mono mt-0.5">{schoolInfo.gpsAddress || 'Digital Address System'} • GPS</p>
+                        </div>
+                      </div>
+                      <div className="text-right text-[8.5px] font-mono text-slate-500 space-y-0.5">
+                        <p>TEL: {schoolInfo.telephone || '+233 24 556 7780'}</p>
+                        <p>EMAIL: {schoolInfo.email || 'info@school.edu.gh'}</p>
+                        <p className="font-bold">GEN DATE: {new Date().toLocaleDateString()}</p>
+                      </div>
+                    </div>
+
+                    {/* Title */}
+                    <div className="text-center bg-slate-100 border border-slate-200 py-1.5 rounded-lg">
+                      <h2 className="text-xs font-black uppercase tracking-wider text-slate-800">
+                        COMPREHENSIVE CAMPUS-WIDE FEES DIRECTORY
+                      </h2>
+                      <p className="text-[9px] text-slate-500 font-semibold font-mono mt-0.5">
+                        Executive Accounts Summary • Academic Year: {selectedAcademicYear} • Cycle: {selectedTerm}
+                      </p>
+                    </div>
+
+                    {/* Metrics Cards */}
+                    <div className="grid grid-cols-4 gap-3 text-left">
+                      <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                        <p className="text-[8px] uppercase tracking-wider text-slate-400 font-bold">Expected Revenue</p>
+                        <p className="text-sm font-black font-mono text-slate-800 mt-1">GHS {reportCenterSchoolData.overallExpected.toLocaleString('en-US', { minimumFractionDigits: 1 })}</p>
+                      </div>
+                      <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                        <p className="text-[8px] uppercase tracking-wider text-slate-400 font-bold">Total Collection</p>
+                        <p className="text-sm font-black font-mono text-emerald-700 mt-1">GHS {reportCenterSchoolData.overallPaid.toLocaleString('en-US', { minimumFractionDigits: 1 })}</p>
+                      </div>
+                      <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                        <p className="text-[8px] uppercase tracking-wider text-slate-400 font-bold">Outstanding Arrears</p>
+                        <p className="text-sm font-black font-mono text-rose-600 mt-1">GHS {reportCenterSchoolData.overallOwed.toLocaleString('en-US', { minimumFractionDigits: 1 })}</p>
+                      </div>
+                      <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                        <p className="text-[8px] uppercase tracking-wider text-slate-400 font-bold">Collection Efficiency</p>
+                        <p className="text-sm font-black font-mono text-indigo-700 mt-1">{reportCenterSchoolData.overallRate}%</p>
+                      </div>
+                    </div>
+
+                    {/* Class divisions summary */}
+                    <div className="space-y-2 text-left">
+                      <h3 className="text-[9px] font-bold text-slate-500 uppercase tracking-widest pl-1">I. Class Divisional Ledger Aggregates</h3>
+                      <div className="border border-slate-300 rounded-lg overflow-hidden font-sans">
+                        <table className="w-full text-left border-collapse text-[10px]">
+                          <thead>
+                            <tr className="bg-slate-100 text-slate-700 font-bold border-b border-slate-300 text-[8.5px] uppercase">
+                              <th className="p-2">Class Name</th>
+                              <th className="p-2 text-center">Billed Registries</th>
+                              <th className="p-2 text-right">Expected Revenue</th>
+                              <th className="p-2 text-right">Total Collected</th>
+                              <th className="p-2 text-right">Outstanding Arrears</th>
+                              <th className="p-2 text-right">Rate (%)</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-200">
+                            {reportCenterSchoolData.classStats.length === 0 ? (
+                              <tr>
+                                <td colSpan={6} className="p-4 text-center text-slate-400 italic font-mono text-[9.5px]">
+                                  No student billing records found on this academic cycle yet.
+                                </td>
+                              </tr>
+                            ) : (
+                              reportCenterSchoolData.classStats.map(s => (
+                                <tr key={s.class} className="hover:bg-slate-50 font-medium">
+                                  <td className="p-2 font-bold text-slate-800">{s.class}</td>
+                                  <td className="p-2 text-center font-mono">{s.count} students</td>
+                                  <td className="p-2 text-right font-mono text-slate-600">GHS {s.totalExpected.toLocaleString('en-US', { minimumFractionDigits: 1 })}</td>
+                                  <td className="p-2 text-right font-mono text-emerald-600">GHS {s.totalPaid.toLocaleString('en-US', { minimumFractionDigits: 1 })}</td>
+                                  <td className={`p-2 text-right font-mono font-bold ${s.totalOwed > 0 ? 'text-rose-600' : 'text-emerald-700'}`}>
+                                    GHS {s.totalOwed.toLocaleString('en-US', { minimumFractionDigits: 1 })}
+                                  </td>
+                                  <td className="p-2 text-right font-mono text-indigo-700 font-bold">{s.rate}%</td>
+                                </tr>
+                              ))
+                            )}
+                            <tr className="bg-slate-100 font-black border-t-2 border-slate-300 text-[10px]">
+                              <td className="p-2 text-slate-800 uppercase">TOTAL SUMMATIONS:</td>
+                              <td className="p-2 text-center font-mono text-indigo-700">{students.length} billed</td>
+                              <td className="p-2 text-right font-mono">GHS {reportCenterSchoolData.overallExpected.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                              <td className="p-2 text-right font-mono text-emerald-700">GHS {reportCenterSchoolData.overallPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                              <td className="p-2 text-right font-mono text-rose-600">GHS {reportCenterSchoolData.overallOwed.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                              <td className="p-2 text-right font-mono text-indigo-700">{reportCenterSchoolData.overallRate}%</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    {/* Signature block */}
+                    <div className="pt-8 border-t border-slate-200 flex justify-between items-end text-left text-[9px] shrink-0">
+                      <div className="space-y-1 text-slate-400 font-mono text-[7.5px]">
+                        <p>Official School Campus Financial Directory</p>
+                        <p>Generated by administrative ledger portal</p>
+                      </div>
+                      <div className="text-center relative">
+                        {schoolInfo.signatureUrl && (
+                          <img 
+                            src={schoolInfo.signatureUrl} 
+                            alt="Signature" 
+                            referrerPolicy="no-referrer"
+                            className="w-16 h-8 absolute -top-5 left-1/2 -translate-x-1/2 object-contain pointer-events-none opacity-80 animate-none"
+                          />
+                        )}
+                        {schoolInfo.stampUrl && (
+                          <img 
+                            src={schoolInfo.stampUrl} 
+                            alt="Stamp Seal" 
+                            referrerPolicy="no-referrer"
+                            className="w-10 h-10 absolute -top-7 -right-3 object-contain pointer-events-none opacity-70 animate-none"
+                          />
+                        )}
+                        <span className="block italic text-[9.5px] text-slate-800 font-bold border-t border-slate-400 border-dashed pt-1 min-w-[140px]">
+                          {schoolInfo.headteacherName || 'Principal headteacher'}
+                        </span>
+                        <span className="block text-[7.5px] uppercase tracking-wider text-slate-400 mt-0.5">Authorized Seal / Signature</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
     </AnimatePresence>
 
     {/* SECTION DATA CONTROLS */}
@@ -2850,25 +4459,25 @@ export default function SchoolFeesTab({
       <p className="text-[10px] text-slate-500 leading-relaxed">
         Manage active payment states, wipe entry fields inside overlays, and purge historical transaction and debit rows associated with this module.
       </p>
-      <div className="flex flex-wrap gap-2.5 pt-1">
+      <div className="flex flex-wrap items-center gap-2.5 pt-1">
         <button
           type="button"
           onClick={handleClearInputs}
-          className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-50 border border-slate-200 text-slate-600 hover:text-slate-850 hover:bg-slate-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs"
+          className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-50 border border-slate-200 text-slate-600 hover:text-slate-850 hover:bg-slate-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs"
         >
-          <Eraser size={13} /> Clear All Inputs
+          <Eraser size={13} /> <span className="hidden sm:inline">Clear All</span> Inputs
         </button>
         <button
           type="button"
           onClick={handleDeleteActiveSelection}
-          className="inline-flex items-center gap-1.5 px-3 py-2 bg-amber-50 border border-amber-200 text-amber-700 hover:text-amber-850 hover:bg-amber-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs"
+          className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-amber-50 border border-amber-200 text-amber-700 hover:text-amber-850 hover:bg-amber-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs"
         >
-          <RotateCcw size={13} /> Delete Selected Student Fees Ledger
+          <RotateCcw size={13} /> <span className="hidden sm:inline">Delete Selected</span> Ledger
         </button>
         <button
           type="button"
           onClick={handleDeleteAllFees}
-          className="inline-flex items-center gap-1.5 px-3 py-2 bg-rose-50 border border-rose-200 text-rose-700 hover:text-rose-850 hover:bg-rose-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs sm:ml-auto"
+          className="w-full sm:w-auto sm:ml-auto inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-rose-50 border border-rose-200 text-rose-700 hover:text-rose-850 hover:bg-rose-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs"
         >
           <Trash2 size={13} /> Delete All Section Data
         </button>
@@ -2965,7 +4574,7 @@ export default function SchoolFeesTab({
             <div className="text-right space-y-1">
               {(() => {
                 const bill = data.bill;
-                const expectedTotal = bill.schoolFees + bill.utilityBill + bill.sportsFees + bill.ptaDues + bill.otherFee;
+                const expectedTotal = bill.schoolFees + bill.utilityBill + bill.sportsFees + bill.ptaDues + (bill.transportationBill || 0) + bill.otherFee;
                 const totalPaid = bill.payments.reduce((sum, p) => sum + p.amount, 0);
                 const outstanding = expectedTotal - totalPaid;
 
@@ -2992,6 +4601,51 @@ export default function SchoolFeesTab({
         </div>
       ))}
     </div>
+
+    {confirmModal && confirmModal.isOpen && (
+      <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 no-print animate-fade-in">
+        <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden text-left p-6 space-y-4 animate-scale-up">
+          <div className="flex items-start gap-3">
+            <div className={`p-2 rounded-xl shrink-0 ${confirmModal.danger ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>
+              <AlertTriangle size={24} className="animate-bounce-slow" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-slate-900 font-sans tracking-tight">
+                {confirmModal.title}
+              </h3>
+              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                {confirmModal.message}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => setConfirmModal(null)}
+              className="flex-1 py-2 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-xl transition cursor-pointer select-none text-center"
+            >
+              {confirmModal.cancelText || 'Cancel'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                confirmModal.onConfirm();
+                setConfirmModal(null);
+              }}
+              className={`flex-1 py-2 px-4 text-white font-bold text-xs rounded-xl transition cursor-pointer select-none text-center ${
+                confirmModal.danger 
+                  ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800' 
+                  : 'bg-amber-600 hover:bg-amber-700 active:bg-amber-800'
+              }`}
+            >
+              {confirmModal.confirmText || 'Confirm'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
     </div>
   );
 }

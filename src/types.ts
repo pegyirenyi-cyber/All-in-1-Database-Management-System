@@ -32,6 +32,7 @@ export interface SchoolInfo {
   licensePrice5Year?: number;
   smsRate?: number;
   crestUrl?: string;
+  schoolId?: string;
 }
 
 export type ClassType =
@@ -143,6 +144,7 @@ export interface Teacher {
   circuit: string;
   photoUrl: string;
   createdAt: string;
+  schoolId?: string;
   email?: string;
   subjectSpecialization?: string;
   assignedClass?: ClassType | 'None';
@@ -300,6 +302,7 @@ export interface UserAccount {
   email: string;
   name: string;
   role: UserRole;
+  schoolId?: string;
   createdAt: string;
   licenseType?: 'trial' | 'activated' | 'unlimited';
   licensePeriod?: number; // Number of years: 1, 2, 3, or 5
@@ -326,7 +329,7 @@ export interface FeePayment {
   id: string; // transaction ID
   amount: number;
   date: string; // YYYY-MM-DD
-  component: 'School Fees' | 'Utility Bill' | 'Sports Fees' | 'PTA dues' | 'Other Fee';
+  component: 'School Fees' | 'Utility Bill' | 'Sports Fees' | 'PTA dues' | 'Transportation Bill' | 'Other Fee';
   method: 'Cash' | 'Mobile Money' | 'Bank Transfer' | 'Cheque';
   receiptNo: string;
   remarks?: string;
@@ -345,6 +348,7 @@ export interface StudentFeeBill {
   utilityBill: number;
   sportsFees: number;
   ptaDues: number;
+  transportationBill: number;
   otherFee: number;
   otherFeeDescription?: string;
   
@@ -504,9 +508,15 @@ export interface TeacherReflection {
   teacherId: string;
   teacherName: string;
   date: string; // YYYY-MM-DD
-  content: string;
-  category: 'Behavior' | 'Learning Progress' | 'General' | 'Other';
+  content: string; // This will now store HTML from rich text editor
+  category: 'Behavior' | 'Learning Progress' | 'General' | 'Other' | 'Weekly Strategy';
+  weeklyStrategyTitle?: string;
+  linkedStudentIds?: string[];
+  linkedAssessmentIds?: string[];
+  performanceSummary?: string; // summary of performance data being reflected on
   class?: ClassType;
+  academicYear: AcademicYearType;
+  term: TermType;
   createdAt: string; // ISO string
 }
 
@@ -516,11 +526,50 @@ export interface AutoBackupConfig {
   lastBackupTime: string | null;
 }
 
+export interface CloudSyncConfig {
+  enabled: boolean;
+  provider: 'Google Drive' | 'Firebase Cloud Storage';
+  interval: 'daily' | 'weekly' | 'monthly';
+  lastSyncTime: string | null;
+  status: 'idle' | 'syncing' | 'success' | 'failed';
+  error?: string;
+}
+
 export interface AutoBackupEntry {
   id: string;
   timestamp: string;
   size: number;
   data: string;
+}
+
+export type DutyType = 
+  | 'Assembly Monitor' 
+  | 'Gate Duty' 
+  | 'Lunch Supervision' 
+  | 'Compound Cleaning' 
+  | 'Prep/Study Supervision' 
+  | 'Grounds Patrol'
+  | 'Other';
+
+export interface DutyAssignment {
+  id: string; // date_teacherId_dutyType
+  date: string; // YYYY-MM-DD
+  teacherId: string;
+  teacherName: string;
+  dutyType: DutyType;
+  remarks?: string;
+  status: 'Pending' | 'Completed' | 'Missed';
+  academicYear: AcademicYearType;
+  term: TermType;
+}
+
+export interface StaffHandbookDocument {
+  id: string;
+  title: string;
+  content: string;
+  category: 'Policy' | 'Mission Statement' | 'Pedagogical Guideline' | 'Other';
+  lastUpdated: string;
+  updatedBy: string;
 }
 
 

@@ -7,8 +7,9 @@ import { AcademicYearType, TermType } from '../types';
 import { 
   Award, Printer, Download, Lock, CheckCircle, AlertTriangle, 
   MessageSquare, FileText, Smartphone, Calendar, BookOpen, 
-  DollarSign, Activity, RefreshCw, CreditCard, Check, X
+  DollarSign, Activity, RefreshCw, CreditCard, Check, X, HelpCircle
 } from 'lucide-react';
+import { RankBreakdownTooltip } from './AssessmentTab';
 
 interface ParentPortalProps {
   studentId: string;
@@ -34,7 +35,7 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentStep, setPaymentStep] = useState<'details' | 'method' | 'processing' | 'momo_otp' | 'success'>('details');
   const [paymentAmount, setPaymentAmount] = useState<number>(0);
-  const [paymentComponent, setPaymentComponent] = useState<'School Fees' | 'Utility Bill' | 'Sports Fees' | 'PTA dues' | 'Other Fee'>('School Fees');
+  const [paymentComponent, setPaymentComponent] = useState<'School Fees' | 'Utility Bill' | 'Sports Fees' | 'PTA dues' | 'Transportation Bill' | 'Other Fee'>('School Fees');
   const [payerName, setPayerName] = useState('');
   const [payerPhone, setPayerPhone] = useState('');
   const [payerEmail, setPayerEmail] = useState('');
@@ -89,7 +90,7 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
     // Find current bill
     const currentBill = bills.find(b => b.studentId === studentId && b.academicYear === year && b.term === term);
     const currentExpected = currentBill 
-      ? (currentBill.schoolFees + currentBill.utilityBill + currentBill.sportsFees + currentBill.ptaDues + currentBill.otherFee)
+      ? (currentBill.schoolFees + currentBill.utilityBill + currentBill.sportsFees + currentBill.ptaDues + (currentBill.transportationBill || 0) + currentBill.otherFee)
       : 0;
     const currentPaid = currentBill
       ? currentBill.payments.reduce((sum, p) => sum + p.amount, 0)
@@ -105,7 +106,7 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
     });
 
     const previousExpected = allPreviousBills.reduce((sum, b) => 
-      sum + (b.schoolFees + b.utilityBill + b.sportsFees + b.ptaDues + b.otherFee), 0);
+      sum + (b.schoolFees + b.utilityBill + b.sportsFees + b.ptaDues + (b.transportationBill || 0) + b.otherFee), 0);
     const previousPaid = allPreviousBills.reduce((sum, b) => 
       sum + b.payments.reduce((pSum, p) => pSum + p.amount, 0), 0);
     const previousOutstanding = Math.max(0, previousExpected - previousPaid);
@@ -132,7 +133,7 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
     let isEstimated = false;
 
     if (nextTermBillObj) {
-      nextTermBillSum = nextTermBillObj.schoolFees + nextTermBillObj.utilityBill + nextTermBillObj.sportsFees + nextTermBillObj.ptaDues + nextTermBillObj.otherFee;
+      nextTermBillSum = nextTermBillObj.schoolFees + nextTermBillObj.utilityBill + nextTermBillObj.sportsFees + nextTermBillObj.ptaDues + (nextTermBillObj.transportationBill || 0) + nextTermBillObj.otherFee;
     } else {
       nextTermBillSum = currentExpected;
       isEstimated = true;
@@ -167,6 +168,7 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
       { name: 'Utility Bill', expected: currentBill ? currentBill.utilityBill : 0, paid: getPaidFor('Utility Bill') },
       { name: 'Sports Fees', expected: currentBill ? currentBill.sportsFees : 0, paid: getPaidFor('Sports Fees') },
       { name: 'PTA dues', expected: currentBill ? currentBill.ptaDues : 0, paid: getPaidFor('PTA dues') },
+      { name: 'Transportation Bill', expected: currentBill ? (currentBill.transportationBill || 0) : 0, paid: getPaidFor('Transportation Bill') },
       { name: 'Other Fee', expected: currentBill ? currentBill.otherFee : 0, paid: getPaidFor('Other Fee') },
     ].map(c => ({
       ...c,
@@ -262,6 +264,7 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
         utilityBill: paymentComponent === 'Utility Bill' ? paymentAmount : 0,
         sportsFees: paymentComponent === 'Sports Fees' ? paymentAmount : 0,
         ptaDues: paymentComponent === 'PTA dues' ? paymentAmount : 0,
+        transportationBill: paymentComponent === 'Transportation Bill' ? paymentAmount : 0,
         otherFee: paymentComponent === 'Other Fee' ? paymentAmount : 0,
         payments: [newPayment],
         createdAt: new Date().toISOString(),
@@ -555,9 +558,17 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
                 <span className="text-[9px] uppercase text-slate-400 font-mono font-medium block">Report Period</span>
                 <strong className="text-slate-800 text-sm font-mono">{term} ({year})</strong>
               </div>
-              <div>
-                <span className="text-[9px] uppercase text-indigo-700 font-mono font-bold block">Class Rank Standing</span>
-                <strong className="text-indigo-900 text-sm font-mono block">{compiledReport.classRank || 'N/A'}</strong>
+              <div className="relative group cursor-help bg-indigo-50/30 p-1.5 rounded-lg border border-indigo-100/50 transition-all hover:bg-indigo-50/80">
+                <span className="text-[9px] uppercase text-indigo-700 font-mono font-bold flex items-center gap-1 select-none">
+                  Class Rank Standing <HelpCircle size={10} className="text-indigo-400" />
+                </span>
+                <strong className="text-indigo-900 text-sm font-mono block mt-0.5">{compiledReport.classRank || 'N/A'}</strong>
+                <RankBreakdownTooltip 
+                  term={term} 
+                  year={year} 
+                  averageScore={compiledReport.averageScore} 
+                  gradedCount={compiledReport.gradedCount} 
+                />
               </div>
               <div>
                 <span className="text-[9px] uppercase text-teal-700 font-mono font-bold block">Reopening Date</span>
@@ -934,6 +945,7 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
                             utilityBill: paymentComponent === 'Utility Bill' ? paymentAmount : 0,
                             sportsFees: paymentComponent === 'Sports Fees' ? paymentAmount : 0,
                             ptaDues: paymentComponent === 'PTA dues' ? paymentAmount : 0,
+                            transportationBill: paymentComponent === 'Transportation Bill' ? paymentAmount : 0,
                             otherFee: paymentComponent === 'Other Fee' ? paymentAmount : 0,
                             payments: [newPayment],
                             createdAt: new Date().toISOString(),

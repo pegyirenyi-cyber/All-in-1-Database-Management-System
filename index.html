@@ -35,6 +35,59 @@
           event.preventDefault();
         }
       }, true);
+
+      // Prevent native browser engine WebSocket connection attempts for Vite HMR
+      (function() {
+        const OriginalWebSocket = window.WebSocket;
+        if (OriginalWebSocket) {
+          window.WebSocket = function(url, protocols) {
+            const urlStr = String(url || '');
+            if (urlStr.includes('/vite') || urlStr.includes('localhost') || urlStr.includes('127.0.0.1')) {
+              // Return a stub WebSocket that mimics a connecting and closing socket without an actual network request
+              const mockWS = {
+                url: urlStr,
+                readyState: 0, // CONNECTING
+                bufferedAmount: 0,
+                extensions: "",
+                protocol: protocols || "",
+                binaryType: "blob",
+                onopen: null,
+                onerror: null,
+                onclose: null,
+                onmessage: null,
+                addEventListener: function(type, listener) {
+                  if (type === 'close') this.onclose = listener;
+                  if (type === 'error') this.onerror = listener;
+                  if (type === 'open') this.onopen = listener;
+                  if (type === 'message') this.onmessage = listener;
+                },
+                removeEventListener: function() {},
+                send: function() {},
+                close: function() {
+                  this.readyState = 3; // CLOSED
+                  if (typeof this.onclose === 'function') {
+                    this.onclose({ code: 1000, reason: "HMR Disabled", wasClean: true });
+                  }
+                }
+              };
+              setTimeout(() => {
+                // Transition cleanly to closed without triggering any error events
+                mockWS.readyState = 3;
+                if (typeof mockWS.onclose === 'function') {
+                  mockWS.onclose({ code: 1000, reason: "HMR Disabled", wasClean: true });
+                }
+              }, 100);
+              return mockWS;
+            }
+            return new OriginalWebSocket(url, protocols);
+          };
+          window.WebSocket.prototype = OriginalWebSocket.prototype;
+          window.WebSocket.CONNECTING = 0;
+          window.WebSocket.OPEN = 1;
+          window.WebSocket.CLOSING = 2;
+          window.WebSocket.CLOSED = 3;
+        }
+      })();
     </script>
   </head>
   <body>

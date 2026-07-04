@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, FormEvent, ChangeEvent } from 'react';
-import { ThemeType, UserRole, PaystackPayment, WebAuthnCredential, ActivityLog, CLASSES, ClassType, AttendanceRecord, StudentAssessment, AutoBackupConfig, AutoBackupEntry } from '../types';
+import { ThemeType, UserRole, PaystackPayment, WebAuthnCredential, ActivityLog, CLASSES, ClassType, AttendanceRecord, StudentAssessment, AutoBackupConfig, AutoBackupEntry, CloudSyncConfig } from '../types';
 import { DbController } from '../db';
 import { THEME_CONFIGS, ThemeStyles } from './ThemeWrapper';
 import { generateActivationCode, evaluateSubscription } from '../subscription';
@@ -7,7 +7,8 @@ import PaystackPaymentTrigger from './PaystackPaymentTrigger';
 import { 
   Palette, Smartphone, Save, CheckCircle2, ShieldCheck, UserPlus, FileSliders, Laptop, Lock, Mail,
   Database, Download, Upload, AlertTriangle, Trash2, ShieldAlert, X, Sun, Moon, Key, CreditCard, Sparkles, HelpCircle, AlertCircle, Check,
-  Fingerprint, RefreshCw, History, ArrowUpCircle, Filter, ClipboardCheck, ArrowUpDown, Users, UserCheck, Wrench
+  Fingerprint, RefreshCw, History, ArrowUpCircle, Filter, ClipboardCheck, ArrowUpDown, Users, UserCheck, Wrench,
+  Hash, Link
 } from 'lucide-react';
 
 interface Props {
@@ -16,8 +17,8 @@ interface Props {
   isAutoSave: boolean;
   onAutoSaveToggle: (active: boolean) => void;
   onRefresh: () => void;
-  settingsSubTab?: 'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers';
-  setSettingsSubTab?: (tab: 'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers') => void;
+  settingsSubTab?: 'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers' | 'security';
+  setSettingsSubTab?: (tab: 'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers' | 'security') => void;
 }
 
 export default function SettingsTab({ 
@@ -32,6 +33,17 @@ export default function SettingsTab({
   const [activeTheme, setActiveTheme] = useState<ThemeType>(theme.name);
   const [autoSaveActive, setAutoSaveActive] = useState<boolean>(isAutoSave);
   const [saveStatus, setSaveStatus] = useState(false);
+
+  // Custom Confirmation Dialog State
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmText?: string;
+    cancelText?: string;
+    danger?: boolean;
+    onConfirm: () => void;
+  } | null>(null);
 
   const [lastLightTheme, setLastLightTheme] = useState<ThemeType>(() => {
     const saved = DbController.getSystemSettings();
@@ -57,7 +69,7 @@ export default function SettingsTab({
   const [copiedSuccess, setCopiedSuccess] = useState(false);
 
   // Sub-tabs state inside System Controls (SettingsTab)
-  const [settingsSubTabState, setSettingsSubTabState] = useState<'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers'>('general');
+  const [settingsSubTabState, setSettingsSubTabState] = useState<'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers' | 'security'>('general');
   const settingsSubTab = propSettingsSubTab !== undefined ? propSettingsSubTab : settingsSubTabState;
   const setSettingsSubTab = propSetSettingsSubTab !== undefined ? propSetSettingsSubTab : setSettingsSubTabState;
   const [teachersList, setTeachersList] = useState(() => DbController.getTeachers());
@@ -65,6 +77,7 @@ export default function SettingsTab({
   const [teacherSaveStatus, setTeacherSaveStatus] = useState(false);
   const [selectedLicenseTier, setSelectedLicenseTier] = useState<'1year' | '2year' | '3year' | '5year'>('1year');
   const [subscriptionSuccess, setSubscriptionSuccess] = useState(false);
+  const [systemSettings, setSystemSettings] = useState(() => DbController.getSystemSettings());
 
   // Dynamic licensing pricing states
   const [school, setSchool] = useState(() => DbController.getSchoolInfo());
@@ -112,6 +125,70 @@ export default function SettingsTab({
   const [autoBackupsList, setAutoBackupsList] = useState<AutoBackupEntry[]>(() => {
     return DbController.getAutoBackups();
   });
+
+  // --- SCHEDULED CLOUD SYNC STATE ---
+  const [cloudSyncConfig, setCloudSyncConfig] = useState<CloudSyncConfig>(() => {
+    return DbController.getCloudSyncConfig();
+  });
+
+  const [specialSchoolId, setSpecialSchoolId] = useState(school.schoolId || '');
+
+  const handleUpdateSchoolId = async () => {
+    if (!specialSchoolId.trim()) {
+      alert("Please enter a valid School ID or generate one.");
+      return;
+    }
+    
+    if (window.confirm("Changing the Special School ID will re-route your database connectivity to a different partition. Are you sure?")) {
+      await DbController.updateSchoolId(specialSchoolId.trim());
+      const updatedSchool = DbController.getSchoolInfo();
+      setSchool(updatedSchool);
+      setSpecialSchoolId(updatedSchool.schoolId || '');
+      setImportSuccess("✓ Special School ID linked successfully! Database re-routed.");
+      setTimeout(() => setImportSuccess(''), 5000);
+    }
+  };
+
+  const handleGenerateSchoolId = () => {
+    const newId = DbController.generateSpecialSchoolId();
+    setSpecialSchoolId(newId);
+  };
+
+  const handleToggleCloudSync = (enabled: boolean) => {
+    const updated = { ...cloudSyncConfig, enabled };
+    DbController.saveCloudSyncConfig(updated);
+    setCloudSyncConfig(updated);
+    
+    DbController.writeActivityLog(
+      'Cloud Sync Preference Modified',
+      `Scheduled Cloud Sync set to: ${enabled ? 'ENABLED' : 'DISABLED'}.`,
+      'medium'
+    );
+  };
+
+  const handleCloudSyncProviderChange = (provider: 'Google Drive' | 'Firebase Cloud Storage') => {
+    const updated = { ...cloudSyncConfig, provider };
+    DbController.saveCloudSyncConfig(updated);
+    setCloudSyncConfig(updated);
+  };
+
+  const handleCloudSyncIntervalChange = (interval: 'daily' | 'weekly' | 'monthly') => {
+    const updated = { ...cloudSyncConfig, interval };
+    DbController.saveCloudSyncConfig(updated);
+    setCloudSyncConfig(updated);
+  };
+
+  const handleTriggerCloudSyncNow = async () => {
+    const result = await DbController.performCloudSync();
+    setCloudSyncConfig(DbController.getCloudSyncConfig());
+    if (result.success) {
+      setImportSuccess(`✓ Successfully synced database to ${cloudSyncConfig.provider}!`);
+      setTimeout(() => setImportSuccess(''), 5000);
+    } else {
+      setImportError(`Cloud Sync failed: ${result.error}`);
+      setTimeout(() => setImportError(''), 5000);
+    }
+  };
 
   const handleToggleAutoBackup = (enabled: boolean) => {
     const updated = { ...autoBackupConfig, enabled };
@@ -274,15 +351,34 @@ export default function SettingsTab({
     const errors: string[] = [];
     let repairableCount = 0;
 
-    // 1. Audit Students
+    // 1. Audit Students (Invalids and Duplicates)
+    const seenStudentIds = new Set<string>();
+    const seenStudentNames = new Set<string>();
+    
     students.forEach(s => {
+      // Invalid records
       if (!s.id || !s.firstName || !s.lastName || !s.class) {
         errors.push(`[Student] Missing critical fields: ID ${s.id || 'N/A'}, Name "${s.firstName || ''} ${s.lastName || ''}"`);
         repairableCount++;
       }
+      
+      // Duplicates by ID
+      if (s.id && seenStudentIds.has(s.id)) {
+        errors.push(`[Student] Duplicate ID detected: ${s.id} (Name: ${s.firstName} ${s.lastName})`);
+        repairableCount++;
+      }
+      if (s.id) seenStudentIds.add(s.id);
+
+      // Potential Duplicates by Name and Class (soft check)
+      const fullNameClass = `${s.firstName?.toLowerCase()}|${s.lastName?.toLowerCase()}|${s.class}`;
+      if (s.firstName && s.lastName && s.class && seenStudentNames.has(fullNameClass)) {
+        errors.push(`[Student] Possible duplicate name/class: ${s.firstName} ${s.lastName} in ${s.class}`);
+        repairableCount++;
+      }
+      seenStudentNames.add(fullNameClass);
     });
 
-    // 2. Audit Attendance
+    // 2. Audit Attendance (Orphans)
     attendance.forEach(a => {
       if (!students.find(s => s.id === a.studentId)) {
         errors.push(`[Attendance] Orphaned record: Student ID ${a.studentId} not found in student list`);
@@ -290,7 +386,7 @@ export default function SettingsTab({
       }
     });
 
-    // 3. Audit Assessments
+    // 3. Audit Assessments (Orphans and Invalids)
     assessments.forEach(ass => {
       const studentExists = students.find(s => s.id === ass.studentId);
       if (!studentExists) {
@@ -318,7 +414,11 @@ export default function SettingsTab({
     }
   };
 
-  const handleAutoRepair = () => {
+  const handleFixAllIssues = () => {
+    if (!window.confirm("SYSTEM INTEGRITY WARNING: This action will permanently modify your database records to resolve identified inconsistencies. \n\n- Orphaned records will be deleted.\n- Duplicate students (same ID) will be merged/pruned.\n- Invalid fields will be assigned default values.\n\nAre you sure you want to execute a bulk repair?")) {
+      return;
+    }
+
     const students = DbController.getStudents();
     const assessments = DbController.getAssessments();
     const attendance = DbController.getAllAttendance();
@@ -326,11 +426,22 @@ export default function SettingsTab({
     const activeYear = calendar.activeAcademicYear;
 
     let repairedStudents = 0;
+    let prunedDuplicates = 0;
     let repairedAssessments = 0;
     let prunedAttendance = 0;
 
-    // 1. Repair Students
-    const updatedStudents = students.map(s => {
+    // 1. Repair Students & Prune Duplicates
+    const finalStudents: typeof students = [];
+    const seenIds = new Set<string>();
+
+    students.forEach(s => {
+      // Handle Duplicates by ID
+      if (seenIds.has(s.id)) {
+        prunedDuplicates++;
+        return; // Skip this duplicate
+      }
+      seenIds.add(s.id);
+
       let changed = false;
       const copy = { ...s };
       if (!copy.firstName) {
@@ -345,13 +456,12 @@ export default function SettingsTab({
         copy.class = 'Creche';
         changed = true;
       }
-      if (changed) {
-        repairedStudents++;
-      }
-      return copy;
+      
+      if (changed) repairedStudents++;
+      finalStudents.push(copy);
     });
 
-    // 2. Repair Assessments (including orphaned assessment records missing Academic Year)
+    // 2. Repair Assessments
     const updatedAssessments = assessments.map(ass => {
       let changed = false;
       const copy = { ...ass };
@@ -360,7 +470,6 @@ export default function SettingsTab({
         changed = true;
         repairedAssessments++;
       }
-      // Standardize orphaned student names if empty
       if (!copy.studentName) {
         const matchingStudent = students.find(s => s.id === copy.studentId);
         if (matchingStudent) {
@@ -372,41 +481,41 @@ export default function SettingsTab({
         }
       }
       return copy;
-    });
+    }).filter(ass => students.some(s => s.id === ass.studentId)); // Prune orphaned assessments
+    
+    const assessmentPruned = assessments.length - updatedAssessments.length;
 
-    // 3. Prune/Repair Attendance: remove orphaned attendance records
-    const beforeAttendanceCount = attendance.length;
+    // 3. Prune Attendance
     const updatedAttendance = attendance.filter(a => students.some(s => s.id === a.studentId));
-    prunedAttendance = beforeAttendanceCount - updatedAttendance.length;
+    prunedAttendance = attendance.length - updatedAttendance.length;
 
-    // Save all updated collections back to persistence
-    if (repairedStudents > 0) {
-      DbController.saveAllStudents(updatedStudents);
-    }
-    if (repairedAssessments > 0) {
-      DbController.saveAllAssessments(updatedAssessments);
-    }
-    if (prunedAttendance > 0) {
-      DbController.saveAllAttendance(updatedAttendance);
-    }
+    // Save
+    DbController.saveAllStudents(finalStudents);
+    DbController.saveAllAssessments(updatedAssessments);
+    DbController.saveAllAttendance(updatedAttendance);
 
-    const totalFixed = repairedStudents + repairedAssessments + prunedAttendance;
+    const totalActions = repairedStudents + prunedDuplicates + repairedAssessments + prunedAttendance + assessmentPruned;
 
-    if (totalFixed > 0) {
+    if (totalActions > 0) {
       setIntegrityReport(
-        `Auto-Repair Complete! Successfully corrected database health:\n` +
-        `- Corrected ${repairedStudents} student record(s)\n` +
-        `- Corrected ${repairedAssessments} assessment record(s) missing Academic Year (including orphaned entries)\n` +
-        `- Cleaned up ${prunedAttendance} orphaned attendance record(s)`
+        `Bulk Integrity Fix Complete!\n` +
+        `----------------------------------------\n` +
+        `- Corrected ${repairedStudents} invalid student record(s)\n` +
+        `- Pruned ${prunedDuplicates} duplicate student(s)\n` +
+        `- Fixed ${repairedAssessments} assessment(s)\n` +
+        `- Deleted ${prunedAttendance} orphaned attendance logs\n` +
+        `- Deleted ${assessmentPruned} orphaned assessment records\n` +
+        `----------------------------------------\n` +
+        `Database health restored successfully.`
       );
       DbController.writeActivityLog(
-        'Database Auto-Repair', 
-        `Fixed ${repairedStudents} students, ${repairedAssessments} assessments, and pruned ${prunedAttendance} orphaned attendance logs.`, 
+        'Database Integrity Bulk Fix', 
+        `Executed Fix All: ${totalActions} actions performed across students, assessments, and attendance.`, 
         'high'
       );
       setCanRepair(false);
     } else {
-      setIntegrityReport("No issues requiring auto-repair found.");
+      setIntegrityReport("No issues required fixing.");
       setCanRepair(false);
     }
   };
@@ -766,13 +875,15 @@ export default function SettingsTab({
             </button>
           </>
         )}
-        <button
-          type="button"
-          onClick={() => setSettingsSubTab('billing')}
-          className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold transition text-[11px] cursor-pointer ${settingsSubTab === 'billing' ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-xs animate-pulse' : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}
-        >
-          <CreditCard size={13} /> Buy Subscription / Renewal
-        </button>
+        {(isAdmin || currentUser?.role === 'Headteacher') && (
+          <button
+            type="button"
+            onClick={() => setSettingsSubTab('billing')}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold transition text-[11px] cursor-pointer ${settingsSubTab === 'billing' ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-xs animate-pulse' : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}
+          >
+            <CreditCard size={13} /> Buy Subscription / Renewal
+          </button>
+        )}
         {!subStatus?.isLocked && (
           <>
             <button
@@ -789,6 +900,15 @@ export default function SettingsTab({
             >
               <UserCheck size={13} /> Teacher Permissions
             </button>
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setSettingsSubTab('security')}
+                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold transition text-[11px] cursor-pointer ${settingsSubTab === 'security' ? `${theme.btnColors} shadow-xs` : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}
+              >
+                <Lock size={13} /> Security & Session
+              </button>
+            )}
           </>
         )}
       </div>
@@ -929,6 +1049,53 @@ export default function SettingsTab({
             <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 p-2.5 rounded-lg flex items-center gap-2 animate-fade-in">
               <CheckCircle2 size={15} className="text-emerald-605" />
               <span>Appearance and persistent configurations successfully locked-in!</span>
+            </div>
+          )}
+
+          {/* Firebase Authorization Section */}
+          {isAdmin && (
+            <div className="space-y-3 pt-4 border-t border-slate-100">
+              <h3 className="text-sm font-display font-bold text-slate-800 flex items-center gap-1.5 pb-2 border-b border-slate-100">
+                <ShieldAlert size={17} className="text-rose-500" />
+                Firebase Connectivity & Domain Authorization
+              </h3>
+              <p className="text-[10px] text-slate-400 leading-relaxed">
+                If you encounter "Unauthorized Domain" errors during Google Login or Auth popups, you must authorize this domain in your Firebase Console.
+              </p>
+              
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+                <div className="flex flex-col gap-1">
+                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Active Auth Domain</span>
+                  <div className="flex items-center gap-2">
+                    <code className="text-[11px] font-mono font-bold text-slate-700 bg-white border border-slate-200 px-2 py-1 rounded select-all">
+                      {DbController.getFirebaseConfig().authDomain}
+                    </code>
+                    <button 
+                      onClick={() => {
+                        navigator.clipboard.writeText(DbController.getFirebaseConfig().authDomain);
+                        alert("Auth domain copied to clipboard.");
+                      }}
+                      className="p-1.5 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition cursor-pointer"
+                      title="Copy Domain"
+                    >
+                      <Save size={12} className="text-slate-500" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-3 bg-amber-50 border border-amber-100 rounded-lg space-y-2">
+                  <div className="flex items-center gap-2 text-amber-800 font-bold text-[11px]">
+                    <AlertCircle size={14} />
+                    <span>How to fix "Popup Blocked/Unauthorized Domain":</span>
+                  </div>
+                  <ol className="text-[10px] text-amber-700 space-y-1 ml-4 list-decimal font-medium">
+                    <li>Go to <strong>Firebase Console</strong> &gt; Authentication &gt; Settings.</li>
+                    <li>Select <strong>Authorized Domains</strong> tab.</li>
+                    <li>Click <strong>Add Domain</strong> and enter: <code className="bg-white px-1 rounded border border-amber-200">school-database-and-assessment-system.netlify.app</code></li>
+                    <li>Also ensure <code className="bg-white px-1 rounded border border-amber-200">localhost</code> is present for development.</li>
+                  </ol>
+                </div>
+              </div>
             </div>
           )}
 
@@ -1480,6 +1647,247 @@ export default function SettingsTab({
               <span>
                 <strong>Storage Warning:</strong> These backups exist inside your active browser cache. Clearing your browser's site data or history may delete these auto-backups. Downloading a physical JSON file is recommended for permanent safety.
               </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* SPECIAL SCHOOL ID MANAGEMENT */}
+      <div className="bg-white p-6 rounded-xl border border-indigo-100 shadow-sm space-y-5 text-left">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-indigo-50">
+          <div className="space-y-1">
+            <h3 className="text-sm font-display font-bold text-slate-800 flex items-center gap-1.5">
+              <Hash size={17} className="text-indigo-600" />
+              Special School ID (Shared Database Key)
+            </h3>
+            <p className="text-[10px] text-slate-400 leading-normal max-w-xl">
+              Linking a unique ID allows multiple users (Headteachers & Teachers) to share a single database. Leave blank to use your personal private database.
+            </p>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            <span className={`text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded-md ${school.schoolId ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-100 text-slate-400'}`}>
+              {school.schoolId ? "Linked" : "Personal Mode"}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex flex-col md:flex-row gap-4 pt-1">
+          <div className="flex-1 space-y-3">
+            <div className="relative group">
+              <input
+                type="text"
+                value={specialSchoolId}
+                onChange={(e) => setSpecialSchoolId(e.target.value.toUpperCase())}
+                placeholder="Enter School ID (e.g. SMS-XXXXXXXX)"
+                className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold focus:ring-2 focus:ring-indigo-500 focus:bg-white outline-none transition"
+              />
+              <Link size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <button
+                type="button"
+                onClick={handleGenerateSchoolId}
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 hover:bg-indigo-100 text-indigo-600 rounded-lg transition cursor-pointer"
+                title="Generate New ID"
+              >
+                <RefreshCw size={13} />
+              </button>
+            </div>
+            
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={handleUpdateSchoolId}
+                className={`flex-1 py-2 rounded-xl font-bold text-xs shadow-xs transition flex items-center justify-center gap-1.5 cursor-pointer bg-indigo-600 hover:bg-indigo-700 text-white`}
+              >
+                <ShieldCheck size={14} />
+                Link This School ID
+              </button>
+              {school.schoolId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm("Disconnecting will revert your access to your private database. Continue?")) {
+                      setSpecialSchoolId('');
+                      DbController.updateSchoolId('');
+                      setSchool(DbController.getSchoolInfo());
+                    }
+                  }}
+                  className="px-4 py-2 bg-slate-50 border border-slate-200 text-slate-500 rounded-xl font-bold text-xs hover:bg-rose-50 hover:text-rose-600 hover:border-rose-100 transition cursor-pointer"
+                >
+                  Disconnect
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="md:w-1/2 p-4 bg-indigo-50/40 border border-indigo-100/60 rounded-2xl flex items-start gap-3">
+            <div className="p-2 bg-indigo-100 rounded-lg text-indigo-600 flex-shrink-0">
+              <Users size={16} />
+            </div>
+            <div className="space-y-1.5">
+              <h4 className="text-[11px] font-bold text-indigo-900">Multi-User Collaboration</h4>
+              <p className="text-[10px] text-indigo-700/80 leading-relaxed">
+                Provide this ID to your staff. Once they link it in their settings, all entries made by them will automatically sync to your central dashboard and cloud backups.
+              </p>
+              {school.schoolId && (
+                <div className="pt-1 flex items-center gap-2">
+                  <span className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest">Share ID:</span>
+                  <code className="text-[11px] font-mono font-bold text-indigo-600 bg-white px-2 py-0.5 rounded border border-indigo-100 select-all cursor-pointer" onClick={() => {
+                    navigator.clipboard.writeText(school.schoolId || '');
+                    alert("ID copied for sharing!");
+                  }}>
+                    {school.schoolId}
+                  </code>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* SCHEDULED CLOUD SYNC CONFIGURATION */}
+      <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-5 text-left">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-100">
+          <div className="space-y-1">
+            <h3 className="text-sm font-display font-bold text-slate-800 flex items-center gap-1.5">
+              <RefreshCw size={17} className={`${theme.accentText}`} />
+              Scheduled Cloud Sync (Drive/Storage)
+            </h3>
+            <p className="text-[10px] text-slate-400 leading-normal max-w-xl">
+              Automate full database backups to Google Drive or Firebase Cloud Storage. This ensures your records are protected even if local device data is cleared or lost.
+            </p>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            <span className={`text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded-md ${cloudSyncConfig.enabled ? 'bg-indigo-100 text-indigo-800 border border-indigo-200' : 'bg-slate-100 text-slate-500 border border-slate-200'}`}>
+              {cloudSyncConfig.enabled ? "Active" : "Disabled"}
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
+          {/* Controls */}
+          <div className="md:col-span-1 border border-slate-200/60 rounded-xl p-4 bg-slate-50/50 space-y-4">
+            <div>
+              <span className="font-bold text-slate-700 text-xs block mb-1">Sync Automation</span>
+              <p className="text-[10px] text-slate-400 leading-normal">
+                Enable automated cloud exports and select your preferred destination.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-between p-2.5 rounded-lg bg-white border border-slate-200/70">
+              <span className="text-[11px] font-bold text-slate-700">Enable Cloud Sync</span>
+              <button
+                type="button"
+                onClick={() => handleToggleCloudSync(!cloudSyncConfig.enabled)}
+                className={`relative inline-flex h-5 w-10 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${cloudSyncConfig.enabled ? 'bg-indigo-600' : 'bg-slate-300'}`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${cloudSyncConfig.enabled ? 'translate-x-5' : 'translate-x-0'}`}
+                />
+              </button>
+            </div>
+
+            {cloudSyncConfig.enabled && (
+              <div className="space-y-4 animate-fade-in">
+                <div className="space-y-2">
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Storage Provider</label>
+                  <select
+                    value={cloudSyncConfig.provider}
+                    onChange={(e) => handleCloudSyncProviderChange(e.target.value as any)}
+                    className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-medium focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+                  >
+                    <option value="Firebase Cloud Storage">Firebase Cloud Storage</option>
+                    <option value="Google Drive">Google Drive (OAuth required)</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Sync Interval</label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(['daily', 'weekly', 'monthly'] as const).map((interval) => (
+                      <button
+                        key={interval}
+                        type="button"
+                        onClick={() => handleCloudSyncIntervalChange(interval)}
+                        className={`py-1.5 px-1 rounded-lg border text-[10px] font-bold capitalize transition ${cloudSyncConfig.interval === interval ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-100'}`}
+                      >
+                        {interval}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={handleTriggerCloudSyncNow}
+              disabled={cloudSyncConfig.status === 'syncing'}
+              className={`w-full py-2 px-3 rounded-lg font-bold text-xs shadow-xs transition flex items-center justify-center gap-1.5 text-center cursor-pointer ${cloudSyncConfig.status === 'syncing' ? 'bg-slate-100 text-slate-400' : 'bg-indigo-600 hover:bg-indigo-700 text-white'}`}
+            >
+              {cloudSyncConfig.status === 'syncing' ? (
+                <>
+                  <RefreshCw size={13} className="animate-spin" />
+                  Syncing to Cloud...
+                </>
+              ) : (
+                <>
+                  <Upload size={13} />
+                  Trigger Cloud Sync Now
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Status and History Placeholder */}
+          <div className="md:col-span-2 border border-slate-200/60 rounded-xl p-5 bg-slate-50/50 flex flex-col justify-between space-y-4 text-left">
+            <div className="space-y-3">
+              <div>
+                <span className="font-bold text-slate-700 text-xs block mb-1">Sync Status & Health</span>
+                <div className="flex items-center gap-2 mt-2">
+                  <div className={`w-2 h-2 rounded-full ${
+                    cloudSyncConfig.status === 'success' ? 'bg-emerald-500 animate-pulse' :
+                    cloudSyncConfig.status === 'failed' ? 'bg-rose-500' :
+                    cloudSyncConfig.status === 'syncing' ? 'bg-indigo-500 animate-bounce' : 'bg-slate-300'
+                  }`} />
+                  <span className="text-[11px] font-bold text-slate-600 capitalize">
+                    {cloudSyncConfig.status === 'idle' ? 'System Idle' : `Current State: ${cloudSyncConfig.status}`}
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="p-3 bg-white border border-slate-200 rounded-xl space-y-1">
+                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tight">Last Successful Sync</span>
+                  <p className="text-xs font-mono font-bold text-slate-700">
+                    {cloudSyncConfig.lastSyncTime ? new Date(cloudSyncConfig.lastSyncTime).toLocaleString() : 'Never'}
+                  </p>
+                </div>
+                <div className="p-3 bg-white border border-slate-200 rounded-xl space-y-1">
+                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tight">Backup Destination</span>
+                  <p className="text-xs font-bold text-slate-700 truncate">
+                    {cloudSyncConfig.enabled ? cloudSyncConfig.provider : 'N/A'}
+                  </p>
+                </div>
+              </div>
+
+              {cloudSyncConfig.error && (
+                <div className="p-3 bg-rose-50 border border-rose-100 rounded-xl flex gap-2 items-start">
+                  <AlertTriangle size={14} className="text-rose-500 flex-shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <span className="text-[10px] font-bold text-rose-700 block">Critical Sync Error</span>
+                    <p className="text-[10px] text-rose-600 leading-snug">{cloudSyncConfig.error}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-indigo-50/50 border border-indigo-100 p-3 rounded-lg flex items-start gap-2.5 text-[10px] text-indigo-900 leading-normal">
+              <ShieldCheck size={16} className="text-indigo-600 mt-0.5 flex-shrink-0" />
+              <div className="space-y-1">
+                <strong>Cloud Redundancy:</strong> This feature securely encrypts your database snapshot and replicates it to your selected cloud provider. For Google Drive, ensure you have signed in via the login screen with an authorized account.
+              </div>
             </div>
           </div>
         </div>
@@ -2255,11 +2663,11 @@ export default function SettingsTab({
                     {canRepair && (
                       <button
                         type="button"
-                        onClick={handleAutoRepair}
-                        className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 hover:text-emerald-800 rounded-lg transition cursor-pointer text-[10px] font-bold flex items-center gap-1 font-sans"
+                        onClick={handleFixAllIssues}
+                        className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition cursor-pointer text-[10px] font-bold flex items-center gap-1 font-sans shadow-sm"
                       >
-                        <Wrench size={12} />
-                        <span>Run Auto-Repair</span>
+                        <Check size={12} />
+                        <span>Fix All Issues</span>
                       </button>
                     )}
                 </div>
@@ -2482,9 +2890,9 @@ export default function SettingsTab({
               </button>
               <button
                 type="button"
-                onClick={() => {
+                onClick={async () => {
                   if (wipeConfirmText.toUpperCase() === 'WIPE') {
-                    DbController.clearAllData();
+                    await DbController.clearAllData();
                     setShowWipeModal(false);
                     window.location.reload();
                   } else {
@@ -2746,6 +3154,117 @@ export default function SettingsTab({
         </div>
       )}
 
+      {/* SECURITY & SESSION SESSION CONTROL TAB */}
+      {settingsSubTab === 'security' && isAdmin && (
+        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6 animate-fade-in">
+          <div className="flex items-center justify-between gap-4 pb-2 border-b border-slate-100">
+            <h3 className="text-sm font-display font-bold text-slate-800 flex items-center gap-1.5">
+              <ShieldCheck size={17} className="text-indigo-600" />
+              Administrative Security & Session Management
+            </h3>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest bg-slate-100 px-2 py-0.5 rounded">Admin Only</span>
+            </div>
+          </div>
+
+          <p className="text-[11px] text-slate-500 leading-relaxed font-medium max-w-2xl">
+            Configure global security policies to protect the school database. These settings apply to all user sessions and administrative modules across this workspace.
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Auto-Logout Timer Section */}
+            <div className="p-5 bg-slate-50 border border-slate-200 rounded-2xl space-y-4">
+              <div className="flex items-start gap-3">
+                <div className="p-2 bg-white rounded-lg border border-slate-200 text-indigo-600 shadow-sm">
+                  <Laptop size={18} />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-slate-800">Automatic Session Expiry (Idle Timer)</h4>
+                  <p className="text-[10px] text-slate-400 leading-normal mt-0.5">
+                    Automatically log out teachers and staff after a period of inactivity to prevent unauthorized access to open workstations.
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-3 pt-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-slate-600">Auto-Logout Threshold</span>
+                  <span className="text-[11px] font-mono font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md">
+                    {systemSettings.idleLogoutTimer || 30} Minutes
+                  </span>
+                </div>
+                
+                <input 
+                  type="range" 
+                  min="5" 
+                  max="120" 
+                  step="5"
+                  value={systemSettings.idleLogoutTimer || 30}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value);
+                    const updated = { ...systemSettings, idleLogoutTimer: val };
+                    setSystemSettings(updated);
+                    DbController.saveSystemSettings(updated);
+                    
+                    DbController.writeActivityLog(
+                      'Security Policy Modified',
+                      `Idle session timeout threshold updated to ${val} minutes.`,
+                      'medium'
+                    );
+                  }}
+                  className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                />
+
+                <div className="flex justify-between text-[9px] font-bold text-slate-400">
+                  <span>5m (Max Security)</span>
+                  <span>120m (Low Security)</span>
+                </div>
+              </div>
+
+              <div className="p-3 bg-indigo-50/50 border border-indigo-100 rounded-xl flex items-start gap-2.5">
+                <AlertCircle size={14} className="text-indigo-600 mt-0.5 flex-shrink-0" />
+                <p className="text-[10px] text-indigo-800 leading-normal font-medium">
+                  <strong>Recommendation:</strong> Use 15-30 minutes for public staff rooms and 60+ minutes for private administrative offices. Changes take effect on next activity.
+                </p>
+              </div>
+            </div>
+
+            {/* Database Access Section */}
+            <div className="p-5 bg-white border border-slate-200 rounded-2xl space-y-4">
+              <div className="flex items-start gap-3">
+                <div className="p-2 bg-slate-50 rounded-lg border border-slate-100 text-slate-600">
+                  <ShieldAlert size={18} />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-slate-800">Core System Lockdown</h4>
+                  <p className="text-[10px] text-slate-400 leading-normal mt-0.5">
+                    Prevent any data modifications (Grades, Attendance, Finance) across the entire system.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between p-3 bg-slate-50 border border-slate-150 rounded-xl">
+                <div className="space-y-0.5">
+                  <span className="text-[11px] font-bold text-slate-700 block">Enable Read-Only Mode</span>
+                  <span className="text-[9px] text-slate-400 block font-medium">Suspend all database writes globally</span>
+                </div>
+                <button
+                  type="button"
+                  disabled
+                  className="relative inline-flex h-5 w-10 flex-shrink-0 cursor-not-allowed rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out bg-slate-200"
+                >
+                  <span className="translate-x-0 pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-md transition duration-200 ease-in-out" />
+                </button>
+              </div>
+              
+              <p className="text-[9px] text-slate-400 italic">
+                * Global lockdown feature is currently disabled and managed via administrative shell for integrity.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* WEB-BASED BIOMETRIC AUTHENTICATION / WEBAUTHN DEVICE EXPERIMENTAL SIMULATOR */}
       {isBiometricModalOpen && (
         <div 
@@ -2830,6 +3349,49 @@ export default function SettingsTab({
         </div>
       )}
 
+      {confirmModal && confirmModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[110] p-4 no-print animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden text-left p-6 space-y-4 animate-scale-up">
+            <div className="flex items-start gap-3">
+              <div className={`p-2 rounded-xl shrink-0 ${confirmModal.danger ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>
+                <ShieldAlert size={24} className="animate-bounce-slow" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 font-sans tracking-tight">
+                  {confirmModal.title}
+                </h3>
+                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                  {confirmModal.message}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmModal(null)}
+                className="flex-1 py-2 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-xl transition cursor-pointer select-none text-center"
+              >
+                {confirmModal.cancelText || 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  confirmModal.onConfirm();
+                  setConfirmModal(null);
+                }}
+                className={`flex-1 py-2 px-4 text-white font-bold text-xs rounded-xl transition cursor-pointer select-none text-center ${
+                  confirmModal.danger 
+                    ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800' 
+                    : 'bg-amber-600 hover:bg-amber-700 active:bg-amber-800'
+                }`}
+              >
+                {confirmModal.confirmText || 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

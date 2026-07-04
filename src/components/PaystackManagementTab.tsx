@@ -271,6 +271,7 @@ export default function PaystackManagementTab({ themeStyles }: PaystackManagemen
             utilityBill: component === 'Utility Bill' ? amountGhs : 0,
             sportsFees: component === 'Sports Fees' ? amountGhs : 0,
             ptaDues: component === 'PTA dues' ? amountGhs : 0,
+            transportationBill: component === 'Transportation Bill' ? amountGhs : 0,
             otherFee: component === 'Other Fee' ? amountGhs : 0,
             payments: [newInstallment],
             createdAt: new Date().toISOString(),

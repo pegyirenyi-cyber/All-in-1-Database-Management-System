@@ -188,6 +188,17 @@ export default function AttendanceTab({
     return 'Basic 1';
   });
 
+  // Custom Confirmation Dialog State
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmText?: string;
+    cancelText?: string;
+    danger?: boolean;
+    onConfirm: () => void;
+  } | null>(null);
+
   useEffect(() => {
     if (userRole === 'Teacher') {
       const target = assignedClasses.length > 0 ? assignedClasses[0] : (assignedClass || 'None');
@@ -454,37 +465,65 @@ export default function AttendanceTab({
 
   const handleDeleteActiveSelection = () => {
     if (attendanceView === 'staff') {
-      if (window.confirm(`Are you sure you want to delete/clear all recorded staff attendance records on ${selectedDate}?`)) {
-        const cleared = staffAttendanceSheet.map(item => ({ ...item, status: 'Unmarked' as StaffAttendanceStatus, arrivalTime: '', departureTime: '', remarks: '' }));
-        setStaffAttendanceSheet(cleared);
-        DbController.saveStaffAttendanceBatch(cleared);
-        alert(`Deleted active staff attendance inputs on ${selectedDate}.`);
-      }
+      setConfirmModal({
+        isOpen: true,
+        title: "Clear Staff Attendance?",
+        message: `Are you sure you want to delete/clear all recorded staff attendance records on ${selectedDate}?`,
+        confirmText: "Clear Records",
+        danger: true,
+        onConfirm: () => {
+          const cleared = staffAttendanceSheet.map(item => ({ ...item, status: 'Unmarked' as StaffAttendanceStatus, arrivalTime: '', departureTime: '', remarks: '' }));
+          setStaffAttendanceSheet(cleared);
+          DbController.saveStaffAttendanceBatch(cleared);
+          window.dispatchEvent(new CustomEvent('app-toast', { detail: { text: `Deleted active staff attendance inputs on ${selectedDate}.`, type: 'info' } }));
+        }
+      });
     } else {
-      if (window.confirm(`Are you sure you want to delete/clear all recorded attendance for class "${selectedClass}" on ${selectedDate}?`)) {
-        const cleared = attendanceSheet.map(item => ({ ...item, status: 'Unmarked' as AttendanceStatus }));
-        setAttendanceSheet(cleared);
-        DbController.saveAttendanceBatch(cleared);
-        alert(`Deleted active student attendance inputs for ${selectedClass} on ${selectedDate}.`);
-      }
+      setConfirmModal({
+        isOpen: true,
+        title: "Clear Student Attendance?",
+        message: `Are you sure you want to delete/clear all recorded attendance for class "${selectedClass}" on ${selectedDate}?`,
+        confirmText: "Clear Records",
+        danger: true,
+        onConfirm: () => {
+          const cleared = attendanceSheet.map(item => ({ ...item, status: 'Unmarked' as AttendanceStatus }));
+          setAttendanceSheet(cleared);
+          DbController.saveAttendanceBatch(cleared);
+          window.dispatchEvent(new CustomEvent('app-toast', { detail: { text: `Deleted active student attendance inputs for ${selectedClass} on ${selectedDate}.`, type: 'info' } }));
+        }
+      });
     }
   };
 
   const handleDeleteAllAttendance = () => {
     if (attendanceView === 'staff') {
-      if (window.confirm("Are you sure you want to completely erase all historical staff attendance records? This cannot be undone.")) {
-        localStorage.setItem('sms_staff_attendance', JSON.stringify([]));
-        setStaffAttendanceSheet([]);
-        onManualSave();
-        alert("Successfully purged all staff attendance records.");
-      }
+      setConfirmModal({
+        isOpen: true,
+        title: "PURGE ALL STAFF ATTENDANCE?",
+        message: "Are you sure you want to completely erase all historical staff attendance records? This action is irreversible and will delete all audit trails.",
+        confirmText: "Purge Database",
+        danger: true,
+        onConfirm: () => {
+          localStorage.setItem('sms_staff_attendance', JSON.stringify([]));
+          setStaffAttendanceSheet([]);
+          onManualSave();
+          window.dispatchEvent(new CustomEvent('app-toast', { detail: { text: "Successfully purged all staff attendance records.", type: 'success' } }));
+        }
+      });
     } else {
-      if (window.confirm("Are you sure you want to completely erase all historical student attendance records from the system database? This cannot be undone.")) {
-        localStorage.setItem('sms_attendance', JSON.stringify([]));
-        setAttendanceSheet([]);
-        onManualSave();
-        alert("Successfully purged all student attendance records.");
-      }
+      setConfirmModal({
+        isOpen: true,
+        title: "PURGE ALL STUDENT ATTENDANCE?",
+        message: "Are you sure you want to completely erase all historical student attendance records from the system database? This action is irreversible and will delete all audit trails.",
+        confirmText: "Purge Database",
+        danger: true,
+        onConfirm: () => {
+          localStorage.setItem('sms_attendance', JSON.stringify([]));
+          setAttendanceSheet([]);
+          onManualSave();
+          window.dispatchEvent(new CustomEvent('app-toast', { detail: { text: "Successfully purged all student attendance records.", type: 'success' } }));
+        }
+      });
     }
   };
 
@@ -2109,6 +2148,50 @@ export default function AttendanceTab({
         </div>
       </div>
     </div>
+
+    {confirmModal && confirmModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[110] p-4 no-print animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden text-left p-6 space-y-4 animate-scale-up">
+            <div className="flex items-start gap-3">
+              <div className={`p-2 rounded-xl shrink-0 ${confirmModal.danger ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>
+                <ShieldAlert size={24} className="animate-bounce-slow" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 font-sans tracking-tight">
+                  {confirmModal.title}
+                </h3>
+                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                  {confirmModal.message}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmModal(null)}
+                className="flex-1 py-2 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-xl transition cursor-pointer select-none text-center"
+              >
+                {confirmModal.cancelText || 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  confirmModal.onConfirm();
+                  setConfirmModal(null);
+                }}
+                className={`flex-1 py-2 px-4 text-white font-bold text-xs rounded-xl transition cursor-pointer select-none text-center ${
+                  confirmModal.danger 
+                    ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800' 
+                    : 'bg-amber-600 hover:bg-amber-700 active:bg-amber-800'
+                }`}
+              >
+                {confirmModal.confirmText || 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

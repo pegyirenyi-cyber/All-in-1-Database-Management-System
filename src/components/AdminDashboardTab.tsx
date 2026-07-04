@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { 
   UserPlus, Users, Trash2, Key, ShieldAlert, Check, Search, 
-  Lock, Shield, RefreshCw, UserCheck, Smartphone, Info, CalendarClock
+  Lock, Shield, RefreshCw, UserCheck, Smartphone, Info, CalendarClock, Sparkles
 } from 'lucide-react';
 import { DbController, setStorageItem } from '../db';
 import { UserAccount, UserRole, WebAuthnCredential } from '../types';
@@ -15,6 +15,202 @@ export default function AdminDashboardTab({ theme }: Props) {
   const [users, setUsers] = useState<UserAccount[]>(() => DbController.getRegisteredUsers());
   const [credentials, setCredentials] = useState<WebAuthnCredential[]>(() => DbController.getWebAuthnCredentials());
   const currentUser = DbController.getCurrentUser();
+  
+  // Custom Confirmation Dialog State
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmText?: string;
+    cancelText?: string;
+    danger?: boolean;
+    onConfirm: () => void;
+  } | null>(null);
+
+  // System Integrity State
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanResults, setScanResults] = useState<{
+    orphanedAssessments: any[];
+    duplicateStudents: any[];
+    invalidGrades: any[];
+    hasScanned: boolean;
+  }>({
+    orphanedAssessments: [],
+    duplicateStudents: [],
+    invalidGrades: [],
+    hasScanned: false
+  });
+
+  const runIntegrityScan = () => {
+    setIsScanning(true);
+    setTimeout(() => {
+      const allStudents = DbController.getStudents();
+      const allAssessments = DbController.getAssessments();
+      
+      const studentIds = new Set(allStudents.map(s => s.id));
+      
+      const orphaned = allAssessments.filter(a => !studentIds.has(a.studentId));
+      
+      const invalid = allAssessments.filter(a => {
+        let hasInvalid = false;
+        if (a.exercises && a.exercises.some(e => e < 0 || e > 10 || isNaN(e) || e === null)) hasInvalid = true;
+        if (a.tests && a.tests.some(t => t < 0 || t > 20 || isNaN(t) || t === null)) hasInvalid = true;
+        if (a.projectWork < 0 || a.projectWork > 10 || isNaN(a.projectWork) || a.projectWork === null) hasInvalid = true;
+        if (a.groupWork < 0 || a.groupWork > 10 || isNaN(a.groupWork) || a.groupWork === null) hasInvalid = true;
+        if (a.examScore100 < 0 || a.examScore100 > 100 || isNaN(a.examScore100) || a.examScore100 === null) hasInvalid = true;
+        return hasInvalid;
+      });
+
+      const studentIdCounts: Record<string, number> = {};
+      allStudents.forEach(s => {
+        studentIdCounts[s.id] = (studentIdCounts[s.id] || 0) + 1;
+      });
+      const dupes = allStudents.filter(s => studentIdCounts[s.id] > 1);
+      // To show actual duplicates, maybe we group them
+      const actualDupes = dupes.filter((s, idx, self) => self.findIndex(t => t.id === s.id) !== idx);
+
+      setScanResults({
+        orphanedAssessments: orphaned,
+        invalidGrades: invalid,
+        duplicateStudents: actualDupes,
+        hasScanned: true
+      });
+      setIsScanning(false);
+      triggerToast('System Integrity Scan Complete', 'success');
+    }, 800);
+  };
+
+  const handleFixOrphaned = () => {
+    setConfirmModal({
+      isOpen: true,
+      title: "Delete Orphaned Records?",
+      message: `Are you sure you want to delete ${scanResults.orphanedAssessments.length} orphaned assessments? These records belong to students no longer in the directory.`,
+      confirmText: "Delete Records",
+      danger: true,
+      onConfirm: () => {
+        const allAssessments = DbController.getAssessments();
+        const studentIds = new Set(DbController.getStudents().map(s => s.id));
+        const validAssessments = allAssessments.filter(a => studentIds.has(a.studentId));
+        DbController.saveAllAssessments(validAssessments);
+        
+        setScanResults(prev => ({ ...prev, orphanedAssessments: [] }));
+        triggerToast('Orphaned assessments deleted.', 'success');
+      }
+    });
+  };
+
+  const handleFixInvalid = () => {
+    setConfirmModal({
+      isOpen: true,
+      title: "Reset Invalid Grades?",
+      message: `Are you sure you want to reset ${scanResults.invalidGrades.length} invalid grade records to zero? This fixes out-of-bounds or NaN values.`,
+      confirmText: "Reset Grades",
+      danger: true,
+      onConfirm: () => {
+        const allAssessments = DbController.getAssessments();
+        const invalidIds = new Set(scanResults.invalidGrades.map(a => a.id));
+        
+        const fixed = allAssessments.map(a => {
+          if (invalidIds.has(a.id)) {
+             return DbController.calculateScoreDetails({
+               ...a,
+               exercises: a.exercises ? a.exercises.map(e => e < 0 || e > 10 || isNaN(e) || e === null ? 0 : e) : [0,0,0,0],
+               tests: a.tests ? a.tests.map(t => t < 0 || t > 20 || isNaN(t) || t === null ? 0 : t) : [0,0],
+               projectWork: a.projectWork < 0 || a.projectWork > 10 || isNaN(a.projectWork) || a.projectWork === null ? 0 : a.projectWork,
+               groupWork: a.groupWork < 0 || a.groupWork > 10 || isNaN(a.groupWork) || a.groupWork === null ? 0 : a.groupWork,
+               examScore100: a.examScore100 < 0 || a.examScore100 > 100 || isNaN(a.examScore100) || a.examScore100 === null ? 0 : a.examScore100,
+             });
+          }
+          return a;
+        });
+        DbController.saveAllAssessments(fixed);
+        
+        setScanResults(prev => ({ ...prev, invalidGrades: [] }));
+        triggerToast('Invalid grades reset.', 'success');
+      }
+    });
+  };
+
+  const handleFixDuplicates = () => {
+    setConfirmModal({
+      isOpen: true,
+      title: "Remove Duplicate Students?",
+      message: `Are you sure you want to remove ${scanResults.duplicateStudents.length} duplicate student records? This will keep only the first occurrence of each unique ID.`,
+      confirmText: "Remove Duplicates",
+      danger: true,
+      onConfirm: () => {
+        const allStudents = DbController.getStudents();
+        const seen = new Set();
+        const deduplicated = allStudents.filter(s => {
+          if (seen.has(s.id)) return false;
+          seen.add(s.id);
+          return true;
+        });
+        DbController.saveAllStudents(deduplicated);
+        
+        setScanResults(prev => ({ ...prev, duplicateStudents: [] }));
+        triggerToast('Duplicate students removed.', 'success');
+      }
+    });
+  };
+
+  const handleFixAll = () => {
+    const totalIssues = scanResults.orphanedAssessments.length + scanResults.invalidGrades.length + scanResults.duplicateStudents.length;
+    if (totalIssues === 0) return;
+    
+    setConfirmModal({
+      isOpen: true,
+      title: "Fix All Issues?",
+      message: `Are you sure you want to automatically resolve all ${totalIssues} identified issues across orphans, duplicates, and invalid records? This action cannot be undone.`,
+      confirmText: "Fix All",
+      danger: true,
+      onConfirm: () => {
+        // Fix Duplicates
+        if (scanResults.duplicateStudents.length > 0) {
+          const allStudents = DbController.getStudents();
+          const seen = new Set();
+          const deduplicated = allStudents.filter(s => {
+            if (seen.has(s.id)) return false;
+            seen.add(s.id);
+            return true;
+          });
+          DbController.saveAllStudents(deduplicated);
+        }
+
+        // Fix Invalid Grades & Orphaned
+        let allAssessments = DbController.getAssessments();
+        const studentIds = new Set(DbController.getStudents().map(s => s.id));
+        
+        // Remove orphans
+        if (scanResults.orphanedAssessments.length > 0) {
+          allAssessments = allAssessments.filter(a => studentIds.has(a.studentId));
+        }
+        
+        // Fix Invalid
+        if (scanResults.invalidGrades.length > 0) {
+          const invalidIds = new Set(scanResults.invalidGrades.map(a => a.id));
+          allAssessments = allAssessments.map(a => {
+            if (invalidIds.has(a.id)) {
+               return DbController.calculateScoreDetails({
+                 ...a,
+                 exercises: a.exercises ? a.exercises.map(e => e < 0 || e > 10 || isNaN(e) || e === null ? 0 : e) : [0,0,0,0],
+                 tests: a.tests ? a.tests.map(t => t < 0 || t > 20 || isNaN(t) || t === null ? 0 : t) : [0,0],
+                 projectWork: a.projectWork < 0 || a.projectWork > 10 || isNaN(a.projectWork) || a.projectWork === null ? 0 : a.projectWork,
+                 groupWork: a.groupWork < 0 || a.groupWork > 10 || isNaN(a.groupWork) || a.groupWork === null ? 0 : a.groupWork,
+                 examScore100: a.examScore100 < 0 || a.examScore100 > 100 || isNaN(a.examScore100) || a.examScore100 === null ? 0 : a.examScore100,
+               });
+            }
+            return a;
+          });
+        }
+        
+        DbController.saveAllAssessments(allAssessments);
+        
+        setScanResults(prev => ({ ...prev, duplicateStudents: [], orphanedAssessments: [], invalidGrades: [] }));
+        triggerToast('All system issues resolved.', 'success');
+      }
+    });
+  };
 
   // Search & Filter state
   const [searchQuery, setSearchQuery] = useState('');
@@ -26,6 +222,7 @@ export default function AdminDashboardTab({ theme }: Props) {
   const [newRole, setNewRole] = useState<UserRole>('Headteacher');
   const [newPassword, setNewPassword] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [lastCreatedOperator, setLastCreatedOperator] = useState<{ name: string; email: string; schoolId?: string } | null>(null);
 
   const triggerToast = (text: string, type: 'success' | 'error' | 'info' = 'success') => {
     window.dispatchEvent(new CustomEvent('app-toast', {
@@ -69,12 +266,23 @@ export default function AdminDashboardTab({ theme }: Props) {
       const updatedList = DbController.getRegisteredUsers();
       setUsers(updatedList);
       
+      // Save for UI display
+      setLastCreatedOperator({
+        name: addedUser.name,
+        email: addedUser.email,
+        schoolId: addedUser.schoolId
+      });
+      
       // Reset form
       setNewEmail('');
       setNewName('');
       setNewRole('Headteacher');
       
-      triggerToast(`Account created successfully for ${addedUser.name}!`, 'success');
+      const successMessage = addedUser.schoolId 
+        ? `Account created! School ID for ${addedUser.name} is ${addedUser.schoolId}`
+        : `Account created successfully for ${addedUser.name}!`;
+
+      triggerToast(successMessage, 'success');
       
       // Write action audit log
       DbController.writeActivityLog(
@@ -156,35 +364,48 @@ export default function AdminDashboardTab({ theme }: Props) {
     }
   };
 
-  const handleResetPassword = async (email: string) => {
-    if (window.confirm(`Send a password reset email to ${email}?`)) {
-      try {
-        await DbController.firebaseSendPasswordResetEmail(email);
-        triggerToast(`Password reset link sent to ${email}.`, 'success');
-        DbController.writeActivityLog('Password Reset Sent', `Admin triggered password reset for ${email}`, 'medium');
-      } catch (err: any) {
-        triggerToast(err.message || 'Error sending reset email.', 'error');
+  const handleResetPassword = (email: string) => {
+    setConfirmModal({
+      isOpen: true,
+      title: "Send Reset Link?",
+      message: `Send a password reset email to ${email}? The user will receive instructions to securely update their credentials.`,
+      confirmText: "Send Link",
+      onConfirm: async () => {
+        try {
+          await DbController.firebaseSendPasswordResetEmail(email);
+          triggerToast(`Password reset link sent to ${email}.`, 'success');
+          DbController.writeActivityLog('Password Reset Sent', `Admin triggered password reset for ${email}`, 'medium');
+        } catch (err: any) {
+          triggerToast(err.message || 'Error sending reset email.', 'error');
+        }
       }
-    }
+    });
   };
 
   const handleRevokeCredential = (credId: string, email: string) => {
-    if (window.confirm(`Revoke this device credential security key? The user will have to enroll biometrics again on next sign-in.`)) {
-      try {
-        DbController.deleteWebAuthnCredential(credId);
-        const remaining = DbController.getWebAuthnCredentials();
-        setCredentials(remaining);
-        triggerToast('Biometric security key revoked successfully.', 'success');
+    setConfirmModal({
+      isOpen: true,
+      title: "Revoke Security Key?",
+      message: "Are you sure you want to revoke this device credential security key? The user will have to enroll biometrics again on next sign-in.",
+      confirmText: "Revoke Key",
+      danger: true,
+      onConfirm: () => {
+        try {
+          DbController.deleteWebAuthnCredential(credId);
+          const remaining = DbController.getWebAuthnCredentials();
+          setCredentials(remaining);
+          triggerToast('Biometric security key revoked successfully.', 'success');
 
-        DbController.writeActivityLog(
-          'Biometrics Deleted',
-          `Admin revoked device biometric token key for ${email}`,
-          'high'
-        );
-      } catch (err) {
-        triggerToast('Failed to revoke security token.', 'error');
+          DbController.writeActivityLog(
+            'Biometrics Deleted',
+            `Admin revoked device biometric token key for ${email}`,
+            'high'
+          );
+        } catch (err) {
+          triggerToast('Failed to revoke security token.', 'error');
+        }
       }
-    }
+    });
   };
 
   // Filter list
@@ -294,9 +515,37 @@ export default function AdminDashboardTab({ theme }: Props) {
             </p>
           </div>
 
+          {lastCreatedOperator && (
+            <div className="bg-indigo-50 border border-indigo-150 p-4 rounded-2xl text-[11px] space-y-2.5 relative">
+              <button 
+                type="button"
+                onClick={() => setLastCreatedOperator(null)}
+                className="absolute top-2.5 right-2.5 text-slate-400 hover:text-slate-600 font-bold"
+                title="Dismiss"
+              >
+                ✕
+              </button>
+              <div className="font-extrabold text-indigo-950 flex items-center gap-1.5">
+                <Sparkles size={13} className="text-indigo-500" />
+                Operator Authorized!
+              </div>
+              <div className="space-y-1 text-slate-700">
+                <div><span className="font-bold text-slate-500">Name:</span> {lastCreatedOperator.name}</div>
+                <div><span className="font-bold text-slate-500">HeadTeacher's Email:</span> <span className="font-mono bg-white px-1.5 py-0.5 rounded border border-indigo-100/50">{lastCreatedOperator.email}</span></div>
+                {lastCreatedOperator.schoolId && (
+                  <div className="bg-white border border-indigo-150 p-2.5 rounded-xl mt-1.5 text-center shadow-xs">
+                    <div className="text-[9px] text-slate-400 font-extrabold uppercase tracking-wider">Generated School ID</div>
+                    <div className="text-base font-black text-indigo-600 font-mono tracking-wider select-all select-text">{lastCreatedOperator.schoolId}</div>
+                    <div className="text-[9px] text-slate-500 mt-1 leading-tight">Copy this School ID to give to assign teacher profiles.</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           <form onSubmit={handleAddUserSubmit} className="space-y-3.5">
             <div className="space-y-1">
-              <label className="text-[10px] font-black uppercase text-slate-500 tracking-wider">Full User Name</label>
+              <label className="text-[10px] font-black uppercase text-slate-500 tracking-wider">Full Name</label>
               <input
                 type="text"
                 placeholder="e.g. EBENEZER GYAN"
@@ -308,7 +557,7 @@ export default function AdminDashboardTab({ theme }: Props) {
             </div>
 
             <div className="space-y-1">
-              <label className="text-[10px] font-black uppercase text-slate-500 tracking-wider">Email Address</label>
+              <label className="text-[10px] font-black uppercase text-slate-500 tracking-wider">HeadTeacher's Email Address</label>
               <input
                 type="email"
                 placeholder="e.g. gyan@school.edu"
@@ -320,14 +569,14 @@ export default function AdminDashboardTab({ theme }: Props) {
             </div>
 
             <div className="space-y-1">
-              <label className="text-[10px] font-black uppercase text-slate-500 tracking-wider">Assigned Role & Privilege</label>
+              <label className="text-[10px] font-black uppercase text-slate-500 tracking-wider">Assign Role (Head Teacher)</label>
               <select
                 value={newRole}
                 onChange={(e) => setNewRole(e.target.value as UserRole)}
                 className="w-full border border-slate-200 bg-slate-50/50 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 focus:bg-white focus:ring-2 focus:ring-slate-800 focus:outline-none transition"
               >
-                <option value="Headteacher">Headteacher (Standard Executive Access)</option>
-                <option value="Admin" disabled={newEmail.toLowerCase().trim() !== 'pegyirenyi@gmail.com'}>Admin (Full Administrative & Security Controls)</option>
+                <option value="Headteacher">Head Teacher (Standard Executive Access)</option>
+                <option value="Admin" disabled={newEmail.toLowerCase().trim() !== 'pegyirenyi@gmail.com'}>System Administrator (Emergency Only)</option>
               </select>
             </div>
 
@@ -430,6 +679,9 @@ export default function AdminDashboardTab({ theme }: Props) {
                             {isSelf && <span className="bg-red-100 text-red-700 text-[9px] font-black uppercase px-1.5 py-0.5 rounded">You</span>}
                           </div>
                           <div className="text-[10px] text-slate-400 mt-0.5 font-mono">{user.email}</div>
+                          {user.schoolId && (
+                            <div className="text-[10px] text-indigo-600 font-black font-mono">School ID: {user.schoolId}</div>
+                          )}
                           {user.requestCode && (
                             <div className="text-[9px] text-slate-400 font-mono">ID Code: {user.requestCode}</div>
                           )}
@@ -571,6 +823,161 @@ export default function AdminDashboardTab({ theme }: Props) {
           </table>
         </div>
       </div>
+
+      {/* SYSTEM INTEGRITY CHECK */}
+      <div className="bg-white border border-slate-200/60 p-5 rounded-3xl space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-2">
+          <div>
+            <h2 className="text-sm font-black text-slate-800 flex items-center gap-2">
+              <ShieldAlert size={16} className="text-rose-500" />
+              System Integrity Scanner
+            </h2>
+            <p className="text-[11px] text-slate-400 mt-1">
+              Scan the student and assessment databases for orphaned records, duplicate entries, or invalid grade formatting.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={runIntegrityScan}
+              disabled={isScanning}
+              className="shrink-0 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 text-white font-bold rounded-xl px-4 py-2 text-xs transition flex items-center justify-center gap-2"
+            >
+              {isScanning ? (
+                <RefreshCw size={14} className="animate-spin" />
+              ) : (
+                <Search size={14} />
+              )}
+              {isScanning ? 'Scanning System...' : 'Run Integrity Scan'}
+            </button>
+            {scanResults.hasScanned && (scanResults.orphanedAssessments.length > 0 || scanResults.invalidGrades.length > 0 || scanResults.duplicateStudents.length > 0) && (
+              <button
+                onClick={handleFixAll}
+                className="shrink-0 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl px-4 py-2 text-xs transition flex items-center justify-center gap-2"
+              >
+                <RefreshCw size={14} />
+                Fix All Issues
+              </button>
+            )}
+          </div>
+        </div>
+
+        {scanResults.hasScanned && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+            {/* Orphaned Records */}
+            <div className="border border-slate-200 rounded-2xl p-4 bg-slate-50 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-black uppercase tracking-wider text-slate-700">Orphaned Records</h3>
+                  <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${scanResults.orphanedAssessments.length > 0 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                    {scanResults.orphanedAssessments.length} found
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-500 leading-relaxed mb-4">
+                  Assessments that belong to students who no longer exist in the system directory.
+                </p>
+              </div>
+              {scanResults.orphanedAssessments.length > 0 && (
+                <button
+                  onClick={handleFixOrphaned}
+                  className="w-full bg-white border border-amber-200 text-amber-600 hover:bg-amber-50 text-[10px] font-bold py-2 rounded-xl transition flex items-center justify-center gap-1.5"
+                >
+                  <Trash2 size={12} /> Delete Orphaned
+                </button>
+              )}
+            </div>
+
+            {/* Invalid Grades */}
+            <div className="border border-slate-200 rounded-2xl p-4 bg-slate-50 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-black uppercase tracking-wider text-slate-700">Invalid Grades</h3>
+                  <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${scanResults.invalidGrades.length > 0 ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                    {scanResults.invalidGrades.length} found
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-500 leading-relaxed mb-4">
+                  Assessments containing out-of-bounds scores (e.g. exams &gt; 100, exercises &gt; 10, or negative/NaN values).
+                </p>
+              </div>
+              {scanResults.invalidGrades.length > 0 && (
+                <button
+                  onClick={handleFixInvalid}
+                  className="w-full bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 text-[10px] font-bold py-2 rounded-xl transition flex items-center justify-center gap-1.5"
+                >
+                  <RefreshCw size={12} /> Reset to Zero
+                </button>
+              )}
+            </div>
+
+            {/* Duplicate Students */}
+            <div className="border border-slate-200 rounded-2xl p-4 bg-slate-50 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-xs font-black uppercase tracking-wider text-slate-700">Duplicate Students</h3>
+                  <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${scanResults.duplicateStudents.length > 0 ? 'bg-indigo-100 text-indigo-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                    {scanResults.duplicateStudents.length} found
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-500 leading-relaxed mb-4">
+                  Student profiles that appear more than once with the exact same unique ID.
+                </p>
+              </div>
+              {scanResults.duplicateStudents.length > 0 && (
+                <button
+                  onClick={handleFixDuplicates}
+                  className="w-full bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 text-[10px] font-bold py-2 rounded-xl transition flex items-center justify-center gap-1.5"
+                >
+                  <Check size={12} /> Keep First Only
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {confirmModal && confirmModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[100] p-4 no-print animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden text-left p-6 space-y-4 animate-scale-up">
+            <div className="flex items-start gap-3">
+              <div className={`p-2 rounded-xl shrink-0 ${confirmModal.danger ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>
+                <ShieldAlert size={24} className="animate-bounce-slow" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 font-sans tracking-tight">
+                  {confirmModal.title}
+                </h3>
+                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                  {confirmModal.message}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmModal(null)}
+                className="flex-1 py-2 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-xl transition cursor-pointer select-none text-center"
+              >
+                {confirmModal.cancelText || 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  confirmModal.onConfirm();
+                  setConfirmModal(null);
+                }}
+                className={`flex-1 py-2 px-4 text-white font-bold text-xs rounded-xl transition cursor-pointer select-none text-center ${
+                  confirmModal.danger 
+                    ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800' 
+                    : 'bg-amber-600 hover:bg-amber-700 active:bg-amber-800'
+                }`}
+              >
+                {confirmModal.confirmText || 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

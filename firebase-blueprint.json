@@ -155,6 +155,7 @@
         "utilityBill": { "type": "number" },
         "sportsFees": { "type": "number" },
         "ptaDues": { "type": "number" },
+        "transportationBill": { "type": "number" },
         "otherFee": { "type": "number" },
         "otherFeeDescription": { "type": "string" },
         "payments": { "type": "array" },

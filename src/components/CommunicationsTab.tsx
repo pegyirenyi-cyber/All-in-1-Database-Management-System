@@ -6,7 +6,7 @@ import {
 import { Student, CLASSES, AcademicYearType, ACADEMIC_YEARS } from '../types';
 import { DbController, getStorageItem, setStorageItem, removeStorageItem } from '../db';
 import { ThemeStyles } from './ThemeWrapper';
-import { generateSecureToken } from '../utils';
+import { generateSecureToken, getWhatsAppShareData, shareParentPortalWhatsApp, WhatsAppTemplate } from '../utils';
 
 interface Props {
   theme: ThemeStyles;
@@ -80,8 +80,8 @@ export default function CommunicationsTab({ theme, students, isAdmin }: Props) {
   const activeYear = systemSettings.academicYear || '2026/2027';
   const activeTerm = systemSettings.term || 'Term 1';
 
-  // Active channel selection: 'ghana-sms' (default) or 'twilio' or 'native-device'
-  const [activeChannel, setActiveChannel] = useState<'ghana-sms' | 'twilio' | 'native-device'>(() => {
+  // Active channel selection: 'ghana-sms' (default) or 'twilio' or 'native-device' or 'whatsapp-direct'
+  const [activeChannel, setActiveChannel] = useState<'ghana-sms' | 'twilio' | 'native-device' | 'whatsapp-direct'>(() => {
     const saved = getStorageItem('geetech_active_sms_channel', 'ghana-sms');
     return (saved as any) || 'ghana-sms';
   });
@@ -256,7 +256,7 @@ export default function CommunicationsTab({ theme, students, isAdmin }: Props) {
     list.forEach(bill => {
       // We look for active term bill
       if (bill.academicYear === yearToUse && bill.term === activeTerm) {
-        const totalBilled = (bill.schoolFees || 0) + (bill.utilityBill || 0) + (bill.sportsFees || 0) + (bill.ptaDues || 0) + (bill.otherFee || 0);
+        const totalBilled = (bill.schoolFees || 0) + (bill.utilityBill || 0) + (bill.sportsFees || 0) + (bill.ptaDues || 0) + (bill.transportationBill || 0) + (bill.otherFee || 0);
         const totalPaid = (bill.payments || []).reduce((sum, p) => sum + (p.amount || 0), 0);
         map[bill.studentId] = Math.max(0, totalBilled - totalPaid);
       }
@@ -575,7 +575,9 @@ export default function CommunicationsTab({ theme, students, isAdmin }: Props) {
 
     const proposalPrompt = activeChannel === 'ghana-sms'
       ? `MTN GHANA SMS BROADCAST: Dispatch ${count} real automated parent messages? This will deduct ${count} SMS units from your Paystack-funded prepaid balance.`
-      : `TWILIO BROADCAST PROPOSAL: Dispatch ${count} automated parent messages via your Twilio Cloud account?`;
+      : activeChannel === 'whatsapp-direct'
+        ? `WHATSAPP BROADCAST: Preparing ${count} personalized messages. This will attempt to open ${count} WhatsApp chat windows sequentially. Please allow popups if prompted. Proceed?`
+        : `TWILIO BROADCAST PROPOSAL: Dispatch ${count} automated parent messages via your Twilio Cloud account?`;
 
     if (window.confirm(proposalPrompt)) {
       setIsBulkSending(true);
@@ -583,7 +585,7 @@ export default function CommunicationsTab({ theme, students, isAdmin }: Props) {
       setBulkSuccessCount(0);
       setBulkFailedCount(0);
       setCancelBulkSignal(false);
-      setBulkStatusText('Connecting to cellular network transceivers...');
+      setBulkStatusText(activeChannel === 'whatsapp-direct' ? 'Launching WhatsApp Dispatcher...' : 'Connecting to cellular network transceivers...');
 
       const recipientList = students.filter(s => selectedStudentIds.includes(s.id));
       let currentLogs = [...smsLogs];
@@ -595,7 +597,7 @@ export default function CommunicationsTab({ theme, students, isAdmin }: Props) {
         }
 
         const student = recipientList[i];
-        setBulkStatusText(`Sending to guardian of ${student.firstName} ${student.lastName} (${i + 1}/${count})...`);
+        setBulkStatusText(`Processing ${student.firstName} ${student.lastName} (${i + 1}/${count})...`);
         setBulkProgress(Math.round(((i + 1) / count) * 100));
 
         const msgText = compileMessage(student, templateText);
@@ -605,25 +607,29 @@ export default function CommunicationsTab({ theme, students, isAdmin }: Props) {
         if (activeChannel === 'ghana-sms') {
           result = await runGhanaSmsSend(parentPhone, msgText);
           if (result.success) {
-            // Live credit countdown tick in the UI
             setSchool(prev => ({
               ...prev,
               smsBalance: Math.max(0, (prev.smsBalance || 0) - 1)
             }));
           }
+        } else if (activeChannel === 'whatsapp-direct') {
+          const waHref = getWhatsAppHref(student);
+          window.open(waHref, '_blank');
+          logWhatsAppDispatch(student);
+          result = { success: true };
         } else {
           result = await runRealTwilioSend(parentPhone, msgText);
         }
 
         const newLog: DispatchLog = {
-          id: `SMS_${Date.now()}_${student.id}_bulk`,
+          id: `${activeChannel === 'whatsapp-direct' ? 'WA' : 'SMS'}_${Date.now()}_${student.id}_bulk`,
           timestamp: new Date().toISOString(),
           studentId: student.id,
           studentName: `${student.firstName} ${student.lastName}`,
           guardianName: student.guardianName,
           phoneNumber: parentPhone,
           message: msgText,
-          channel: activeChannel === 'ghana-sms' ? 'Ghana Carrier (MTN)' : 'Twilio API',
+          channel: activeChannel === 'ghana-sms' ? 'Ghana Carrier (MTN)' : activeChannel === 'whatsapp-direct' ? 'WhatsApp Direct' : 'Twilio API',
           status: result.success ? 'Delivered' : 'Failed',
           errorDetails: result.error,
           class: student.class
@@ -825,6 +831,20 @@ export default function CommunicationsTab({ theme, students, isAdmin }: Props) {
             >
               <span>Cellular Share App</span>
             </button>
+            <button
+              onClick={() => {
+                setActiveChannel('whatsapp-direct');
+                setStorageItem('geetech_active_sms_channel', 'whatsapp-direct');
+              }}
+              className={`p-1.5 px-3 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                activeChannel === 'whatsapp-direct'
+                  ? 'bg-emerald-600 text-white shadow-sm'
+                  : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              <MessageCircle size={14} />
+              <span>WhatsApp Direct</span>
+            </button>
           </div>
         </div>
 
@@ -965,6 +985,19 @@ export default function CommunicationsTab({ theme, students, isAdmin }: Props) {
               <div className="text-[10px] font-black text-indigo-800 uppercase tracking-wider font-display">Personal Handset Cellular Share Redirection (E.164 Mode)</div>
               <p className="text-xs text-slate-600 leading-normal font-semibold">
                 No configurations, keys, or payments required! The bento transmitter compiles customized parent messages and formats deep links. Clicking row icons pops up your device's native SMS application, sending from your standard carrier carrier lines.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* WHATSAPP DIRECT STATUS */}
+        {activeChannel === 'whatsapp-direct' && (
+          <div className="bg-emerald-50/50 border border-emerald-200 rounded-2xl p-4 flex items-center gap-3 animate-fade-in">
+            <span className="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+            <div className="flex-1">
+              <div className="text-[10px] font-black text-emerald-800 uppercase tracking-wider font-display">WhatsApp Direct Handshake Pipeline</div>
+              <p className="text-xs text-slate-600 leading-normal font-semibold">
+                Bypasses standard SMS protocols! Generates deep-linked WhatsApp messages for each guardian including secure Parent Portal access tokens. Clicking row icons pops up WhatsApp Web or Desktop pre-filled with the tailored template.
               </p>
             </div>
           </div>

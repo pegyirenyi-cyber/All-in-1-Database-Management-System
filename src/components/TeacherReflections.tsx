@@ -17,10 +17,107 @@ import {
   FileDown,
   Printer
 } from 'lucide-react';
-import { TeacherReflection, ClassType, Teacher, SchoolInfo } from '../types';
+import { TeacherReflection, ClassType, Teacher, SchoolInfo, Student, StudentAssessment } from '../types';
 import { DbController } from '../db';
 import { generatePdfFromHtml, downloadBlobLocally } from '../pdfHelper';
 import { getWatermarkHtml } from '../utils';
+function RichTextEditor({ value, onChange, placeholder }: { value: string; onChange: (val: string) => void; placeholder?: string }) {
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+
+  const insertTag = (openTag: string, closeTag: string) => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const text = textarea.value;
+    
+    const selectedText = text.substring(start, end);
+    const replacement = openTag + selectedText + closeTag;
+    
+    const newValue = text.substring(0, start) + replacement + text.substring(end);
+    onChange(newValue);
+    
+    // Reset focus and selection
+    setTimeout(() => {
+      textarea.focus();
+      textarea.setSelectionRange(start + openTag.length, start + openTag.length + selectedText.length);
+    }, 0);
+  };
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl overflow-hidden focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-100 transition-all font-sans">
+      <div className="bg-slate-50 border-b border-slate-200 p-2 flex flex-wrap gap-1.5 items-center">
+        <button
+          type="button"
+          onClick={() => insertTag('<b>', '</b>')}
+          className="p-1 px-2.5 rounded text-xs font-bold text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
+          title="Bold (<b>)"
+        >
+          B
+        </button>
+        <button
+          type="button"
+          onClick={() => insertTag('<i>', '</i>')}
+          className="p-1 px-2.5 rounded text-xs italic text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
+          title="Italic (<i>)"
+        >
+          I
+        </button>
+        <button
+          type="button"
+          onClick={() => insertTag('<u>', '</u>')}
+          className="p-1 px-2.5 rounded text-xs underline text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
+          title="Underline (<u>)"
+        >
+          U
+        </button>
+        <div className="h-4 w-px bg-slate-300 mx-1" />
+        <button
+          type="button"
+          onClick={() => insertTag('<h3>', '</h3>')}
+          className="p-1 px-1.5 rounded text-[10px] font-black uppercase tracking-wider text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
+          title="Header (<h3>)"
+        >
+          H3
+        </button>
+        <button
+          type="button"
+          onClick={() => insertTag('<ul>\n  <li>', '</li>\n</ul>')}
+          className="p-1 px-1.5 rounded text-xs text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
+          title="Bullet List (<ul><li>)"
+        >
+          • List
+        </button>
+        <button
+          type="button"
+          onClick={() => insertTag('<blockquote>', '</blockquote>')}
+          className="p-1 px-1.5 rounded text-xs text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
+          title="Blockquote (<blockquote>)"
+        >
+          " Quote
+        </button>
+        <button
+          type="button"
+          onClick={() => insertTag('<br />', '')}
+          className="p-1 px-1.5 rounded text-[10px] font-black uppercase tracking-wider text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
+          title="Line Break (<br />)"
+        >
+          Line Break
+        </button>
+        <div className="flex-1" />
+        <span className="text-[9px] font-mono text-slate-400 select-none pr-1">HTML Enabled</span>
+      </div>
+      <textarea
+        ref={textareaRef}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full h-40 p-4 text-xs font-mono bg-white outline-none border-none resize-y leading-relaxed text-slate-800"
+      />
+    </div>
+  );
+}
 
 interface TeacherReflectionsProps {
   teacher: Teacher;
@@ -33,10 +130,36 @@ export default function TeacherReflections({ teacher, reflections, schoolInfo, o
   const [isAdding, setIsAdding] = useState(false);
   const [content, setContent] = useState('');
   const [category, setCategory] = useState<TeacherReflection['category']>('General');
+  const [strategyTitle, setStrategyTitle] = useState('');
   const [selectedClass, setSelectedClass] = useState<ClassType | ''>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+
+  // Performance Linking State
+  const [showLinkPerformance, setShowLinkPerformance] = useState(false);
+  const [linkedStudentIds, setLinkedStudentIds] = useState<string[]>([]);
+  const [linkedAssessmentIds, setLinkedAssessmentIds] = useState<string[]>([]);
+  const [performanceSummary, setPerformanceSummary] = useState('');
+
+  // Data fetching for linking
+  const students = useMemo(() => DbController.getStudents(), []);
+  const assessments = useMemo(() => DbController.getAssessments(), []);
+  const calendar = useMemo(() => DbController.getAcademicCalendar(), []);
+
+  const classStudents = useMemo(() => {
+    if (!selectedClass) return [];
+    return students.filter(s => s.class === selectedClass);
+  }, [selectedClass, students]);
+
+  const classAssessments = useMemo(() => {
+    if (!selectedClass) return [];
+    return assessments.filter(a => 
+      a.class === selectedClass && 
+      a.academicYear === calendar.activeAcademicYear && 
+      a.term === calendar.activeTerm
+    );
+  }, [selectedClass, assessments, calendar]);
 
   // Period filtering
   const [period, setPeriod] = useState<'all' | 'month' | 'week'>('all');
@@ -60,7 +183,10 @@ export default function TeacherReflections({ teacher, reflections, schoolInfo, o
   const teacherReflections = filteredReflections;
 
   const handleSave = () => {
-    if (!content.trim()) return;
+    if (!content.trim() || (category === 'Weekly Strategy' && !strategyTitle.trim())) {
+      alert(category === 'Weekly Strategy' ? 'Please provide a title for your strategy.' : 'Please provide content for your reflection.');
+      return;
+    }
     
     setIsSubmitting(true);
     const newReflection: TeacherReflection = {
@@ -70,15 +196,26 @@ export default function TeacherReflections({ teacher, reflections, schoolInfo, o
       date: new Date().toISOString().split('T')[0],
       content: content.trim(),
       category,
+      weeklyStrategyTitle: category === 'Weekly Strategy' ? strategyTitle : undefined,
+      linkedStudentIds: linkedStudentIds.length > 0 ? linkedStudentIds : undefined,
+      linkedAssessmentIds: linkedAssessmentIds.length > 0 ? linkedAssessmentIds : undefined,
+      performanceSummary: performanceSummary.trim() || undefined,
       class: selectedClass || undefined,
+      academicYear: calendar.activeAcademicYear,
+      term: calendar.activeTerm,
       createdAt: new Date().toISOString()
     };
 
     DbController.saveTeacherReflection(newReflection);
     
-    // Simulate save delay for UI feel
+    // Reset states
     setTimeout(() => {
       setContent('');
+      setStrategyTitle('');
+      setLinkedStudentIds([]);
+      setLinkedAssessmentIds([]);
+      setPerformanceSummary('');
+      setShowLinkPerformance(false);
       setIsAdding(false);
       setIsSubmitting(false);
       onRefresh();
@@ -179,8 +316,8 @@ export default function TeacherReflections({ teacher, reflections, schoolInfo, o
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-1">
                   <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest font-mono">Category</label>
-                  <div className="flex gap-2">
-                    {(['Behavior', 'Learning Progress', 'General', 'Other'] as const).map(cat => (
+                  <div className="flex flex-wrap gap-2">
+                    {(['Behavior', 'Learning Progress', 'General', 'Other', 'Weekly Strategy'] as const).map(cat => (
                       <button
                         key={cat}
                         onClick={() => setCategory(cat)}
@@ -197,13 +334,13 @@ export default function TeacherReflections({ teacher, reflections, schoolInfo, o
                 </div>
                 
                 <div className="space-y-1">
-                  <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest font-mono">Assigned Class (Optional)</label>
+                  <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest font-mono">Assigned Class (Required for strategies/linking)</label>
                   <select
                     value={selectedClass}
                     onChange={(e) => setSelectedClass(e.target.value as ClassType)}
                     className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-medium focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all"
                   >
-                    <option value="">No specific class</option>
+                    <option value="">Select a class...</option>
                     {teacher.assignedClasses?.map(cls => (
                       <option key={cls} value={cls}>{cls}</option>
                     ))}
@@ -211,15 +348,116 @@ export default function TeacherReflections({ teacher, reflections, schoolInfo, o
                 </div>
               </div>
 
+              {category === 'Weekly Strategy' && (
+                <motion.div 
+                  initial={{ opacity: 0, y: -5 }} 
+                  animate={{ opacity: 1, y: 0 }}
+                  className="space-y-1"
+                >
+                  <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest font-mono">Strategy Title</label>
+                  <input
+                    type="text"
+                    value={strategyTitle}
+                    onChange={(e) => setStrategyTitle(e.target.value)}
+                    placeholder="e.g. Differentiated Math Instruction Week 4"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                  />
+                </motion.div>
+              )}
+
               <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest font-mono">Journal Entry</label>
-                <textarea
+                <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest font-mono">Journal Entry / Strategy Details</label>
+                <RichTextEditor 
                   value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  placeholder="Describe class behavior, learning breakthroughs, or any notes for today..."
-                  className="w-full min-h-[120px] bg-slate-50 border border-slate-200 rounded-xl p-4 text-sm font-sans focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all resize-none"
+                  onChange={setContent}
+                  placeholder="Describe class behavior, learning breakthroughs, or detailed teaching strategies..."
                 />
               </div>
+
+              {selectedClass && (
+                <div className="pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setShowLinkPerformance(!showLinkPerformance)}
+                    className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-indigo-600 hover:text-indigo-700 transition-all"
+                  >
+                    {showLinkPerformance ? <ChevronDown size={14} /> : <TrendingUp size={14} />}
+                    {showLinkPerformance ? 'Hide Performance Linking' : 'Link Student Performance Data'}
+                  </button>
+
+                  <AnimatePresence>
+                    {showLinkPerformance && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="overflow-hidden mt-3 space-y-4"
+                      >
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <label className="text-[10px] font-bold text-slate-500">Target Students</label>
+                            <div className="max-h-32 overflow-y-auto border border-slate-200 rounded-lg p-2 space-y-1">
+                              {classStudents.map(student => (
+                                <label key={student.id} className="flex items-center gap-2 text-xs p-1 hover:bg-slate-50 rounded cursor-pointer">
+                                  <input 
+                                    type="checkbox"
+                                    checked={linkedStudentIds.includes(student.id)}
+                                    onChange={(e) => {
+                                      if (e.target.checked) {
+                                        setLinkedStudentIds([...linkedStudentIds, student.id]);
+                                      } else {
+                                        setLinkedStudentIds(linkedStudentIds.filter(id => id !== student.id));
+                                      }
+                                    }}
+                                    className="rounded border-slate-300 text-indigo-600"
+                                  />
+                                  <span>{student.firstName} {student.lastName}</span>
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="space-y-2">
+                            <label className="text-[10px] font-bold text-slate-500">Related Assessments</label>
+                            <div className="max-h-32 overflow-y-auto border border-slate-200 rounded-lg p-2 space-y-1">
+                              {classAssessments.map(ass => (
+                                <label key={ass.id} className="flex items-center gap-2 text-xs p-1 hover:bg-slate-50 rounded cursor-pointer">
+                                  <input 
+                                    type="checkbox"
+                                    checked={linkedAssessmentIds.includes(ass.id)}
+                                    onChange={(e) => {
+                                      if (e.target.checked) {
+                                        setLinkedAssessmentIds([...linkedAssessmentIds, ass.id]);
+                                      } else {
+                                        setLinkedAssessmentIds(linkedAssessmentIds.filter(id => id !== ass.id));
+                                      }
+                                    }}
+                                    className="rounded border-slate-300 text-indigo-600"
+                                  />
+                                  <span className="truncate">{ass.subject} - {ass.studentName} ({ass.totalScore}%)</span>
+                                </label>
+                              ))}
+                              {classAssessments.length === 0 && (
+                                <p className="text-[10px] text-slate-400 p-2 italic">No assessments found for current term.</p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest font-mono">Performance Impact Summary</label>
+                          <textarea
+                            value={performanceSummary}
+                            onChange={(e) => setPerformanceSummary(e.target.value)}
+                            placeholder="Briefly summarize how this reflection/strategy links to the data above..."
+                            className="w-full h-20 bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs focus:ring-2 focus:ring-indigo-500 outline-none resize-none"
+                          />
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              )}
 
               <div className="flex justify-end">
                 <button
@@ -254,26 +492,66 @@ export default function TeacherReflections({ teacher, reflections, schoolInfo, o
                   <div className={`mt-1 p-1.5 rounded-lg shrink-0 ${
                     refl.category === 'Behavior' ? 'bg-rose-50 text-rose-500' :
                     refl.category === 'Learning Progress' ? 'bg-emerald-50 text-emerald-500' :
+                    refl.category === 'Weekly Strategy' ? 'bg-indigo-50 text-indigo-500' :
                     'bg-slate-50 text-slate-500'
                   }`}>
                     {refl.category === 'Behavior' ? <TrendingUp size={14} /> :
                      refl.category === 'Learning Progress' ? <ShieldAlert size={14} /> :
+                     refl.category === 'Weekly Strategy' ? <PenLine size={14} /> :
                      <MessageSquare size={14} />}
                   </div>
                   
-                  <div className="space-y-1">
+                  <div className="space-y-1 overflow-hidden">
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-bold text-slate-900">
-                        {refl.category} 
+                        {refl.weeklyStrategyTitle || refl.category} 
                         {refl.class && <span className="text-indigo-500 ml-1">({refl.class})</span>}
                       </span>
                       <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
                         <Clock size={10} /> {new Date(refl.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                       </span>
                     </div>
-                    <p className={`text-xs text-slate-600 leading-relaxed font-sans ${expandedId === refl.id ? '' : 'line-clamp-2'}`}>
-                      {refl.content}
-                    </p>
+                    
+                    <div 
+                      className={`text-xs text-slate-600 leading-relaxed font-sans prose prose-slate prose-xs max-w-none ${expandedId === refl.id ? '' : 'line-clamp-2'}`}
+                      dangerouslySetInnerHTML={{ __html: refl.content }}
+                    />
+
+                    {expandedId === refl.id && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        className="pt-3 mt-3 border-t border-slate-100 space-y-3"
+                      >
+                        {refl.performanceSummary && (
+                          <div className="bg-amber-50/50 p-3 rounded-lg border border-amber-100/50">
+                            <h5 className="text-[10px] font-bold text-amber-800 uppercase tracking-tight flex items-center gap-1.5 mb-1">
+                              <TrendingUp size={12} /> Performance Link
+                            </h5>
+                            <p className="text-[11px] text-amber-900/80 italic">{refl.performanceSummary}</p>
+                          </div>
+                        )}
+
+                        <div className="flex flex-wrap gap-2">
+                          {refl.linkedStudentIds?.map(sid => {
+                            const student = students.find(s => s.id === sid);
+                            return student ? (
+                              <span key={sid} className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-[9px] font-bold">
+                                {student.firstName} {student.lastName}
+                              </span>
+                            ) : null;
+                          })}
+                          {refl.linkedAssessmentIds?.map(aid => {
+                            const ass = assessments.find(a => a.id === aid);
+                            return ass ? (
+                              <span key={aid} className="px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded text-[9px] font-bold">
+                                {ass.subject} ({ass.totalScore}%)
+                              </span>
+                            ) : null;
+                          })}
+                        </div>
+                      </motion.div>
+                    )}
                   </div>
                 </div>
 
@@ -344,9 +622,11 @@ export default function TeacherReflections({ teacher, reflections, schoolInfo, o
               <div key={refl.id} className="page-break-inside-avoid">
                 <div className="flex items-center justify-between border-l-4 border-indigo-600 pl-4 mb-2">
                   <div>
-                    <span className="text-[10px] font-black uppercase tracking-widest text-indigo-600 block">{refl.category}</span>
+                    <span className="text-[10px] font-black uppercase tracking-widest text-indigo-600 block">
+                      {refl.category === 'Weekly Strategy' ? 'Teaching Strategy' : refl.category}
+                    </span>
                     <h4 className="text-sm font-bold">
-                      {refl.class ? `Class Note: ${refl.class}` : 'General Observation'}
+                      {refl.weeklyStrategyTitle || (refl.class ? `Class Note: ${refl.class}` : 'General Observation')}
                     </h4>
                   </div>
                   <div className="text-right">
@@ -355,8 +635,38 @@ export default function TeacherReflections({ teacher, reflections, schoolInfo, o
                     </span>
                   </div>
                 </div>
-                <div className="bg-slate-50 p-4 rounded-lg border border-slate-100">
-                  <p className="text-sm leading-relaxed text-slate-800 whitespace-pre-wrap">{refl.content}</p>
+                <div className="bg-slate-50 p-4 rounded-lg border border-slate-100 space-y-4">
+                  <div 
+                    className="text-sm leading-relaxed text-slate-800 prose prose-slate prose-sm max-w-none"
+                    dangerouslySetInnerHTML={{ __html: refl.content }}
+                  />
+                  
+                  {(refl.performanceSummary || (refl.linkedStudentIds && refl.linkedStudentIds.length > 0)) && (
+                    <div className="mt-4 pt-4 border-t border-slate-200">
+                      <h5 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Performance Linking & Impact</h5>
+                      {refl.performanceSummary && (
+                        <p className="text-xs text-slate-700 italic mb-3">"{refl.performanceSummary}"</p>
+                      )}
+                      <div className="flex flex-wrap gap-2">
+                        {refl.linkedStudentIds?.map(sid => {
+                          const student = students.find(s => s.id === sid);
+                          return student ? (
+                            <span key={sid} className="px-2 py-1 bg-white border border-slate-200 text-slate-600 rounded text-[9px] font-bold">
+                              {student.firstName} {student.lastName}
+                            </span>
+                          ) : null;
+                        })}
+                        {refl.linkedAssessmentIds?.map(aid => {
+                          const ass = assessments.find(a => a.id === aid);
+                          return ass ? (
+                            <span key={aid} className="px-2 py-1 bg-white border border-indigo-200 text-indigo-600 rounded text-[9px] font-bold">
+                              {ass.subject} ({ass.totalScore}%)
+                            </span>
+                          ) : null;
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}

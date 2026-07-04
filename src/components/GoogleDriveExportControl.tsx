@@ -59,10 +59,12 @@ export default function GoogleDriveExportControl({
   const handleGoogleSignInClick = async () => {
     try {
       setIsLoading(true);
+      setStatus('idle');
       await googleSignIn();
     } catch (error: any) {
       console.error(error);
-      alert('Sign-in failed. Please click "Open in a new tab" if you are running in a sandbox environment.');
+      setStatus('failed');
+      setFeedback('Google authentication failed. Please open the app in a new tab to bypass iframe popup restrictions.');
     } finally {
       setIsLoading(false);
     }

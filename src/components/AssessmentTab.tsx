@@ -15,11 +15,65 @@ import {
   Printer, Save, CheckSquare, RefreshCw, Layers, Award, FileText, LayoutGrid, BarChart3, HelpCircle, AlertCircle, Sparkles, FileDown,
   Eye, EyeOff, ShieldAlert, Trash2, RotateCcw, Eraser, FileSpreadsheet,
   Smartphone, MessageSquare, Send, CheckCircle, ExternalLink, Calendar,
-  X, Sliders, Check, Plus, Info
+  X, Sliders, Check, Plus, Info, TrendingUp, TrendingDown
 } from 'lucide-react';
 import { generateSecureToken, getWatermarkHtml } from '../utils';
 import { generatePdfFromHtml, downloadBlobLocally } from '../pdfHelper';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
+
+export const RankBreakdownTooltip = ({ 
+  term, 
+  year, 
+  averageScore, 
+  gradedCount 
+}: { 
+  term: string; 
+  year: string; 
+  averageScore: number; 
+  gradedCount?: number;
+}) => {
+  return (
+    <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block w-80 bg-slate-900 text-slate-100 rounded-xl p-4 shadow-2xl border border-slate-800 text-left pointer-events-none font-sans normal-case print:hidden transition-all duration-200">
+      <div className="flex items-center gap-1.5 border-b border-slate-800 pb-2 mb-2">
+        <Award size={14} className="text-indigo-400" />
+        <span className="font-bold text-xs tracking-tight">Class Rank Calculation Formula</span>
+      </div>
+      <div className="space-y-2 text-[11px] leading-relaxed text-slate-300">
+        <p>
+          Calculated for <strong className="text-indigo-300">{term} ({year})</strong> using standard Competition Ranking (Ties are resolved by skipping subsequent positions).
+        </p>
+        <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800/60 space-y-2 font-mono text-[10px]">
+          <div>
+            <span className="text-slate-400 block font-sans text-[9px] uppercase font-semibold">1. Subject Score Calculation:</span>
+            <span className="text-slate-200">Total Score (100) = Class Score (50) + Terminal Exam Score (50)</span>
+          </div>
+          <div>
+            <span className="text-slate-400 block font-sans text-[9px] uppercase font-semibold">2. Terminal Average Score:</span>
+            <span className="text-slate-200">Average = Sum(All Subject Totals) / Count of Graded Subjects</span>
+          </div>
+          <div>
+            <span className="text-slate-400 block font-sans text-[9px] uppercase font-semibold">3. Final Standing/Rank Formula:</span>
+            <span className="text-indigo-300 font-bold">Rank = 1 + Count of classmates with a strictly higher Terminal Average</span>
+          </div>
+        </div>
+        <div className="flex justify-between border-t border-slate-800 pt-2 mt-2 font-sans">
+          <div className="space-y-0.5">
+            <span className="text-[9px] text-slate-400 block uppercase">Student Terminal Average</span>
+            <strong className="text-indigo-300 text-xs font-mono">{averageScore}%</strong>
+          </div>
+          {gradedCount !== undefined && gradedCount > 0 && (
+            <div className="space-y-0.5 text-right">
+              <span className="text-[9px] text-slate-400 block uppercase">Graded Cohort Size</span>
+              <strong className="text-emerald-400 text-xs font-mono">{gradedCount} Students</strong>
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="absolute top-full left-1/2 -translate-x-1/2 -mt-1 w-2 h-2 bg-slate-900 rotate-45 border-r border-b border-slate-800" />
+    </div>
+  );
+};
+
 
 // D3 Bar Chart Component
 const SubjectPerformanceChart = ({ data, viewType }: { data: any[], viewType: 'Average' | 'Trend' }) => {
@@ -179,7 +233,7 @@ interface Props {
   } | null;
 }
 
-type AssessmentSubMode = 'Worksheet' | 'IndividualReport' | 'Broadsheet' | 'PerformanceAnalytics';
+type AssessmentSubMode = 'Worksheet' | 'IndividualReport' | 'Broadsheet' | 'PerformanceAnalytics' | 'StudentStrengthsWeaknesses';
 
 export default function AssessmentTab({ 
   theme, 
@@ -252,44 +306,47 @@ export default function AssessmentTab({
         doc.write(`
           <html>
             <head>
-              <title>\${title}</title>
+              <title>${title}</title>
               <style>
                 @page {
-                  size: A4 \${isLandscape ? 'landscape' : 'portrait'};
-                  margin: 10mm;
+                  size: A4 ${isLandscape ? 'landscape' : 'portrait'};
+                  margin: 8mm;
                 }
                 body {
-                  font-family: system-ui, -apple-system, sans-serif;
+                  font-family: 'Inter', system-ui, -apple-system, sans-serif;
                   background-color: white !important;
                   color: black !important;
                   margin: 0;
-                  padding: 5mm;
+                  padding: 2mm;
                 }
                 h2 {
-                  margin: 0 0 5px 0;
-                  font-size: 16px;
+                  margin: 0 0 4px 0;
+                  font-size: 14px;
                   text-transform: uppercase;
-                  color: #0f172a;
+                  color: #000;
+                  font-weight: 800;
                 }
                 p {
-                  margin: 0 0 15px 0;
-                  font-size: 11px;
-                  color: #475569;
+                  margin: 0 0 10px 0;
+                  font-size: 10px;
+                  color: #334155;
                 }
                 table {
                   width: 100%;
                   border-collapse: collapse;
-                  font-size: 10px;
+                  font-size: ${isLandscape ? '8.5px' : '9.5px'};
+                  table-layout: auto;
                 }
                 th, td {
-                  border: 1px solid #cbd5e1;
-                  padding: 5px 6px;
+                  border: 1px solid #94a3b8;
+                  padding: 3px 4px;
                   text-align: left;
+                  word-break: break-word;
                 }
                 th {
-                  background-color: #f1f5f9 !important;
-                  font-weight: bold;
-                  color: #334155;
+                  background-color: #f8fafc !important;
+                  font-weight: 800;
+                  color: #000;
                 }
                 .text-center {
                   text-align: center;
@@ -300,14 +357,24 @@ export default function AssessmentTab({
                 .printed-value {
                   font-family: monospace;
                   font-weight: bold;
-                  font-size: 11px;
+                  font-size: 10px;
+                }
+                /* Handle overflow for extremely wide broadsheets */
+                #broadsheet-ledger-table-container, 
+                #marks-input-sheet-table-container {
+                   width: 100% !important;
+                   overflow: visible !important;
+                }
+                /* Hide any interactive elements that might have been cloned */
+                button, .no-print {
+                  display: none !important;
                 }
               </style>
             </head>
             <body>
-              <h2>\${title}</h2>
-              <p>Class: \${selectedClass} | Term: \${selectedTerm} | Academic Year: \${selectedYear} \${selectedSubject ? \`| Subject: \${selectedSubject}\` : ''}</p>
-              \${cloned.innerHTML}
+              <h2>${title}</h2>
+              <p>Class: ${selectedClass} | Term: ${selectedTerm} | Academic Year: ${selectedYear} ${selectedSubject ? `| Subject: ${selectedSubject}` : ''}</p>
+              ${cloned.innerHTML}
             </body>
           </html>
         `);
@@ -357,6 +424,7 @@ export default function AssessmentTab({
   // Student Trend Visualizer states
   const [trendStudentId, setTrendStudentId] = useState<string>('');
   const [trendSubject, setTrendSubject] = useState<string>('All');
+  const [swSubjectFilter, setSwSubjectFilter] = useState<string>('All');
   
   // Heatmap Threshold Benchmark state
   const [heatmapThreshold, setHeatmapThreshold] = useState<number>(60);
@@ -398,6 +466,17 @@ export default function AssessmentTab({
   const [isBroadcastingSms, setIsBroadcastingSms] = useState(false);
   const [broadcastProgress, setBroadcastProgress] = useState(0);
   const [broadcastResults, setBroadcastResults] = useState<Record<string, { status: 'idle' | 'sending' | 'success' | 'error'; error?: string }>>({});
+
+  // Custom Confirmation Dialog State
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmText?: string;
+    cancelText?: string;
+    danger?: boolean;
+    onConfirm: () => void;
+  } | null>(null);
 
   const [reopeningDate, setReopeningDate] = useState<string>('');
 
@@ -938,50 +1017,66 @@ export default function AssessmentTab({
       return;
     }
     if (selectedStudentId) {
-      if (window.confirm("Are you sure you want to reset and delete grades for the currently selected student?")) {
-        const cleared = activeWorksheet.map(row => {
-          if (row.studentId === selectedStudentId) {
-            const resetRow = {
-              ...row,
-              exercises: [0, 0, 0, 0],
-              tests: [0, 0],
-              projectWork: 0,
-              groupWork: 0,
-              examScore100: 0,
-              classScoreTotal: 0,
-              classScore50: 0,
-              examScore50: 0,
-              totalScore: 0,
-              gradeLevel: 'L5' as const,
-              remarks: 'Emerging',
-              position: undefined
-            };
-            return DbController.calculateScoreDetails(resetRow);
-          }
-          return row;
-        });
+      const targetStu = students.find(s => s.id === selectedStudentId);
+      const studentName = targetStu ? `${targetStu.firstName} ${targetStu.lastName}` : "the currently selected student";
+      setConfirmModal({
+        isOpen: true,
+        title: "Reset & Delete Student Grades?",
+        message: `Are you sure you want to reset and delete grades for ${studentName}? This will reset all exercises, tests, project work, and exams to zero score values.`,
+        confirmText: "Reset Grades",
+        danger: true,
+        onConfirm: () => {
+          const cleared = activeWorksheet.map(row => {
+            if (row.studentId === selectedStudentId) {
+              const resetRow = {
+                ...row,
+                exercises: [0, 0, 0, 0],
+                tests: [0, 0],
+                projectWork: 0,
+                groupWork: 0,
+                examScore100: 0,
+                classScoreTotal: 0,
+                classScore50: 0,
+                examScore50: 0,
+                totalScore: 0,
+                gradeLevel: 'L5' as const,
+                remarks: 'Emerging',
+                position: undefined
+              };
+              return DbController.calculateScoreDetails(resetRow);
+            }
+            return row;
+          });
 
-        const ranked = DbController.calculatePositions(cleared);
-        setActiveWorksheet(ranked);
-        setUnsavedChanges(true);
-        if (isAutoSave) {
-          DbController.saveAssessmentsSheet(ranked);
-          setUnsavedChanges(false);
+          const ranked = DbController.calculatePositions(cleared);
+          setActiveWorksheet(ranked);
+          setUnsavedChanges(true);
+          if (isAutoSave) {
+            DbController.saveAssessmentsSheet(ranked);
+            setUnsavedChanges(false);
+          }
+          alert("Grades deleted and reset for the selected student.");
         }
-        alert("Grades deleted and reset for the selected student.");
-      }
+      });
     } else {
       alert("Please select a student first in the worksheet or individual report view.");
     }
   };
 
   const handleDeleteAllAssessments = () => {
-    if (window.confirm("CRITICAL WARNING: Are you sure you want to completely delete all historical Class Assessments from the entire database? This cannot be undone.")) {
-      DbController.clearAllAssessments();
-      setActiveWorksheet([]);
-      onManualSave();
-      alert("Successfully purged all recorded class assessments from database.");
-    }
+    setConfirmModal({
+      isOpen: true,
+      title: "CRITICAL: Purge All Assessments?",
+      message: "Are you sure you want to completely delete all historical Class Assessments from the entire database? This action is permanent and cannot be undone.",
+      confirmText: "Wipe Assessments",
+      danger: true,
+      onConfirm: () => {
+        DbController.clearAllAssessments();
+        setActiveWorksheet([]);
+        onManualSave();
+        alert("Successfully purged all recorded class assessments from database.");
+      }
+    });
   };
 
   const handleExportAllAssessmentsCSV = () => {
@@ -1104,7 +1199,7 @@ export default function AssessmentTab({
     // Find current bill
     const currentBill = bills.find(b => b.studentId === selectedStudentId && b.academicYear === selectedYear && b.term === selectedTerm);
     const currentExpected = currentBill 
-      ? (currentBill.schoolFees + currentBill.utilityBill + currentBill.sportsFees + currentBill.ptaDues + currentBill.otherFee)
+      ? (currentBill.schoolFees + currentBill.utilityBill + currentBill.sportsFees + currentBill.ptaDues + (currentBill.transportationBill || 0) + currentBill.otherFee)
       : 0;
     const currentPaid = currentBill
       ? currentBill.payments.reduce((sum, p) => sum + p.amount, 0)
@@ -1122,7 +1217,7 @@ export default function AssessmentTab({
     
     let previousOutstanding = 0;
     allPreviousBills.forEach(pb => {
-      const pExp = pb.schoolFees + pb.utilityBill + pb.sportsFees + pb.ptaDues + pb.otherFee;
+      const pExp = pb.schoolFees + pb.utilityBill + pb.sportsFees + pb.ptaDues + (pb.transportationBill || 0) + pb.otherFee;
       const pPaid = pb.payments.reduce((sum, p) => sum + p.amount, 0);
       previousOutstanding += Math.max(0, pExp - pPaid);
     });
@@ -1155,7 +1250,7 @@ export default function AssessmentTab({
     let isEstimated = false;
 
     if (nextTermBillObj) {
-      nextTermBillSum = nextTermBillObj.schoolFees + nextTermBillObj.utilityBill + nextTermBillObj.sportsFees + nextTermBillObj.ptaDues + nextTermBillObj.otherFee;
+      nextTermBillSum = nextTermBillObj.schoolFees + nextTermBillObj.utilityBill + nextTermBillObj.sportsFees + nextTermBillObj.ptaDues + (nextTermBillObj.transportationBill || 0) + nextTermBillObj.otherFee;
     } else {
       nextTermBillSum = currentExpected;
       isEstimated = true;
@@ -1185,7 +1280,7 @@ export default function AssessmentTab({
       // Calculate financials for this student
       const currentBill = bills.find(b => b.studentId === student.id && b.academicYear === selectedYear && b.term === selectedTerm);
       const currentExpected = currentBill 
-        ? (currentBill.schoolFees + currentBill.utilityBill + currentBill.sportsFees + currentBill.ptaDues + currentBill.otherFee)
+        ? (currentBill.schoolFees + currentBill.utilityBill + currentBill.sportsFees + currentBill.ptaDues + (currentBill.transportationBill || 0) + currentBill.otherFee)
         : 0;
       const currentPaid = currentBill
         ? currentBill.payments.reduce((sum, p) => sum + p.amount, 0)
@@ -1201,7 +1296,7 @@ export default function AssessmentTab({
       
       let previousOutstanding = 0;
       allPreviousBills.forEach(pb => {
-        const pExp = pb.schoolFees + pb.utilityBill + pb.sportsFees + pb.ptaDues + pb.otherFee;
+        const pExp = pb.schoolFees + pb.utilityBill + pb.sportsFees + pb.ptaDues + (pb.transportationBill || 0) + pb.otherFee;
         const pPaid = pb.payments.reduce((sum, p) => sum + p.amount, 0);
         previousOutstanding += Math.max(0, pExp - pPaid);
       });
@@ -1232,7 +1327,7 @@ export default function AssessmentTab({
       let isEstimated = false;
 
       if (nextTermBillObj) {
-        nextTermBillSum = nextTermBillObj.schoolFees + nextTermBillObj.utilityBill + nextTermBillObj.sportsFees + nextTermBillObj.ptaDues + nextTermBillObj.otherFee;
+        nextTermBillSum = nextTermBillObj.schoolFees + nextTermBillObj.utilityBill + nextTermBillObj.sportsFees + nextTermBillObj.ptaDues + (nextTermBillObj.transportationBill || 0) + nextTermBillObj.otherFee;
       } else {
         nextTermBillSum = currentExpected;
         isEstimated = true;
@@ -1479,6 +1574,120 @@ export default function AssessmentTab({
     return formattedData;
   }, [selectedTrendStudent, trendSubject]);
 
+  // Detailed Analysis of Student Strengths and Weaknesses across subjects of the active academic year
+  const studentStrengthsWeaknesses = useMemo(() => {
+    if (!selectedStudentId) return null;
+    
+    const allAssessments = DbController.getAssessments();
+    const studentYearAssessments = allAssessments.filter(
+      a => a.studentId === selectedStudentId && a.academicYear === selectedYear
+    );
+    
+    if (studentYearAssessments.length === 0) return null;
+
+    // Group by subject
+    const bySubject: Record<string, { termScores: Record<string, number>; termGrades: Record<string, string>; assessmentsList: StudentAssessment[] }> = {};
+
+    studentYearAssessments.forEach(a => {
+      const subjectKey = a.subject;
+      if (!bySubject[subjectKey]) {
+        bySubject[subjectKey] = { termScores: {}, termGrades: {}, assessmentsList: [] };
+      }
+      bySubject[subjectKey].termScores[a.term] = a.totalScore;
+      bySubject[subjectKey].termGrades[a.term] = a.gradeLevel;
+      bySubject[subjectKey].assessmentsList.push(a);
+    });
+
+    const terms: TermType[] = ['Term 1', 'Term 2', 'Term 3'];
+
+    const analysis = Object.keys(bySubject).map(subject => {
+      const data = bySubject[subject];
+      const scores = Object.values(data.termScores);
+      const avgScore = scores.length > 0 
+        ? parseFloat((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1)) 
+        : 0;
+
+      // Determine chronological trend
+      let trend: 'up' | 'down' | 'stable' | 'unknown' = 'unknown';
+      const activeTermsSorted = terms.filter(t => data.termScores[t] !== undefined);
+      if (activeTermsSorted.length >= 2) {
+        const latestTerm = activeTermsSorted[activeTermsSorted.length - 1];
+        const prevTerm = activeTermsSorted[activeTermsSorted.length - 2];
+        const diff = data.termScores[latestTerm] - data.termScores[prevTerm];
+        if (diff > 1.5) trend = 'up';
+        else if (diff < -1.5) trend = 'down';
+        else trend = 'stable';
+      }
+
+      // Categorize subject based on average score:
+      // Strength (Proficient/Highly Proficient) -> avgScore >= 70
+      // Weakness (Needs Support/Emerging) -> avgScore < 55
+      // Steady (Approaching/Stable) -> 55 <= avgScore < 70
+      let category: 'strength' | 'weakness' | 'steady' = 'steady';
+      if (avgScore >= 70) category = 'strength';
+      else if (avgScore < 55) category = 'weakness';
+
+      return {
+        subject,
+        termScores: data.termScores,
+        termGrades: data.termGrades,
+        avgScore,
+        trend,
+        category,
+      };
+    }).sort((a, b) => b.avgScore - a.avgScore);
+
+    const strengths = analysis.filter(a => a.category === 'strength');
+    const weaknesses = analysis.filter(a => a.category === 'weakness');
+    const steady = analysis.filter(a => a.category === 'steady');
+
+    const totalAvg = analysis.length > 0
+      ? parseFloat((analysis.reduce((sum, a) => sum + a.avgScore, 0) / analysis.length).toFixed(1))
+      : 0;
+
+    return {
+      allSubjectsAnalysis: analysis,
+      strengths,
+      weaknesses,
+      steady,
+      annualAverage: totalAvg
+    };
+  }, [selectedStudentId, selectedYear, activeWorksheet]);
+
+  // Overall student average score trend across terms for the active academic year
+  const overallTermTrendData = useMemo(() => {
+    if (!studentStrengthsWeaknesses) return [];
+    const terms: TermType[] = ['Term 1', 'Term 2', 'Term 3'];
+    return terms.map(term => {
+      const termScores = studentStrengthsWeaknesses.allSubjectsAnalysis
+        .map(sa => sa.termScores[term])
+        .filter((val): val is number => val !== undefined);
+      const avg = termScores.length > 0
+        ? parseFloat((termScores.reduce((a, b) => a + b, 0) / termScores.length).toFixed(1))
+        : null;
+      return {
+        name: term,
+        'Overall Average': avg
+      };
+    }).filter(d => d['Overall Average'] !== null);
+  }, [studentStrengthsWeaknesses]);
+
+  // Specific selected subject trend data across terms for the active academic year
+  const specificSubjectTrendData = useMemo(() => {
+    if (!studentStrengthsWeaknesses || swSubjectFilter === 'All') return [];
+    const subjectData = studentStrengthsWeaknesses.allSubjectsAnalysis.find(sa => sa.subject === swSubjectFilter);
+    if (!subjectData) return [];
+    
+    const terms: TermType[] = ['Term 1', 'Term 2', 'Term 3'];
+    return terms.map(term => {
+      const score = subjectData.termScores[term];
+      return {
+        name: term,
+        'Subject Score': score !== undefined ? score : null
+      };
+    }).filter(d => d['Subject Score'] !== null);
+  }, [studentStrengthsWeaknesses, swSubjectFilter]);
+
   // Subject Performance Heatmap calculation comparing subject averages with the threshold
   const subjectAveragesData = useMemo(() => {
     const allAssessments = DbController.getAssessments();
@@ -1501,6 +1710,38 @@ export default function AssessmentTab({
       };
     });
   }, [selectedClass, selectedYear, selectedTerm, students, activeWorksheet]);
+
+  const teacherSubjectStats = useMemo(() => {
+    const subjectsToTrack = userRole === 'Teacher' && assignedSubjects.length > 0 
+      ? assignedSubjects 
+      : SUBJECTS;
+
+    const allAssessments = DbController.getAssessments();
+    const filtered = allAssessments.filter(
+      a => a.class === selectedClass && 
+           a.academicYear === selectedYear && 
+           a.term === selectedTerm
+    );
+
+    return subjectsToTrack.map(subj => {
+      const subjAssessments = filtered.filter(a => a.subject === subj);
+      const scores = subjAssessments.map(a => a.totalScore);
+      
+      const average = scores.length > 0 
+        ? parseFloat((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1)) 
+        : 0;
+      const highest = scores.length > 0 ? Math.max(...scores) : 0;
+      const lowest = scores.length > 0 ? Math.min(...scores) : 0;
+      
+      return {
+        subject: subj,
+        average,
+        highest,
+        lowest,
+        gradedCount: scores.length
+      };
+    });
+  }, [selectedClass, selectedYear, selectedTerm, assignedSubjects, userRole, activeWorksheet]);
 
   const subjectTrendData = useMemo(() => {
       const allAssessments = DbController.getAssessments();
@@ -1678,6 +1919,12 @@ export default function AssessmentTab({
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-bold transition text-[11px] cursor-pointer ${subMode === 'PerformanceAnalytics' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}
             >
               <BarChart3 size={14} /> Performance Charts
+            </button>
+            <button
+              onClick={() => setSubMode('StudentStrengthsWeaknesses')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-bold transition text-[11px] cursor-pointer ${subMode === 'StudentStrengthsWeaknesses' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}
+            >
+              <Sparkles size={14} className="text-amber-500 animate-pulse" /> Strengths & Weaknesses
             </button>
           </div>
 
@@ -2152,9 +2399,17 @@ export default function AssessmentTab({
                     <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Report Term</span>
                     <strong className="text-slate-800 font-mono">{selectedTerm} ({selectedYear})</strong>
                   </div>
-                  <div>
-                    <span className="text-[10px] uppercase text-indigo-700 font-mono font-medium block">Class Rank Standings</span>
-                    <strong className="text-indigo-900 font-mono font-bold">{compiledReport.classRank || 'N/A'}</strong>
+                  <div className="relative group cursor-help bg-indigo-50/30 p-1.5 rounded-lg border border-indigo-100/50 transition-all hover:bg-indigo-50/80">
+                    <span className="text-[10px] uppercase text-indigo-700 font-mono font-bold flex items-center gap-1 select-none">
+                      Class Rank Standings <HelpCircle size={10} className="text-indigo-400" />
+                    </span>
+                    <strong className="text-indigo-900 font-mono font-extrabold text-sm">{compiledReport.classRank || 'N/A'}</strong>
+                    <RankBreakdownTooltip 
+                      term={selectedTerm} 
+                      year={selectedYear} 
+                      averageScore={compiledReport.averageScore} 
+                      gradedCount={compiledReport.gradedCount} 
+                    />
                   </div>
                   <div>
                     <span className="text-[10px] uppercase text-teal-700 font-mono font-bold block">Reopening Date</span>
@@ -2471,9 +2726,17 @@ export default function AssessmentTab({
                               <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Report Term</span>
                               <strong className="text-slate-800 text-sm font-mono">{selectedTerm} ({selectedYear})</strong>
                             </div>
-                            <div>
-                              <span className="text-[10px] uppercase text-indigo-700 font-mono font-bold block">Class Rank Standing</span>
+                            <div className="relative group cursor-help bg-indigo-50/30 p-1.5 rounded-lg border border-indigo-100/50 transition-all hover:bg-indigo-50/80">
+                              <span className="text-[10px] uppercase text-indigo-700 font-mono font-bold flex items-center gap-1 select-none">
+                                Class Rank Standing <HelpCircle size={10} className="text-indigo-400" />
+                              </span>
                               <strong className="text-indigo-900 text-sm font-mono font-bold">{report.classRank || 'N/A'}</strong>
+                              <RankBreakdownTooltip 
+                                term={selectedTerm} 
+                                year={selectedYear} 
+                                averageScore={report.averageScore} 
+                                gradedCount={report.gradedCount} 
+                              />
                             </div>
                             <div>
                               <span className="text-[10px] uppercase text-teal-700 font-mono font-bold block">Reopening Date</span>
@@ -2794,9 +3057,17 @@ export default function AssessmentTab({
                     <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Report Term</span>
                     <strong className="text-slate-800 text-sm font-mono">{selectedTerm} ({selectedYear})</strong>
                   </div>
-                  <div>
-                    <span className="text-[10px] uppercase text-indigo-700 font-mono font-bold block">Class Rank Standing</span>
+                  <div className="relative group cursor-help bg-indigo-50/30 p-1.5 rounded-lg border border-indigo-100/50 transition-all hover:bg-indigo-50/80">
+                    <span className="text-[10px] uppercase text-indigo-700 font-mono font-bold flex items-center gap-1 select-none">
+                      Class Rank Standing <HelpCircle size={10} className="text-indigo-400" />
+                    </span>
                     <strong className="text-indigo-900 text-sm font-mono font-bold">{compiledReport.classRank || 'N/A'}</strong>
+                    <RankBreakdownTooltip 
+                      term={selectedTerm} 
+                      year={selectedYear} 
+                      averageScore={compiledReport.averageScore} 
+                      gradedCount={compiledReport.gradedCount} 
+                    />
                   </div>
                   <div>
                     <span className="text-[10px] uppercase text-teal-700 font-mono font-bold block">Reopening Date</span>
@@ -3732,13 +4003,25 @@ export default function AssessmentTab({
               <p className="text-[10px] text-slate-400 mt-0.5">Statistical metrics, cognitive distribution curves, and intervention alert controls for {selectedClass}</p>
             </div>
             
-            <button
-              type="button"
-              onClick={() => setPerformancePreviewMode(!performancePreviewMode)}
-              className="py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-black shadow-xs cursor-pointer transition flex items-center justify-center gap-1 active:translate-y-0.5 self-start sm:self-auto"
-            >
-              <Eye size={12} /> Toggle Preview Mode
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPerformancePreviewMode(!performancePreviewMode)}
+                className="py-1.5 px-3 bg-white border border-slate-200 text-slate-700 rounded-lg text-xs font-black shadow-xs cursor-pointer transition flex items-center justify-center gap-1 active:translate-y-0.5 self-start sm:self-auto"
+              >
+                <Eye size={12} /> {performancePreviewMode ? 'Hide' : 'Show'} Preview Mode
+              </button>
+              
+              {userRole === 'Teacher' && (
+                <button
+                  type="button"
+                  onClick={() => handlePrintElement('teacher-subject-performance-report', `Teacher Subject Performance - ${selectedClass}`, false)}
+                  className="py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-black shadow-xs cursor-pointer transition flex items-center justify-center gap-1 active:translate-y-0.5 self-start sm:self-auto"
+                >
+                  <FileDown size={12} /> Export Subject PDF
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Real-time KPI Statistics Ribbons */}
@@ -4313,6 +4596,377 @@ export default function AssessmentTab({
         </div>
       )}
 
+      {/* SUBMODE E: STUDENT STRENGTHS & WEAKNESSES DIAGNOSTIC REPORT */}
+      {subMode === 'StudentStrengthsWeaknesses' && (
+        <div className="space-y-6 no-print">
+          
+          {/* Top Selector Ribbon */}
+          <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-50/50">
+            <div>
+              <h3 className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
+                🌟 Student Strengths & Weaknesses Diagnostic
+              </h3>
+              <p className="text-[10px] text-slate-400 mt-0.5">
+                Comprehensive subject-by-subject cognitive profile, historic term tracking, and custom remediation guidelines for {selectedClass}
+              </p>
+            </div>
+            
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-500 font-medium font-sans">Select Student:</span>
+                <select
+                  value={selectedStudentId}
+                  onChange={(e) => setSelectedStudentId(e.target.value)}
+                  className="text-xs px-3 py-1.5 border border-slate-200 rounded-lg bg-white font-semibold focus:outline-none cursor-pointer"
+                >
+                  {students.filter(s => s.class === selectedClass).map(s => (
+                    <option key={s.id} value={s.id}>
+                      {s.firstName} {s.lastName} ({s.id})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handlePrintElement('student-strengths-weaknesses-report-card', `Student Strengths & Weaknesses - ${students.find(s => s.id === selectedStudentId)?.firstName || 'Report'}`, false)}
+                className="py-1.5 px-3.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-black shadow-xs cursor-pointer transition flex items-center justify-center gap-1.5 active:translate-y-0.5"
+              >
+                <Printer size={12} /> Print Diagnostic Report
+              </button>
+            </div>
+          </div>
+
+          {!studentStrengthsWeaknesses ? (
+            <div className="bg-white p-12 text-center rounded-2xl border border-slate-200 shadow-sm space-y-3">
+              <div className="w-16 h-16 bg-slate-50 text-slate-400 rounded-full flex items-center justify-center mx-auto text-2xl">
+                📝
+              </div>
+              <h4 className="font-bold text-slate-700 text-sm">No Active Assessment Data</h4>
+              <p className="text-xs text-slate-400 max-w-md mx-auto">
+                No recorded academic marks found for {students.find(s => s.id === selectedStudentId)?.firstName || 'this student'} in {selectedYear}. Please record assessment scores under the "Marks Input Sheet" tab to view this analysis.
+              </p>
+            </div>
+          ) : (
+            <div id="student-strengths-weaknesses-report-card" className="space-y-6 bg-slate-50/50 p-1 rounded-xl">
+              
+              {/* Dynamic KPI Ribbons */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {/* Student Profile Card */}
+                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs flex items-center gap-3">
+                  <div className="w-10 h-10 bg-indigo-55 text-indigo-700 font-bold rounded-full flex items-center justify-center text-lg select-none">
+                    👨‍🎓
+                  </div>
+                  <div>
+                    <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider">Active Student</span>
+                    <strong className="text-xs font-bold text-slate-900 block truncate max-w-[150px]">
+                      {(() => {
+                        const s = students.find(st => st.id === selectedStudentId);
+                        return s ? `${s.firstName} ${s.lastName}` : "Selected Student";
+                      })()}
+                    </strong>
+                    <span className="text-[9px] text-slate-500 block font-mono">{selectedStudentId}</span>
+                  </div>
+                </div>
+
+                {/* Annual Average Card */}
+                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs flex items-center justify-between">
+                  <div>
+                    <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider">Annual Subject Average</span>
+                    <strong className={`text-lg font-black tracking-tight font-mono ${
+                      studentStrengthsWeaknesses.annualAverage >= 70 ? 'text-emerald-600' :
+                      studentStrengthsWeaknesses.annualAverage >= 55 ? 'text-indigo-600' : 'text-rose-600'
+                    }`}>
+                      {studentStrengthsWeaknesses.annualAverage}%
+                    </strong>
+                    <span className="text-[9px] text-slate-500 block mt-0.5 font-sans">Year to Date overall</span>
+                  </div>
+                  <div className="w-8 h-8 bg-indigo-50 text-indigo-600 rounded-lg flex items-center justify-center text-sm">
+                    📈
+                  </div>
+                </div>
+
+                {/* Strengths Card */}
+                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs flex items-center justify-between">
+                  <div>
+                    <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider">Academic Strengths</span>
+                    <strong className="text-lg font-black text-emerald-600 tracking-tight font-mono">
+                      {studentStrengthsWeaknesses.strengths.length} Subjects
+                    </strong>
+                    <span className="text-[9px] text-slate-500 block mt-0.5 font-sans">Average Score ≥ 70%</span>
+                  </div>
+                  <div className="w-8 h-8 bg-emerald-50 text-emerald-600 rounded-lg flex items-center justify-center text-sm">
+                    🌟
+                  </div>
+                </div>
+
+                {/* Weaknesses Card */}
+                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs flex items-center justify-between">
+                  <div>
+                    <span className="text-[9px] text-slate-400 font-bold block uppercase tracking-wider">Areas for Growth</span>
+                    <strong className="text-lg font-black text-rose-600 tracking-tight font-mono">
+                      {studentStrengthsWeaknesses.weaknesses.length} Subjects
+                    </strong>
+                    <span className="text-[9px] text-slate-500 block mt-0.5 font-sans">Average Score &lt; 55%</span>
+                  </div>
+                  <div className="w-8 h-8 bg-rose-50 text-rose-600 rounded-lg flex items-center justify-center text-sm">
+                    ⚠️
+                  </div>
+                </div>
+              </div>
+
+              {/* Strengths vs Weaknesses Lists (Bento Grid) */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                
+                {/* Left Column: Strengths */}
+                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-4">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                    <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+                      <Sparkles className="text-emerald-500" size={15} /> Academic Strengths & Mastery Areas
+                    </h4>
+                    <span className="font-mono bg-emerald-55 rounded px-2 py-0.5 text-[10px] font-bold text-emerald-700">
+                      Top Performance
+                    </span>
+                  </div>
+                  
+                  {studentStrengthsWeaknesses.strengths.length === 0 ? (
+                    <div className="p-8 text-center text-slate-400 italic bg-slate-50 rounded-lg border border-slate-150">
+                      No subjects are currently categorized as major strengths (≥ 70% average score). Encouraging focused revisions!
+                    </div>
+                  ) : (
+                    <div className="space-y-4 max-h-[350px] overflow-y-auto pr-1">
+                      {studentStrengthsWeaknesses.strengths.map((item, idx) => (
+                        <div key={idx} className="p-3 bg-emerald-50/20 border border-emerald-100/50 rounded-xl space-y-2">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <strong className="text-slate-950 text-xs font-bold block">{item.subject}</strong>
+                              <span className="text-[9px] text-slate-400 uppercase font-sans tracking-wide">
+                                Yearly Average: {item.avgScore}%
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              {item.trend === 'up' && <span className="text-xs text-emerald-600 font-bold flex items-center gap-0.5 font-mono"><TrendingUp size={12} /> Upward</span>}
+                              {item.trend === 'down' && <span className="text-xs text-rose-500 font-bold flex items-center gap-0.5 font-mono"><TrendingDown size={12} /> Downward</span>}
+                              {item.trend === 'stable' && <span className="text-[10px] text-slate-500 font-bold font-mono">Stable</span>}
+                              <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[9px] font-bold rounded-full">
+                                Strength
+                              </span>
+                            </div>
+                          </div>
+                          
+                          {/* Progress bar */}
+                          <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                            <div className="bg-emerald-500 h-1.5 rounded-full" style={{ width: `${item.avgScore}%` }}></div>
+                          </div>
+                          
+                          <p className="text-[10px] text-slate-500 leading-relaxed italic bg-white/75 p-2 rounded-lg border border-slate-100">
+                            "Exhibits deep cognitive engagement, active classroom contribution, and outstanding output. Recommended to represent class in academic quizzes or group mentoring."
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Right Column: Weaknesses */}
+                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-4">
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                    <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+                      <AlertCircle className="text-rose-500" size={15} /> Support Areas & Growth Focus
+                    </h4>
+                    <span className="font-mono bg-rose-55 rounded px-2 py-0.5 text-[10px] font-bold text-rose-700">
+                      Needs Attention
+                    </span>
+                  </div>
+                  
+                  {studentStrengthsWeaknesses.weaknesses.length === 0 ? (
+                    <div className="p-8 text-center text-slate-400 italic bg-slate-50 rounded-lg border border-slate-150">
+                      🎉 Outstanding! No subjects require immediate remediation (average scores are all above 55%). Keep up the balanced efforts!
+                    </div>
+                  ) : (
+                    <div className="space-y-4 max-h-[350px] overflow-y-auto pr-1">
+                      {studentStrengthsWeaknesses.weaknesses.map((item, idx) => (
+                        <div key={idx} className="p-3 bg-rose-50/10 border border-rose-100/50 rounded-xl space-y-2">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <strong className="text-slate-950 text-xs font-bold block">{item.subject}</strong>
+                              <span className="text-[9px] text-slate-400 uppercase font-sans tracking-wide">
+                                Yearly Average: {item.avgScore}%
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              {item.trend === 'up' && <span className="text-[10px] text-emerald-600 font-bold flex items-center gap-0.5 font-mono"><TrendingUp size={11} /> Recovering</span>}
+                              {item.trend === 'down' && <span className="text-[10px] text-rose-500 font-bold flex items-center gap-0.5 font-mono"><TrendingDown size={11} /> Dropping</span>}
+                              {item.trend === 'stable' && <span className="text-[10px] text-slate-500 font-bold font-mono">Stable</span>}
+                              <span className="px-2 py-0.5 bg-rose-100 text-rose-800 text-[9px] font-bold rounded-full font-sans">
+                                Needs Help
+                              </span>
+                            </div>
+                          </div>
+                          
+                          {/* Progress bar */}
+                          <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
+                            <div className="bg-rose-500 h-1.5 rounded-full" style={{ width: `${item.avgScore}%` }}></div>
+                          </div>
+                          
+                          <p className="text-[10px] text-slate-500 leading-relaxed bg-white/75 p-2 rounded-lg border border-slate-100">
+                            <strong className="text-[9px] text-rose-700 block mb-0.5 uppercase tracking-wide font-black">Remediation Blueprint:</strong>
+                            Provide structured diagnostic worksheets, 15-minute supplementary peer tutoring, and prioritize practical exercises over abstract concepts to rebuild learner confidence.
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+              </div>
+
+              {/* Mid-tier Layout: Steady Subjects & Historical Term Trend Chart */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                
+                {/* Steady Subjects Card */}
+                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-4 lg:col-span-1">
+                  <div className="pb-3 border-b border-slate-100">
+                    <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+                      ⚖️ Steady & Stable Subjects
+                    </h4>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Average scores ranging from 55% to 69% (steady academic footing)</p>
+                  </div>
+
+                  {studentStrengthsWeaknesses.steady.length === 0 ? (
+                    <div className="p-8 text-center text-slate-400 italic bg-slate-50 rounded-lg border border-slate-100">
+                      All subjects are either distinct strengths or urgent areas of focus.
+                    </div>
+                  ) : (
+                    <div className="space-y-3 max-h-[300px] overflow-y-auto pr-1 font-sans">
+                      {studentStrengthsWeaknesses.steady.map((item, idx) => (
+                        <div key={idx} className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-150 rounded-lg text-xs">
+                          <div>
+                            <span className="font-bold text-slate-800 block truncate max-w-[150px]">{item.subject}</span>
+                            <span className="text-[10px] text-slate-400 block font-mono">Average: {item.avgScore}%</span>
+                          </div>
+                          <div className="text-right">
+                            <span className="px-2 py-0.5 bg-slate-200 text-slate-700 text-[9px] font-bold rounded-full block font-sans">
+                              Steady
+                            </span>
+                            {item.trend === 'up' && <span className="text-[9px] text-emerald-600 font-bold block mt-1 font-mono">📈 Improving</span>}
+                            {item.trend === 'down' && <span className="text-[9px] text-rose-500 font-bold block mt-1 font-mono">📉 Declining</span>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Trend Chart and Subject Explorer Card */}
+                <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-4 lg:col-span-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+                    <div>
+                      <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+                        📊 Historical Term-over-Term Trajectory
+                      </h4>
+                      <p className="text-[10px] text-slate-400 mt-0.5">Comparative progress mapping across Terms of the Selected Academic Year</p>
+                    </div>
+                    
+                    <div>
+                      <select
+                        value={swSubjectFilter}
+                        onChange={(e) => setSwSubjectFilter(e.target.value)}
+                        className="text-[11px] px-2.5 py-1 border border-slate-200 rounded bg-slate-50 font-semibold focus:outline-none cursor-pointer"
+                      >
+                        <option value="All">Overall Term Average</option>
+                        {studentStrengthsWeaknesses.allSubjectsAnalysis.map(sa => (
+                          <option key={sa.subject} value={sa.subject}>
+                            {sa.subject}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="h-56 font-sans text-[10px] pt-1">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart 
+                        data={swSubjectFilter === 'All' ? overallTermTrendData : specificSubjectTrendData}
+                        margin={{ top: 15, right: 20, bottom: 5, left: -10 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                        <XAxis dataKey="name" tick={{ fontSize: 10, fill: '#64748b' }} />
+                        <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#64748b' }} />
+                        <Tooltip wrapperStyle={{ fontSize: '10px' }} />
+                        <Legend wrapperStyle={{ fontSize: '10px' }} />
+                        <Line 
+                          type="monotone" 
+                          dataKey={swSubjectFilter === 'All' ? "Overall Average" : "Subject Score"} 
+                          stroke={swSubjectFilter === 'All' ? "#4f46e5" : "#10b981"} 
+                          strokeWidth={3} 
+                          activeDot={{ r: 6 }} 
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Complete Performance Ledger */}
+              <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-4">
+                <div className="pb-3 border-b border-slate-100">
+                  <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+                    🗃️ Complete Term-over-Term Performance Ledger
+                  </h4>
+                  <p className="text-[10px] text-slate-400 mt-0.5">Granular grades database record index across all subjects registered in this academic year.</p>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase text-[9px] tracking-wider">
+                        <th className="p-3">Subject Name</th>
+                        <th className="p-3 text-center">Term 1</th>
+                        <th className="p-3 text-center">Term 2</th>
+                        <th className="p-3 text-center">Term 3</th>
+                        <th className="p-3 text-center bg-slate-100/50">Yearly Avg</th>
+                        <th className="p-3 text-center">Trend Indicator</th>
+                        <th className="p-3 text-right">Status Badge</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 font-sans">
+                      {studentStrengthsWeaknesses.allSubjectsAnalysis.map((row, idx) => (
+                        <tr key={idx} className="hover:bg-slate-50/50 transition">
+                          <td className="p-3 font-semibold text-slate-800">{row.subject}</td>
+                          <td className="p-3 text-center font-mono text-slate-600">{row.termScores['Term 1'] !== undefined ? `${row.termScores['Term 1']}%` : '-'}</td>
+                          <td className="p-3 text-center font-mono text-slate-600">{row.termScores['Term 2'] !== undefined ? `${row.termScores['Term 2']}%` : '-'}</td>
+                          <td className="p-3 text-center font-mono text-slate-600">{row.termScores['Term 3'] !== undefined ? `${row.termScores['Term 3']}%` : '-'}</td>
+                          <td className="p-3 text-center font-semibold font-mono bg-slate-50/50 text-slate-800">{row.avgScore}%</td>
+                          <td className="p-3 text-center">
+                            {row.trend === 'up' && <span className="inline-flex items-center justify-center gap-1 px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full font-bold text-[9px] font-sans"><TrendingUp size={10} /> Improving</span>}
+                            {row.trend === 'down' && <span className="inline-flex items-center justify-center gap-1 px-2 py-0.5 bg-rose-50 text-rose-700 rounded-full font-bold text-[9px] font-sans"><TrendingDown size={10} /> Declining</span>}
+                            {row.trend === 'stable' && <span className="inline-flex items-center justify-center px-2 py-0.5 bg-slate-100 text-slate-600 rounded-full text-[9px] font-sans">Steady</span>}
+                            {row.trend === 'unknown' && <span className="text-slate-400 font-sans">-</span>}
+                          </td>
+                          <td className="p-3 text-right">
+                            <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                              row.category === 'strength' ? 'bg-emerald-50 text-emerald-800 border border-emerald-100' :
+                              row.category === 'weakness' ? 'bg-rose-50 text-rose-700 border border-rose-100' :
+                              'bg-indigo-50 text-indigo-800 border border-indigo-100'
+                            }`}>
+                              {row.category === 'strength' ? 'Strength' : row.category === 'weakness' ? 'Needs Help' : 'Steady'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+            </div>
+          )}
+
+        </div>
+      )}
+
       {/* SANDBOX PRINT CAPTURE ALERT OVERLAY */}
       {printBlocked && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 no-print">
@@ -4399,7 +5053,20 @@ export default function AssessmentTab({
                 <div><span className="text-[9px] text-slate-400 uppercase font-sans font-medium block">Academic Class</span><strong>{compiledReport?.student.class || selectedClass} ({compiledReport?.student.section || 'N/A'})</strong></div>
                 <div><span className="text-[9px] text-slate-400 uppercase font-sans font-medium block">Report Term & Year</span><strong>{selectedTerm} ({selectedYear})</strong></div>
                 <div className="col-span-2 grid grid-cols-2 gap-3 border-t border-slate-200 pt-2">
-                  <div><span className="text-[9px] text-indigo-700 uppercase font-sans font-bold block">Class Rank Standing</span><strong className="text-indigo-900 font-sans text-xs">{compiledReport?.classRank || 'N/A'}</strong></div>
+                  <div className="relative group cursor-help bg-indigo-50/30 p-1 rounded-lg border border-indigo-100/30 transition-all hover:bg-indigo-50/60">
+                    <span className="text-[9px] text-indigo-700 uppercase font-sans font-bold flex items-center gap-1 select-none">
+                      Class Rank Standing <HelpCircle size={10} className="text-indigo-400" />
+                    </span>
+                    <strong className="text-indigo-900 font-sans text-xs block mt-0.5">{compiledReport?.classRank || 'N/A'}</strong>
+                    {compiledReport && (
+                      <RankBreakdownTooltip 
+                        term={selectedTerm} 
+                        year={selectedYear} 
+                        averageScore={compiledReport.averageScore} 
+                        gradedCount={compiledReport.gradedCount} 
+                      />
+                    )}
+                  </div>
                   <div><span className="text-[9px] text-teal-800 uppercase font-sans font-bold block">Next Reopening Date</span><strong className="text-teal-900 font-sans text-xs">{formatReopeningDate(DbController.getSchoolInfo().reopeningDate)}</strong></div>
                 </div>
               </div>
@@ -4630,6 +5297,91 @@ export default function AssessmentTab({
                   <div className="w-44 border-b-2 border-slate-900 h-10"></div>
                   <span className="text-slate-400 uppercase font-mono tracking-wider font-semibold">Registry Certified seal / stamp line</span>
                 </div>
+              </div>
+            </div>
+
+            {/* Target C: Teacher Assigned Subjects Performance Report */}
+            <div id="teacher-subject-performance-report" className="w-[800px] bg-white p-12 text-black border-[8px] border-double border-slate-900 space-y-6 font-sans">
+               {/* Professional Letterhead */}
+               <div className="flex items-center justify-between border-b-2 border-slate-900 pb-5 gap-4">
+                {DbController.getSchoolInfo().logoUrl ? (
+                  <img 
+                    src={DbController.getSchoolInfo().logoUrl} 
+                    alt="School Logo" 
+                    className="w-20 h-20 object-contain" 
+                  />
+                ) : (
+                  <div className="w-20 h-20 rounded-full bg-slate-50 flex items-center justify-center border border-slate-300 p-1">
+                    <div className="w-full h-full rounded-full border border-dashed border-slate-400 bg-white flex flex-col items-center justify-center text-[8px] text-slate-500 font-mono font-bold leading-none">
+                      <Award size={24} className="text-indigo-600 mb-0.5" />
+                      <span className="scale-75 origin-center uppercase">CREST</span>
+                    </div>
+                  </div>
+                )}
+                <div className="flex-1 text-center space-y-1">
+                  <h2 className="text-xl font-black text-slate-950 tracking-tight leading-tight uppercase font-display">
+                    {DbController.getSchoolInfo().name}
+                  </h2>
+                  <p className="text-xs italic font-serif text-slate-600">
+                    Motto: "{DbController.getSchoolInfo().motto}"
+                  </p>
+                  <div className="text-[10px] text-slate-500 flex flex-wrap justify-center gap-x-3 gap-y-0.5">
+                    {DbController.getSchoolInfo().gpsAddress && <span>📍 {DbController.getSchoolInfo().gpsAddress}</span>}
+                    {DbController.getSchoolInfo().telephone && <span>☎️ {DbController.getSchoolInfo().telephone}</span>}
+                  </div>
+                </div>
+              </div>
+
+              <div className="text-center space-y-2">
+                <h3 className="text-lg font-black uppercase tracking-widest text-slate-900">Assigned Subject Performance Report</h3>
+                <div className="flex justify-center gap-4 text-xs font-bold text-slate-500 uppercase tracking-wider bg-slate-50 py-2 rounded-lg border border-slate-200">
+                  <span>Teacher: {DbController.getCurrentUser()?.name || 'Assigned Educator'}</span>
+                  <span>Class: {selectedClass}</span>
+                  <span>Period: {selectedTerm} ({selectedYear})</span>
+                </div>
+              </div>
+
+              <table className="w-full text-left border-collapse border border-slate-900 font-sans mt-6">
+                <thead>
+                  <tr className="bg-slate-900 text-white uppercase font-black text-[11px] tracking-widest">
+                    <th className="p-3 border border-slate-900">Assigned Subject Title</th>
+                    <th className="p-3 border border-slate-900 text-center">Student Count</th>
+                    <th className="p-3 border border-slate-900 text-center">Class Average</th>
+                    <th className="p-3 border border-slate-900 text-center">Highest Score</th>
+                    <th className="p-3 border border-slate-900 text-center text-rose-200">Lowest Score</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {teacherSubjectStats.map(stat => (
+                    <tr key={stat.subject} className="border-b border-slate-300 font-bold text-xs text-slate-800">
+                      <td className="p-3 border border-slate-300">{stat.subject}</td>
+                      <td className="p-3 border border-slate-300 text-center font-mono">{stat.gradedCount}</td>
+                      <td className="p-3 border border-slate-300 text-center font-mono text-indigo-700">{stat.average.toFixed(1)}%</td>
+                      <td className="p-3 border border-slate-300 text-center font-mono text-emerald-700">{stat.highest.toFixed(1)}%</td>
+                      <td className="p-3 border border-slate-300 text-center font-mono text-rose-700">{stat.lowest.toFixed(1)}%</td>
+                    </tr>
+                  ))}
+                  {teacherSubjectStats.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="p-8 text-center text-slate-400 italic">No assigned subject assessment data found for the current selection.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+
+              <div className="grid grid-cols-2 gap-10 mt-12 pt-8 border-t border-slate-200">
+                <div className="space-y-4">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Statistical Summary & Observations</p>
+                  <div className="h-20 bg-slate-50 border border-slate-200 rounded-lg"></div>
+                </div>
+                <div className="flex flex-col justify-end items-center space-y-2">
+                  <div className="w-48 border-b-2 border-slate-900 h-10"></div>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Teacher's Signature / Endorsement</span>
+                </div>
+              </div>
+
+              <div className="mt-10 text-[9px] text-slate-400 text-center italic font-mono">
+                This document is an official academic performance summary generated via the GEETECH SMS registry.
               </div>
             </div>
           </div>
@@ -5505,9 +6257,17 @@ export default function AssessmentTab({
                           <span className="text-[8px] uppercase text-slate-400 font-mono font-medium block">CLASS</span>
                           <span className="text-slate-800 font-bold">{compiledReport.student.class} ({compiledReport.student.section})</span>
                         </div>
-                        <div>
-                          <span className="text-[8px] uppercase text-indigo-700 font-mono font-bold block">CLASS RANK</span>
-                          <strong className="text-indigo-900 font-bold font-mono">{compiledReport.classRank || 'N/A'}</strong>
+                        <div className="relative group cursor-help bg-indigo-50/30 p-1 rounded-lg border border-indigo-100/30 transition-all hover:bg-indigo-50/60">
+                          <span className="text-[8px] uppercase text-indigo-700 font-mono font-bold flex items-center gap-1 select-none">
+                            CLASS RANK <HelpCircle size={9} className="text-indigo-400" />
+                          </span>
+                          <strong className="text-indigo-900 font-bold font-mono block mt-0.5">{compiledReport.classRank || 'N/A'}</strong>
+                          <RankBreakdownTooltip 
+                            term={selectedTerm} 
+                            year={selectedYear} 
+                            averageScore={compiledReport.averageScore} 
+                            gradedCount={compiledReport.gradedCount} 
+                          />
                         </div>
                       </div>
 
@@ -5790,6 +6550,50 @@ export default function AssessmentTab({
         </div>
       )}
     </AnimatePresence>
+
+    {confirmModal && confirmModal.isOpen && (
+      <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[100] p-4 no-print animate-fade-in">
+        <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden text-left p-6 space-y-4 animate-scale-up">
+          <div className="flex items-start gap-3">
+            <div className={`p-2 rounded-xl shrink-0 ${confirmModal.danger ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>
+              <AlertCircle size={24} className="animate-bounce-slow" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-slate-900 font-sans tracking-tight">
+                {confirmModal.title}
+              </h3>
+              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                {confirmModal.message}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => setConfirmModal(null)}
+              className="flex-1 py-2 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-xl transition cursor-pointer select-none text-center"
+            >
+              {confirmModal.cancelText || 'Cancel'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                confirmModal.onConfirm();
+                setConfirmModal(null);
+              }}
+              className={`flex-1 py-2 px-4 text-white font-bold text-xs rounded-xl transition cursor-pointer select-none text-center ${
+                confirmModal.danger 
+                  ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800' 
+                  : 'bg-amber-600 hover:bg-amber-700 active:bg-amber-800'
+              }`}
+            >
+              {confirmModal.confirmText || 'Confirm'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
 
     </div>
   );

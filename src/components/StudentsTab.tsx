@@ -9,14 +9,17 @@ import { compressImage } from '../utils';
 import { ThemeStyles } from './ThemeWrapper';
 import { 
   Plus, Search, Edit2, Trash2, Printer, Upload, X, Check, Save, User, MapPin, PhoneCall, ShieldAlert, BadgeCheck, FileDown, RotateCcw, Eraser, Eye, FileSpreadsheet,
-  ChevronLeft, ChevronRight, IdCard, MessageSquare, AlertTriangle, Heart, Award, BookOpen, QrCode, Mail, Camera, Share2
+  ChevronLeft, ChevronRight, IdCard, MessageSquare, AlertTriangle, Heart, Award, BookOpen, QrCode, Mail, Camera, Share2, TrendingUp, Calendar, UserCheck, Users
 } from 'lucide-react';
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  BarChart, Bar, Legend, PieChart, Pie, Cell
+} from 'recharts';
 import CameraCapture from './CameraCapture';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 import { motion, AnimatePresence } from 'motion/react';
 import { QRCodeSVG } from 'qrcode.react';
-import { generateSecureToken, getWatermarkHtml, triggerToast } from '../utils';
-import { shareParentPortalWhatsApp } from '../App';
+import { generateSecureToken, getWatermarkHtml, triggerToast, shareParentPortalWhatsApp, getWhatsAppShareData, WhatsAppTemplate } from '../utils';
 
 const GHANA_CREST_SVG_SIMPLE = `
 <svg viewBox="0 0 100 100" width="100%" height="100%" style="width: 250px; height: 250px; color: #000;">
@@ -90,6 +93,7 @@ export default function StudentsTab({
   userRole
 }: Props) {
   const [searchTerm, setSearchTerm] = useState('');
+  const isAdminOrHead = userRole === 'Admin' || userRole === 'Headteacher';
   const [selectedClass, setSelectedClass] = useState<string>(() => {
     if (userRole === 'Teacher') {
       return assignedClasses.length > 0 ? assignedClasses[0] : (assignedClass || 'None');
@@ -97,6 +101,8 @@ export default function StudentsTab({
     return 'All';
   });
   const [selectedSection, setSelectedSection] = useState<string>('All');
+
+  const [studentsSubTab, setStudentsSubTab] = useState<'roster' | 'overview'>('roster');
 
   useEffect(() => {
     if (userRole === 'Teacher') {
@@ -119,6 +125,18 @@ export default function StudentsTab({
   const [showFormModal, setShowFormModal] = useState(false);
   const [studentToDelete, setStudentToDelete] = useState<string | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
+
+  // Custom Confirmation Dialog State
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmText?: string;
+    cancelText?: string;
+    danger?: boolean;
+    onConfirm: () => void;
+  } | null>(null);
+
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -151,6 +169,32 @@ export default function StudentsTab({
     setShowBulkQrModal(true);
   };
 
+  // Bulk WhatsApp states
+  const [showBulkWhatsAppModal, setShowBulkWhatsAppModal] = useState(false);
+  const [bulkWhatsAppClassFilter, setBulkWhatsAppClassFilter] = useState<string>('All');
+  const [bulkWhatsAppTemplate, setBulkWhatsAppTemplate] = useState<WhatsAppTemplate>('PORTAL_ACCESS');
+  const [bulkWhatsAppSearch, setBulkWhatsAppSearch] = useState<string>('');
+  const [selectedBulkWhatsAppStudents, setSelectedBulkWhatsAppStudents] = useState<string[]>([]);
+
+  const handleOpenBulkWhatsAppModal = () => {
+    setBulkWhatsAppClassFilter(selectedClass || 'All');
+    setBulkWhatsAppSearch('');
+    const filtered = students.filter(s => selectedClass === 'All' || s.class === (selectedClass || 'All'));
+    setSelectedBulkWhatsAppStudents(filtered.map(s => s.id));
+    setShowBulkWhatsAppModal(true);
+  };
+
+  const filteredBulkWhatsAppStudents = useMemo(() => {
+    return students.filter(s => {
+      const matchesClass = bulkWhatsAppClassFilter === 'All' || s.class === bulkWhatsAppClassFilter;
+      const fullName = `${s.firstName || ''} ${s.middleName || ''} ${s.lastName || ''}`.toLowerCase();
+      const matchesSearch = !bulkWhatsAppSearch || 
+        fullName.includes(bulkWhatsAppSearch.toLowerCase()) || 
+        s.id.toLowerCase().includes(bulkWhatsAppSearch.toLowerCase());
+      return matchesClass && matchesSearch;
+    });
+  }, [students, bulkWhatsAppClassFilter, bulkWhatsAppSearch]);
+
   const filteredBulkStudents = useMemo(() => {
     return students.filter(s => {
       const matchesClass = bulkQrClassFilter === 'All' || s.class === bulkQrClassFilter;
@@ -161,6 +205,32 @@ export default function StudentsTab({
       return matchesClass && matchesSearch;
     });
   }, [students, bulkQrClassFilter, bulkQrSearch]);
+
+  const handleSendBulkWhatsApp = async () => {
+    const studentsToMessage = filteredBulkWhatsAppStudents.filter(s => selectedBulkWhatsAppStudents.includes(s.id));
+    
+    if (studentsToMessage.length === 0) {
+      triggerToast('No students selected for bulk messaging.', 'error');
+      return;
+    }
+
+    triggerToast(`Opening ${studentsToMessage.length} WhatsApp links sequentially. Please allow popups.`, 'success');
+    
+    // We open them sequentially with a small delay to avoid browser blocking too much
+    for (let i = 0; i < studentsToMessage.length; i++) {
+      const student = studentsToMessage[i];
+      const yr = student.academicYear || selectedYear || '2026/2027';
+      const tm = student.term || selectedTerm || 'Term 1';
+      
+      const { whatsappUrl } = getWhatsAppShareData(student, yr, tm, bulkWhatsAppTemplate);
+      window.open(whatsappUrl, '_blank');
+      
+      // Delay to avoid triggering anti-popup/anti-spam filters too aggressively
+      if (i < studentsToMessage.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 600));
+      }
+    }
+  };
 
   const handlePrintBulkQrCodes = () => {
     if (selectedBulkStudents.length === 0) {
@@ -182,6 +252,11 @@ export default function StudentsTab({
   const [showRemarksModal, setShowRemarksModal] = useState(false);
   const [newRemarkText, setNewRemarkText] = useState('');
   const [newRemarkCategory, setNewRemarkCategory] = useState<BehavioralRemark['category']>('Conduct');
+
+  // Student Overview states
+  const [showOverviewModal, setShowOverviewModal] = useState(false);
+  const [selectedOverviewStudent, setSelectedOverviewStudent] = useState<Student | null>(null);
+  const [overviewTab, setOverviewTab] = useState<'trends' | 'attendance'>('trends');
 
   // Bulk import states
   const [showImportModal, setShowImportModal] = useState(false);
@@ -397,17 +472,55 @@ export default function StudentsTab({
     reader.onload = (e) => {
       const text = e.target?.result as string;
       try {
-        const rows = parseCSV(text);
-        if (rows.length < 2) {
-          setImportError("CSV contains insufficient rows. Please include a header row followed by data.");
-          setParsedStudents([]);
-          return;
+        if (file.name.endsWith('.json')) {
+          const jsonData = JSON.parse(text);
+          if (!Array.isArray(jsonData)) {
+            setImportError("JSON must be an array of student records.");
+            setParsedStudents([]);
+            return;
+          }
+          const mapped = jsonData.map((item, idx) => {
+            const errors: string[] = [];
+            if (!item.firstName) errors.push("Missing First Name *");
+            if (!item.lastName) errors.push("Missing Last Name *");
+            
+            // Basic normalization for JSON import
+            const student: Partial<Student> = {
+              id: item.id || 'ST' + Math.floor(100000 + Math.random() * 90000),
+              firstName: item.firstName || '',
+              middleName: item.middleName || '',
+              lastName: item.lastName || '',
+              class: (CLASSES.includes(item.class) ? item.class : (selectedClass !== 'All' ? selectedClass : 'Basic 1')) as ClassType,
+              gender: (item.gender === 'Female' ? 'Female' : 'Male'),
+              dateOfBirth: item.dateOfBirth || '',
+              status: (item.status === 'Boarder' ? 'Boarder' : 'Day'),
+              section: (SECTIONS.includes(item.section) ? item.section : 'None') as SectionType,
+              academicYear: selectedYear || '2026/2027',
+              term: selectedTerm || 'Term 1',
+              createdAt: new Date().toISOString(),
+              ...item
+            };
+
+            if (student.dateOfBirth && !/^\d{4}-\d{2}-\d{2}$/.test(student.dateOfBirth)) {
+              errors.push("Invalid Date format. Use YYYY-MM-DD");
+            }
+
+            return { student, errors };
+          });
+          setParsedStudents(mapped);
+        } else {
+          const rows = parseCSV(text);
+          if (rows.length < 2) {
+            setImportError("CSV contains insufficient rows. Please include a header row followed by data.");
+            setParsedStudents([]);
+            return;
+          }
+          const mapped = mapCSVRowsToStudents(rows);
+          setParsedStudents(mapped);
         }
-        const mapped = mapCSVRowsToStudents(rows);
-        setParsedStudents(mapped);
       } catch (err) {
         console.error(err);
-        setImportError("Encountered filesystem read or encoding error parsing the CSV.");
+        setImportError("Encountered filesystem read or encoding error parsing the file.");
         setParsedStudents([]);
       }
     };
@@ -429,10 +542,10 @@ export default function StudentsTab({
     setDragActive(false);
     const file = e.dataTransfer.files?.[0];
     if (file) {
-      if (file.name.endsWith('.csv')) {
+      if (file.name.endsWith('.csv') || file.name.endsWith('.json')) {
         processFile(file);
       } else {
-        setImportError("The dropped file is not a supported CSV spreadsheet. Please upload a .csv file.");
+        setImportError("The dropped file is not a supported format. Please upload a .csv or .json file.");
       }
     }
   };
@@ -440,12 +553,37 @@ export default function StudentsTab({
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (file.name.endsWith('.csv')) {
+      if (file.name.endsWith('.csv') || file.name.endsWith('.json')) {
         processFile(file);
       } else {
-        setImportError("The selected file must be a structured CSV spreadsheet format (.csv).");
+        setImportError("The selected file must be a structured CSV or JSON format (.csv, .json).");
       }
     }
+  };
+
+  const handleDownloadJsonTemplate = () => {
+    const template = [
+      {
+        firstName: "Kofi",
+        middleName: "Kwadwo",
+        lastName: "Mensah",
+        class: "Basic 1",
+        gender: "Male",
+        dateOfBirth: "2016-04-12",
+        status: "Day",
+        section: "Faith",
+        guardianName: "Kwame Mensah",
+        guardianTelephone: "0241234567"
+      }
+    ];
+    const blob = new Blob([JSON.stringify(template, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "student_import_template.json";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const handleDownloadTemplate = () => {
@@ -615,6 +753,12 @@ export default function StudentsTab({
     setNewRemarkCategory('Conduct');
   };
 
+  const handleOpenOverview = (student: Student) => {
+    setSelectedOverviewStudent(student);
+    setShowOverviewModal(true);
+    setOverviewTab('trends');
+  };
+
   const handleSaveRemark = (e: FormEvent) => {
     e.preventDefault();
     if (!selectedRemarkStudent || !newRemarkText.trim()) return;
@@ -671,32 +815,55 @@ export default function StudentsTab({
 
   const handleDeleteActiveSelection = () => {
     if (formState.id) {
-      if (window.confirm(`Are you sure you want to delete the active selected student "${formState.firstName} ${formState.lastName}"?`)) {
-        DbController.deleteStudent(formState.id);
-        setFormState({ ...INITIAL_FORM });
-        setIsEditing(false);
-        setShowFormModal(false);
-        onRefresh();
-      }
+      setConfirmModal({
+        isOpen: true,
+        title: "Delete Student Profile?",
+        message: `Are you sure you want to permanently delete student profile for "${formState.firstName} ${formState.lastName}"? All grades, attendance records and fee history for this student will be lost.`,
+        confirmText: "Delete Profile",
+        danger: true,
+        onConfirm: () => {
+          DbController.deleteStudent(formState.id!);
+          setFormState({ ...INITIAL_FORM });
+          setIsEditing(false);
+          setShowFormModal(false);
+          onRefresh();
+          showToast("Student profile successfully deleted.", "success");
+        }
+      });
     } else if (students.length > 0) {
       const first = students[0];
-      if (window.confirm(`No active form selection loaded. Do you want to delete the first student in the list (${first.firstName} ${first.lastName})?`)) {
-        DbController.deleteStudent(first.id);
-        onRefresh();
-      }
+      setConfirmModal({
+        isOpen: true,
+        title: "Delete Student Profile?",
+        message: `No active student form is selected. Do you want to delete the first student in the directory: "${first.firstName} ${first.lastName}"?`,
+        confirmText: "Delete First Student",
+        danger: true,
+        onConfirm: () => {
+          DbController.deleteStudent(first.id);
+          onRefresh();
+          showToast(`Deleted ${first.firstName} ${first.lastName} profile.`, "success");
+        }
+      });
     } else {
-      alert("No students exist to delete.");
+      showToast("No students exist to delete.", "error");
     }
   };
 
   const handleDeleteAllStudents = () => {
-    if (window.confirm("CRITICAL WARNING: Are you sure you want to delete ALL students from the system? This will also cascade delete all their bills and grades. This action cannot be undone.")) {
-      DbController.clearAllStudents();
-      DbController.clearAllAssessments();
-      DbController.clearAllStudentFeeBills();
-      onRefresh();
-      alert("Successfully purged all student rosters, fee ledgers and grade registry entries.");
-    }
+    setConfirmModal({
+      isOpen: true,
+      title: "CRITICAL: Wipe All Student Registers?",
+      message: "Are you absolutely sure you want to delete ALL students from the system? This is a system-wide wipe which will also cascade delete all their bills, ledger items, attendance, and grades. This action is irreversible.",
+      confirmText: "Wipe All Student Data",
+      danger: true,
+      onConfirm: () => {
+        DbController.clearAllStudents();
+        DbController.clearAllAssessments();
+        DbController.clearAllStudentFeeBills();
+        onRefresh();
+        showToast("Successfully purged all student rosters, fee ledgers and grade registry entries.", "success");
+      }
+    });
   };
 
   const handleImageUpload = (e: ChangeEvent<HTMLInputElement>) => {
@@ -935,6 +1102,30 @@ export default function StudentsTab({
   return (
     <div className="space-y-6 fade-in">
       
+      {/* Sub-tab Navigation */}
+      <div className="flex flex-wrap items-center gap-y-2 gap-x-4 sm:gap-x-6 border-b border-slate-200 no-print">
+        <button
+          onClick={() => setStudentsSubTab('roster')}
+          className={`pb-3 text-[11px] font-bold uppercase tracking-widest border-b-2 transition cursor-pointer ${studentsSubTab === 'roster' ? 'border-slate-800 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
+        >
+          <div className="flex items-center gap-2">
+            <Users size={14} />
+            Student Directory
+          </div>
+        </button>
+        <button
+          onClick={() => setStudentsSubTab('overview')}
+          className={`pb-3 text-[11px] font-bold uppercase tracking-widest border-b-2 transition cursor-pointer ${studentsSubTab === 'overview' ? 'border-slate-800 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
+        >
+          <div className="flex items-center gap-2">
+            <TrendingUp size={14} />
+            Class Analytics Overview
+          </div>
+        </button>
+      </div>
+
+      {studentsSubTab === 'roster' ? (
+        <>
       {/* Control ribbon workspace */}
       <div className="flex flex-col md:flex-row items-center justify-between gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-sm no-print">
         <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
@@ -1003,7 +1194,7 @@ export default function StudentsTab({
           )}
         </div>
 
-        <div className="flex items-center gap-2 w-full md:w-auto justify-end">
+        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-start md:justify-end">
           <button
             onClick={handleExportCSV}
             className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 border border-emerald-600 text-white hover:bg-emerald-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
@@ -1011,13 +1202,15 @@ export default function StudentsTab({
           >
             <FileSpreadsheet size={15} /> Export to CSV
           </button>
-          <button
-            onClick={() => setShowImportModal(true)}
-            className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 border border-blue-600 text-white hover:bg-blue-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
-            title="Import student records from a formatted CSV file"
-          >
-            <Upload size={15} /> Bulk Import CSV
-          </button>
+          {isAdminOrHead && (
+            <button
+              onClick={() => setShowImportModal(true)}
+              className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 border border-blue-600 text-white hover:bg-blue-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
+              title="Import student records from a formatted CSV or JSON file"
+            >
+              <Upload size={15} /> Bulk Import (CSV/JSON)
+            </button>
+          )}
           <button
             onClick={handleOpenBulkQrModal}
             className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 border border-indigo-600 text-white hover:bg-indigo-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
@@ -1025,6 +1218,15 @@ export default function StudentsTab({
           >
             <QrCode size={15} /> Bulk QR Codes
           </button>
+          {(userRole === 'Admin' || userRole === 'Teacher') && (
+            <button
+              onClick={handleOpenBulkWhatsAppModal}
+              className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 border border-emerald-600 text-white hover:bg-emerald-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
+              title="Send bulk WhatsApp notifications to parents"
+            >
+              <Share2 size={15} /> Bulk WhatsApp
+            </button>
+          )}
           <button
             onClick={() => setShowPdfGuide(!showPdfGuide)}
             className="flex items-center gap-1.5 px-3 py-2 bg-slate-900 border border-slate-900 text-white hover:bg-slate-800 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer"
@@ -1127,6 +1329,13 @@ export default function StudentsTab({
                     title="Behavioral Remarks"
                   >
                     <MessageSquare size={12} />
+                  </button>
+                  <button
+                    onClick={() => handleOpenOverview(std)}
+                    className="p-1 hover:bg-blue-50 hover:text-blue-600 rounded text-slate-600 cursor-pointer transition"
+                    title="Student Performance Overview"
+                  >
+                    <Eye size={12} />
                   </button>
                   <button
                     onClick={() => handleOpenIdCard(std)}
@@ -1316,6 +1525,161 @@ export default function StudentsTab({
           <div>Boarding Status: <strong>{filteredStudents.filter(s => s.status === 'Boarder').length}</strong></div>
         </div>
       </div>
+      </>
+      ) : (
+        <div className="animate-fade-in space-y-6">
+          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <h3 className="text-lg font-black text-slate-900 leading-tight">Class Analytics Dashboard</h3>
+              <p className="text-xs text-slate-500 font-medium">Condensed summary of academic trends & attendance for {selectedClass === 'All' ? 'All Students' : selectedClass}</p>
+            </div>
+            
+            <div className="flex items-center gap-3">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Focus Student:</div>
+              <select
+                value={selectedOverviewStudent?.id || ''}
+                onChange={(e) => {
+                  const student = students.find(s => s.id === e.target.value);
+                  if (student) setSelectedOverviewStudent(student);
+                }}
+                className="text-xs px-3 py-2 border border-slate-200 rounded-lg bg-slate-50 font-bold focus:outline-none focus:ring-1 focus:ring-slate-400 min-w-[200px]"
+              >
+                {!selectedOverviewStudent && <option value="">Select a student to view trends</option>}
+                {filteredStudents.map(s => (
+                  <option key={s.id} value={s.id}>{s.firstName} {s.lastName} ({s.id})</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {selectedOverviewStudent ? (
+            <div className="space-y-6">
+              {/* Stats Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                {(() => {
+                  const trends = DbController.getStudentAcademicTrends(selectedOverviewStudent.id);
+                  const avgScore = trends.length > 0 ? (trends.reduce((acc, curr) => acc + curr.totalScore, 0) / trends.length).toFixed(1) : '0';
+                  const bestSubject = trends.length > 0 ? [...trends].sort((a, b) => b.totalScore - a.totalScore)[0].subject : 'N/A';
+                  const attendanceStats = DbController.getStudentAttendanceStats(selectedOverviewStudent.id);
+                  const attendanceRate = attendanceStats.schoolOpen > 0 ? ((attendanceStats.present / attendanceStats.schoolOpen) * 100).toFixed(1) : '0';
+
+                  return (
+                    <>
+                      <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+                        <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-600 mb-3">
+                          <TrendingUp size={20} />
+                        </div>
+                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Average Score</div>
+                        <div className="text-2xl font-black text-slate-900">{avgScore}%</div>
+                      </div>
+                      <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+                        <div className="w-10 h-10 bg-emerald-50 rounded-xl flex items-center justify-center text-emerald-600 mb-3">
+                          <Award size={20} />
+                        </div>
+                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Top Subject</div>
+                        <div className="text-lg font-bold text-slate-900 truncate">{bestSubject}</div>
+                      </div>
+                      <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+                        <div className="w-10 h-10 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600 mb-3">
+                          <Calendar size={20} />
+                        </div>
+                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Attendance Rate</div>
+                        <div className="text-2xl font-black text-slate-900">{attendanceRate}%</div>
+                      </div>
+                      <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+                        <div className="w-10 h-10 bg-amber-50 rounded-xl flex items-center justify-center text-amber-600 mb-3">
+                          <BookOpen size={20} />
+                        </div>
+                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Assessments</div>
+                        <div className="text-2xl font-black text-slate-900">{trends.length}</div>
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Academic Progress Chart */}
+                <div className="bg-white p-6 rounded-[24px] border border-slate-200 shadow-xs space-y-4">
+                  <div className="flex justify-between items-center">
+                    <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                      <TrendingUp size={16} className="text-indigo-500" /> Academic Performance History
+                    </h4>
+                  </div>
+                  <div className="h-[300px] w-full">
+                    {(() => {
+                      const trends = DbController.getStudentAcademicTrends(selectedOverviewStudent.id);
+                      if (trends.length === 0) return <div className="h-full flex items-center justify-center text-slate-400 text-xs">No academic records yet.</div>;
+                      
+                      const chartData = trends.map(t => ({
+                        label: `${t.term.substring(0, 6)} ${t.subject.substring(0, 5)}...`,
+                        score: t.totalScore,
+                        fullName: `${t.subject} (${t.term})`
+                      }));
+
+                      return (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={chartData}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                            <XAxis dataKey="label" fontSize={9} tick={{ fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                            <YAxis domain={[0, 100]} fontSize={9} tick={{ fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                            <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                            <Line type="monotone" dataKey="score" stroke="#6366f1" strokeWidth={3} dot={{ r: 4, fill: '#6366f1', strokeWidth: 2, stroke: '#fff' }} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                {/* Attendance Distribution Chart */}
+                <div className="bg-white p-6 rounded-[24px] border border-slate-200 shadow-xs space-y-4">
+                  <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                    <Calendar size={16} className="text-emerald-500" /> Monthly Attendance Patterns
+                  </h4>
+                  <div className="h-[300px] w-full">
+                    {(() => {
+                      const history = DbController.getStudentAttendanceHistory(selectedOverviewStudent.id);
+                      if (history.length === 0) return <div className="h-full flex items-center justify-center text-slate-400 text-xs">No attendance logs yet.</div>;
+                      
+                      // Process last 30 logs
+                      const last30 = history.slice(-30);
+                      const chartData = last30.map(h => ({
+                        date: h.date,
+                        status: h.status === 'Present' ? 1 : 0
+                      }));
+
+                      return (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={chartData}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                            <XAxis dataKey="date" fontSize={8} tick={{ fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                            <YAxis domain={[0, 1]} ticks={[0, 1]} fontSize={9} tick={{ fill: '#94a3b8' }} axisLine={false} tickLine={false} tickFormatter={(val) => val === 1 ? 'P' : 'A'} />
+                            <Tooltip />
+                            <Bar dataKey="status" fill="#10b981" radius={[4, 4, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      );
+                    })()}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-white border border-dashed border-slate-300 rounded-[32px] p-20 text-center space-y-4">
+              <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center text-slate-200 mx-auto">
+                <Search size={40} />
+              </div>
+              <div className="space-y-1">
+                <h4 className="text-base font-bold text-slate-800">No Student Selected</h4>
+                <p className="text-xs text-slate-400 max-w-xs mx-auto leading-relaxed">
+                  Select a student from the dropdown above to view their graphical academic trends and attendance performance summary.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* RICH EDIT / ADD MODAL PANEL (NO-PRINT) */}
       <AnimatePresence>
@@ -2009,23 +2373,33 @@ export default function StudentsTab({
               <div className="flex-1 overflow-y-auto p-6 space-y-5">
                 {/* Instruction Banner */}
                 <div className="bg-slate-50 border border-slate-150 p-4 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <div className="space-y-1">
+                  <div className="space-y-1 flex-1">
                     <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
                       <span className="flex h-4 w-4 items-center justify-center rounded-full bg-indigo-50 text-[10px] text-indigo-700 font-bold">i</span>
                       Formatting Instruction Guide:
                     </h4>
                     <p className="text-[10px] text-slate-500 leading-normal max-w-2xl">
-                      Make sure your spreadsheet includes headers such as: <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">First Name</code>, <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Last Name</code>, <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Class</code>, <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Gender</code>, <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Date of Birth</code> (formatted as YYYY-MM-DD), <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Section</code>, and <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Status</code> (Day/Boarder).
+                      Make sure your spreadsheet includes headers such as: <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">First Name</code>, <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Last Name</code>, <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Class</code>, <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Gender</code>, <code className="font-mono bg-slate-200 px-1 py-0.5 rounded text-amber-800">Date of Birth</code> (formatted as YYYY-MM-DD).
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleDownloadTemplate}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-250 hover:bg-slate-100 rounded-lg text-[11px] font-bold text-slate-700 transition cursor-pointer self-start md:self-auto flex-shrink-0"
-                  >
-                    <FileDown size={14} className="text-slate-500" />
-                    Download CSV Template
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleDownloadTemplate}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-250 hover:bg-slate-100 rounded-lg text-[11px] font-bold text-slate-700 transition cursor-pointer self-start md:self-auto flex-shrink-0"
+                    >
+                      <FileDown size={14} className="text-slate-500" />
+                      CSV Template
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDownloadJsonTemplate}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-250 hover:bg-slate-100 rounded-lg text-[11px] font-bold text-slate-700 transition cursor-pointer self-start md:self-auto flex-shrink-0"
+                    >
+                      <FileDown size={14} className="text-slate-500" />
+                      JSON Template
+                    </button>
+                  </div>
                 </div>
 
                 {/* Upload & Drag State */}
@@ -2045,18 +2419,18 @@ export default function StudentsTab({
                       <Upload size={22} className={dragActive ? 'animate-bounce text-indigo-600' : ''} />
                     </div>
                     <div className="space-y-1">
-                      <p className="font-bold text-slate-700 text-xs">Drag and drop your roster CSV file here</p>
+                      <p className="font-bold text-slate-700 text-xs">Drag and drop your roster CSV or JSON file here</p>
                       <p className="text-[10px] text-slate-400">or click to browse your desktop storage library</p>
                     </div>
                     <input
                       type="file"
                       ref={importFileInputRef}
                       onChange={handleFileChange}
-                      accept=".csv"
+                      accept=".csv,.json"
                       className="hidden"
                     />
                     <div className="pt-2 text-[9px] text-slate-400 max-w-md mx-auto">
-                      Only structured <strong className="text-slate-600">CSV spreadsheet format files (.csv)</strong> are accepted. Maximum size 3MB.
+                      Supported formats: <strong className="text-slate-600">CSV spreadsheet (.csv)</strong> or <strong className="text-slate-600">JSON records (.json)</strong>. Maximum size 3MB.
                     </div>
                   </div>
                 ) : (
@@ -2752,6 +3126,369 @@ export default function StudentsTab({
         )}
       </AnimatePresence>
 
+      {/* STUDENT OVERVIEW MODAL */}
+      <AnimatePresence>
+        {showOverviewModal && selectedOverviewStudent && (
+          <div 
+            onClick={() => setShowOverviewModal(false)}
+            className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 no-print overflow-y-auto cursor-pointer font-sans"
+          >
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              transition={{ ease: "easeOut", duration: 0.15 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-[24px] border border-slate-200/50 shadow-2xl max-w-5xl w-full flex flex-col overflow-hidden my-8 max-h-[95vh] cursor-default"
+            >
+              {/* Modal Header */}
+              <div className="p-6 bg-white border-b border-slate-100 flex justify-between items-center shrink-0">
+                <div className="flex items-center gap-4">
+                  <div className="w-14 h-14 rounded-2xl border border-slate-200 bg-slate-50 overflow-hidden flex items-center justify-center shadow-xs shrink-0">
+                    {selectedOverviewStudent.photoUrl ? (
+                      <img src={selectedOverviewStudent.photoUrl} alt={selectedOverviewStudent.firstName} className="w-full h-full object-cover" />
+                    ) : (
+                      <User size={24} className="text-slate-300" />
+                    )}
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-black text-slate-900 leading-tight">
+                      {selectedOverviewStudent.firstName} {selectedOverviewStudent.middleName ? selectedOverviewStudent.middleName + ' ' : ''}{selectedOverviewStudent.lastName}
+                    </h3>
+                    <p className="text-xs text-slate-500 font-medium">
+                      Student Performance & Engagement Dashboard • ID: {selectedOverviewStudent.id}
+                    </p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setShowOverviewModal(false)}
+                  className="p-2 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-slate-600 transition cursor-pointer"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              {/* Sub-tabs Navigation */}
+              <div className="bg-slate-50/50 px-6 border-b border-slate-100 shrink-0">
+                <div className="flex flex-wrap gap-4 sm:gap-8">
+                  <button
+                    onClick={() => setOverviewTab('trends')}
+                    className={`py-3 text-[11px] font-bold uppercase tracking-widest border-b-2 transition cursor-pointer ${overviewTab === 'trends' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <TrendingUp size={14} />
+                      Academic Trends
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => setOverviewTab('attendance')}
+                    className={`py-3 text-[11px] font-bold uppercase tracking-widest border-b-2 transition cursor-pointer ${overviewTab === 'attendance' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <Calendar size={14} />
+                      Attendance History
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Modal Content */}
+              <div className="flex-1 overflow-y-auto p-6 bg-slate-50/30">
+                {overviewTab === 'trends' ? (
+                  <div className="space-y-6">
+                    {/* Top Stats Cards */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      {(() => {
+                        const trends = DbController.getStudentAcademicTrends(selectedOverviewStudent.id);
+                        const avgScore = trends.length > 0 ? (trends.reduce((acc, curr) => acc + curr.totalScore, 0) / trends.length).toFixed(1) : 'N/A';
+                        const bestSubject = trends.length > 0 ? [...trends].sort((a, b) => b.totalScore - a.totalScore)[0].subject : 'N/A';
+                        const totalAssessments = trends.length;
+
+                        return (
+                          <>
+                            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
+                              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Average Academic Score</div>
+                              <div className="text-2xl font-black text-indigo-600">{avgScore}%</div>
+                              <div className="text-[10px] text-slate-500 mt-1">Cumulative across all terms</div>
+                            </div>
+                            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
+                              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Best Performing Subject</div>
+                              <div className="text-xl font-bold text-slate-800 truncate">{bestSubject}</div>
+                              <div className="text-[10px] text-slate-500 mt-1">Highest recorded score</div>
+                            </div>
+                            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
+                              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Total Assessments</div>
+                              <div className="text-2xl font-black text-emerald-600">{totalAssessments}</div>
+                              <div className="text-[10px] text-slate-500 mt-1">Recorded entries in system</div>
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+
+                    {/* Performance Chart */}
+                    <div className="bg-white p-6 rounded-[24px] border border-slate-200 shadow-xs space-y-4">
+                      <div className="flex justify-between items-center">
+                        <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                          <TrendingUp size={16} className="text-indigo-500" /> Subject Performance Trend
+                        </h4>
+                      </div>
+                      <div className="h-[300px] w-full">
+                        {(() => {
+                          const trends = DbController.getStudentAcademicTrends(selectedOverviewStudent.id);
+                          if (trends.length === 0) {
+                            return (
+                              <div className="h-full flex flex-col items-center justify-center text-center space-y-2 text-slate-400">
+                                <TrendingUp size={32} opacity={0.2} />
+                                <p className="text-xs">No assessment data found for this student.</p>
+                              </div>
+                            );
+                          }
+
+                          // Group by subject for better visualization if needed, but here we show a sequence of assessments
+                          const chartData = trends.map(t => ({
+                            label: `${t.term} ${t.subject.substring(0, 8)}...`,
+                            score: t.totalScore,
+                            subject: t.subject,
+                            term: t.term
+                          }));
+
+                          return (
+                            <ResponsiveContainer width="100%" height="100%">
+                              <LineChart data={chartData}>
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                                <XAxis 
+                                  dataKey="label" 
+                                  fontSize={10} 
+                                  tick={{ fill: '#94a3b8' }} 
+                                  axisLine={false} 
+                                  tickLine={false}
+                                />
+                                <YAxis 
+                                  domain={[0, 100]} 
+                                  fontSize={10} 
+                                  tick={{ fill: '#94a3b8' }} 
+                                  axisLine={false} 
+                                  tickLine={false} 
+                                />
+                                <Tooltip 
+                                  contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                                  formatter={(value: number) => [`${value}%`, 'Score']}
+                                />
+                                <Line 
+                                  type="monotone" 
+                                  dataKey="score" 
+                                  stroke="#4f46e5" 
+                                  strokeWidth={3} 
+                                  dot={{ r: 4, fill: '#4f46e5', strokeWidth: 2, stroke: '#fff' }} 
+                                  activeDot={{ r: 6, strokeWidth: 0 }}
+                                />
+                              </LineChart>
+                            </ResponsiveContainer>
+                          );
+                        })()}
+                      </div>
+                    </div>
+
+                    {/* Subjects Table */}
+                    <div className="bg-white rounded-[24px] border border-slate-200 shadow-xs overflow-hidden">
+                      <div className="p-4 border-b border-slate-100 flex justify-between items-center">
+                        <h4 className="text-sm font-bold text-slate-800">Academic Records Breakdown</h4>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="bg-slate-50/50 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                              <th className="px-6 py-3">Subject</th>
+                              <th className="px-6 py-3">Term / Session</th>
+                              <th className="px-6 py-3 text-center">Class Score</th>
+                              <th className="px-6 py-3 text-center">Exam Score</th>
+                              <th className="px-6 py-3 text-center">Total</th>
+                              <th className="px-6 py-3 text-center">Grade</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 text-xs">
+                            {(() => {
+                              const trends = DbController.getStudentAcademicTrends(selectedOverviewStudent.id);
+                              if (trends.length === 0) {
+                                return (
+                                  <tr>
+                                    <td colSpan={6} className="px-6 py-10 text-center text-slate-400">
+                                      No detailed records available.
+                                    </td>
+                                  </tr>
+                                );
+                              }
+                              return [...trends].reverse().map((t, idx) => (
+                                <tr key={idx} className="hover:bg-slate-50/80 transition">
+                                  <td className="px-6 py-3 font-semibold text-slate-700">{t.subject}</td>
+                                  <td className="px-6 py-3 text-slate-500">{t.term} • {t.academicYear}</td>
+                                  <td className="px-6 py-3 text-center font-mono text-slate-600">{t.classScore50}</td>
+                                  <td className="px-6 py-3 text-center font-mono text-slate-600">{t.examScore50}</td>
+                                  <td className="px-6 py-3 text-center">
+                                    <span className={`inline-block px-2 py-0.5 rounded-full font-bold ${t.totalScore >= 80 ? 'bg-emerald-50 text-emerald-700' : t.totalScore >= 50 ? 'bg-indigo-50 text-indigo-700' : 'bg-rose-50 text-rose-700'}`}>
+                                      {t.totalScore}%
+                                    </span>
+                                  </td>
+                                  <td className="px-6 py-3 text-center">
+                                    <span className="font-bold text-slate-900">{t.gradeLevel}</span>
+                                  </td>
+                                </tr>
+                              ));
+                            })()}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-6">
+                    {/* Attendance Stats */}
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                      {(() => {
+                        const history = DbController.getStudentAttendanceHistory(selectedOverviewStudent.id);
+                        const stats = DbController.getStudentAttendanceStats(selectedOverviewStudent.id);
+                        const rate = stats.schoolOpen > 0 ? ((stats.present / stats.schoolOpen) * 100).toFixed(1) : '0';
+                        const lastPresence = history.length > 0 ? history[history.length - 1].date : 'N/A';
+
+                        return (
+                          <>
+                            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
+                              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Attendance Rate</div>
+                              <div className="text-2xl font-black text-indigo-600">{rate}%</div>
+                              <div className="text-[10px] text-slate-500 mt-1">Overall punctuality</div>
+                            </div>
+                            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
+                              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Days Present</div>
+                              <div className="text-2xl font-black text-emerald-600">{stats.present}</div>
+                              <div className="text-[10px] text-slate-500 mt-1">Confirmed appearances</div>
+                            </div>
+                            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
+                              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Days Absent</div>
+                              <div className="text-2xl font-black text-rose-600">{stats.schoolOpen - stats.present}</div>
+                              <div className="text-[10px] text-slate-500 mt-1">Missed school days</div>
+                            </div>
+                            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
+                              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Last Recorded</div>
+                              <div className="text-xl font-bold text-slate-800">{lastPresence}</div>
+                              <div className="text-[10px] text-slate-500 mt-1">Latest attendance log</div>
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
+
+                    {/* Attendance Visualizer */}
+                    <div className="bg-white p-6 rounded-[24px] border border-slate-200 shadow-xs space-y-4">
+                      <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                        <Calendar size={16} className="text-indigo-500" /> Attendance Distribution
+                      </h4>
+                      <div className="h-[250px] w-full flex items-center justify-center">
+                        {(() => {
+                          const stats = DbController.getStudentAttendanceStats(selectedOverviewStudent.id);
+                          if (stats.schoolOpen === 0) {
+                            return (
+                              <div className="flex flex-col items-center justify-center text-center space-y-2 text-slate-400">
+                                <UserCheck size={32} opacity={0.2} />
+                                <p className="text-xs">No attendance logs found for this student.</p>
+                              </div>
+                            );
+                          }
+
+                          const pieData = [
+                            { name: 'Present', value: stats.present, color: '#10b981' },
+                            { name: 'Absent', value: stats.schoolOpen - stats.present, color: '#f43f5e' }
+                          ];
+
+                          return (
+                            <ResponsiveContainer width="100%" height="100%">
+                              <PieChart>
+                                <Pie
+                                  data={pieData}
+                                  innerRadius={60}
+                                  outerRadius={80}
+                                  paddingAngle={5}
+                                  dataKey="value"
+                                >
+                                  {pieData.map((entry, index) => (
+                                    <Cell key={`cell-${index}`} fill={entry.color} />
+                                  ))}
+                                </Pie>
+                                <Tooltip />
+                                <Legend verticalAlign="bottom" height={36}/>
+                              </PieChart>
+                            </ResponsiveContainer>
+                          );
+                        })()}
+                      </div>
+                    </div>
+
+                    {/* Attendance Logs List */}
+                    <div className="bg-white rounded-[24px] border border-slate-200 shadow-xs overflow-hidden">
+                      <div className="p-4 border-b border-slate-100 flex justify-between items-center">
+                        <h4 className="text-sm font-bold text-slate-800">Recent Attendance Logs</h4>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="bg-slate-50/50 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                              <th className="px-6 py-3">Date</th>
+                              <th className="px-6 py-3">Status</th>
+                              <th className="px-6 py-3">Class Level</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 text-xs">
+                            {(() => {
+                              const history = DbController.getStudentAttendanceHistory(selectedOverviewStudent.id);
+                              if (history.length === 0) {
+                                return (
+                                  <tr>
+                                    <td colSpan={3} className="px-6 py-10 text-center text-slate-400">
+                                      No logs recorded yet.
+                                    </td>
+                                  </tr>
+                                );
+                              }
+                              return [...history].reverse().slice(0, 10).map((h, idx) => (
+                                <tr key={idx} className="hover:bg-slate-50/80 transition">
+                                  <td className="px-6 py-3 font-mono text-slate-700">{h.date}</td>
+                                  <td className="px-6 py-3">
+                                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold ${h.status === 'Present' ? 'bg-emerald-50 text-emerald-700' : h.status === 'Absent' ? 'bg-rose-50 text-rose-700' : 'bg-slate-100 text-slate-600'}`}>
+                                      <div className={`w-1.5 h-1.5 rounded-full ${h.status === 'Present' ? 'bg-emerald-500' : h.status === 'Absent' ? 'bg-rose-500' : 'bg-slate-400'}`}></div>
+                                      {h.status}
+                                    </span>
+                                  </td>
+                                  <td className="px-6 py-3 text-slate-500">{h.class}</td>
+                                </tr>
+                              ));
+                            })()}
+                          </tbody>
+                        </table>
+                      </div>
+                      {DbController.getStudentAttendanceHistory(selectedOverviewStudent.id).length > 10 && (
+                        <div className="p-3 bg-slate-50 text-center border-t border-slate-100 text-[10px] text-slate-400 font-medium">
+                          Showing most recent 10 logs
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end gap-3 shrink-0">
+                <button
+                  onClick={() => setShowOverviewModal(false)}
+                  className="px-6 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl shadow-lg shadow-slate-900/10 transition cursor-pointer text-xs"
+                >
+                  Dismiss Overview
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* SECTION DATA CONTROLS */}
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-3 no-print">
         <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
@@ -3394,11 +4131,280 @@ export default function StudentsTab({
         )}
       </AnimatePresence>
 
+      <AnimatePresence>
+        {showBulkWhatsAppModal && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm overflow-hidden">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col md:flex-row overflow-hidden border border-slate-200"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Left Configuration Sidebar */}
+              <div className="w-full md:w-80 bg-slate-50 p-6 border-r border-slate-100 flex flex-col justify-between overflow-y-auto">
+                <div className="space-y-6">
+                  <div>
+                    <h3 className="text-lg font-black text-slate-900 leading-tight">Bulk WhatsApp</h3>
+                    <p className="text-xs text-slate-500 font-medium mt-1">Send parents notifications in bulk via WhatsApp messaging.</p>
+                  </div>
+
+                  {/* Template Selection */}
+                  <div className="space-y-3 bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
+                    <span className="text-[10px] uppercase font-black text-slate-400 tracking-wider block">Message Template</span>
+                    <div className="space-y-2">
+                      <button
+                        onClick={() => setBulkWhatsAppTemplate('PORTAL_ACCESS')}
+                        className={`w-full text-left p-3 rounded-xl border transition flex items-center gap-3 ${bulkWhatsAppTemplate === 'PORTAL_ACCESS' ? 'border-emerald-600 bg-emerald-50' : 'border-slate-100 bg-slate-50 hover:bg-slate-100'}`}
+                      >
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${bulkWhatsAppTemplate === 'PORTAL_ACCESS' ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500'}`}>
+                          <Share2 size={16} />
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold text-slate-900">Portal Access</p>
+                          <p className="text-[9px] text-slate-500">General link sharing</p>
+                        </div>
+                      </button>
+
+                      <button
+                        onClick={() => setBulkWhatsAppTemplate('FEES_REMINDER')}
+                        className={`w-full text-left p-3 rounded-xl border transition flex items-center gap-3 ${bulkWhatsAppTemplate === 'FEES_REMINDER' ? 'border-emerald-600 bg-emerald-50' : 'border-slate-100 bg-slate-50 hover:bg-slate-100'}`}
+                      >
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${bulkWhatsAppTemplate === 'FEES_REMINDER' ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500'}`}>
+                          <FileSpreadsheet size={16} />
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold text-slate-900">Fees Reminder</p>
+                          <p className="text-[9px] text-slate-500">Outstanding balance alert</p>
+                        </div>
+                      </button>
+
+                      <button
+                        onClick={() => setBulkWhatsAppTemplate('ASSESSMENT_RELEASE')}
+                        className={`w-full text-left p-3 rounded-xl border transition flex items-center gap-3 ${bulkWhatsAppTemplate === 'ASSESSMENT_RELEASE' ? 'border-emerald-600 bg-emerald-50' : 'border-slate-100 bg-slate-50 hover:bg-slate-100'}`}
+                      >
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${bulkWhatsAppTemplate === 'ASSESSMENT_RELEASE' ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500'}`}>
+                          <BadgeCheck size={16} />
+                        </div>
+                        <div>
+                          <p className="text-xs font-bold text-slate-900">Report Card</p>
+                          <p className="text-[9px] text-slate-500">Assessment release alert</p>
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Filtering Controls */}
+                  <div className="space-y-3 bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                    <span className="text-[10px] uppercase font-black text-slate-400 tracking-wider block">Target Filter</span>
+                    
+                    {/* Class Filter */}
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-bold text-slate-500 block">Class Level</label>
+                      <select
+                        value={bulkWhatsAppClassFilter}
+                        onChange={(e) => setBulkWhatsAppClassFilter(e.target.value)}
+                        className="w-full text-xs px-2.5 py-1.5 border border-slate-200 rounded-lg bg-white font-medium"
+                      >
+                        <option value="All">All Classes ({students.length} Students)</option>
+                        {CLASSES.map(cls => {
+                          const count = students.filter(s => s.class === cls).length;
+                          return (
+                            <option key={cls} value={cls}>{cls} ({count})</option>
+                          );
+                        })}
+                      </select>
+                    </div>
+
+                    {/* Search Field */}
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-bold text-slate-500 block">Search Student</label>
+                      <div className="relative">
+                        <Search className="absolute left-2.5 top-2.5 text-slate-400" size={12} />
+                        <input
+                          type="text"
+                          value={bulkWhatsAppSearch}
+                          onChange={(e) => setBulkWhatsAppSearch(e.target.value)}
+                          placeholder="Search name or ID..."
+                          className="w-full pl-8 pr-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-white focus:outline-hidden"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3 pt-6 border-t border-slate-100">
+                  <div className="text-center">
+                    <span className="text-[10px] font-bold text-emerald-600">
+                      {selectedBulkWhatsAppStudents.length} of {filteredBulkWhatsAppStudents.length} Selected
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSendBulkWhatsApp}
+                    disabled={selectedBulkWhatsAppStudents.length === 0}
+                    className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-xl font-bold font-sans text-xs transition cursor-pointer flex items-center justify-center gap-2 shadow-md hover:shadow-lg"
+                  >
+                    <Share2 size={16} />
+                    Send {selectedBulkWhatsAppStudents.length} Messages
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowBulkWhatsAppModal(false)}
+                    className="w-full py-2 border border-slate-250 text-slate-500 hover:bg-slate-50 rounded-xl font-bold font-sans text-xs transition cursor-pointer text-center bg-white"
+                  >
+                    Cancel / Exit
+                  </button>
+                </div>
+              </div>
+
+              {/* Right Selection & Preview Layout */}
+              <div className="flex-1 p-6 overflow-y-auto flex flex-col justify-between max-h-[90vh]">
+                <div className="space-y-6">
+                  {/* Select Actions header */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                    <div>
+                      <h4 className="text-xs font-extrabold text-slate-700 uppercase tracking-wider">Select Recipients ({filteredBulkWhatsAppStudents.length})</h4>
+                      <p className="text-[10px] text-slate-400 mt-0.5">Toggle checkboxes to include/exclude parents</p>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedBulkWhatsAppStudents(filteredBulkWhatsAppStudents.map(s => s.id))}
+                        className="text-[10px] font-black text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50/50 px-2.5 py-1 rounded-lg border border-emerald-150 transition cursor-pointer bg-white"
+                      >
+                        Select All Filtered
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedBulkWhatsAppStudents([])}
+                        className="text-[10px] font-black text-slate-500 hover:text-slate-600 hover:bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-200 transition cursor-pointer bg-white"
+                      >
+                        Deselect All
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Checklist of students */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 max-h-[300px] overflow-y-auto p-3 border border-slate-200/60 bg-white rounded-2xl shadow-inner">
+                    {filteredBulkWhatsAppStudents.length === 0 ? (
+                      <p className="text-xs text-slate-400 text-center col-span-full py-6">No matching students found with current filters.</p>
+                    ) : (
+                      filteredBulkWhatsAppStudents.map(student => {
+                        const isChecked = selectedBulkWhatsAppStudents.includes(student.id);
+                        return (
+                          <label 
+                            key={student.id} 
+                            className={`flex items-start gap-2 p-2 rounded-xl border cursor-pointer select-none transition ${isChecked ? 'bg-emerald-50/30 border-emerald-200 ring-1 ring-emerald-200/50' : 'bg-slate-50/50 border-slate-100 hover:bg-slate-50'}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => {
+                                if (isChecked) {
+                                  setSelectedBulkWhatsAppStudents(prev => prev.filter(id => id !== student.id));
+                                } else {
+                                  setSelectedBulkWhatsAppStudents(prev => [...prev, student.id]);
+                                }
+                              }}
+                              className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500 h-3.5 w-3.5 shrink-0"
+                            />
+                            <div className="min-w-0">
+                              <p className="text-[10.5px] font-black text-slate-800 leading-tight truncate">{student.firstName} {student.lastName}</p>
+                              <p className="text-[8.5px] font-mono font-medium text-slate-400 truncate mt-0.5">Phone: {student.guardianTelephone || 'N/A'}</p>
+                            </div>
+                          </label>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  {/* Template Preview */}
+                  <div className="space-y-3">
+                    <span className="text-[10px] uppercase font-black text-slate-400 tracking-wider block">Message Preview (First Selected)</span>
+                    
+                    <div className="border border-slate-250 bg-slate-100 rounded-3xl p-6 shadow-inner">
+                      {selectedBulkWhatsAppStudents.length > 0 ? (
+                        (() => {
+                          const student = students.find(s => s.id === selectedBulkWhatsAppStudents[0]);
+                          if (!student) return null;
+                          const yr = student.academicYear || selectedYear || '2026/2027';
+                          const tm = student.term || selectedTerm || 'Term 1';
+                          const { message } = getWhatsAppShareData(student, yr, tm, bulkWhatsAppTemplate);
+                          return (
+                            <div className="bg-[#DCF8C6] p-4 rounded-2xl border border-[#C5E1A5] text-slate-800 text-xs font-medium whitespace-pre-wrap shadow-sm relative">
+                              <div className="absolute top-2 right-2 flex gap-1">
+                                <div className="w-1 h-1 rounded-full bg-slate-400/30" />
+                                <div className="w-1 h-1 rounded-full bg-slate-400/30" />
+                              </div>
+                              {message}
+                            </div>
+                          );
+                        })()
+                      ) : (
+                        <div className="text-center py-12 text-slate-400 italic text-xs">
+                          Select a recipient to see message preview
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {isCameraOpen && (
         <CameraCapture 
           onCapture={(url) => setFormState(prev => ({ ...prev, photoUrl: url }))} 
           onClose={() => setIsCameraOpen(false)} 
         />
+      )}
+
+      {confirmModal && confirmModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[100] p-4 no-print animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden text-left p-6 space-y-4 animate-scale-up">
+            <div className="flex items-start gap-3">
+              <div className={`p-2 rounded-xl shrink-0 ${confirmModal.danger ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>
+                <AlertTriangle size={24} className="animate-bounce-slow" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 font-sans tracking-tight">
+                  {confirmModal.title}
+                </h3>
+                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                  {confirmModal.message}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmModal(null)}
+                className="flex-1 py-2 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-xl transition cursor-pointer select-none text-center"
+              >
+                {confirmModal.cancelText || 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  confirmModal.onConfirm();
+                  setConfirmModal(null);
+                }}
+                className={`flex-1 py-2 px-4 text-white font-bold text-xs rounded-xl transition cursor-pointer select-none text-center ${
+                  confirmModal.danger 
+                    ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800' 
+                    : 'bg-amber-600 hover:bg-amber-700 active:bg-amber-800'
+                }`}
+              >
+                {confirmModal.confirmText || 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

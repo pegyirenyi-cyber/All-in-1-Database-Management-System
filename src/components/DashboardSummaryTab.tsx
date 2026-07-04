@@ -566,7 +566,7 @@ export default function DashboardSummaryTab({
   });
 
   bills.forEach(b => {
-    const totalBilled = b.schoolFees + b.utilityBill + b.sportsFees + b.ptaDues + b.otherFee;
+    const totalBilled = b.schoolFees + b.utilityBill + b.sportsFees + b.ptaDues + (b.transportationBill || 0) + b.otherFee;
     const totalPaid = b.payments ? b.payments.reduce((sum, p) => sum + p.amount, 0) : 0;
     const outstanding = Math.max(0, totalBilled - totalPaid);
 

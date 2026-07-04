@@ -1,3 +1,5 @@
+import { Student } from './types';
+
 /**
  * Compresses an image base64 data string to reduce its byte size under Firestore limits.
  * Downsamples the image dimensions and applies quality compression.
@@ -90,6 +92,50 @@ export function triggerToast(text: string, type: 'success' | 'error' | 'info' = 
   const event = new CustomEvent('app-toast', { detail: { text, type } });
   window.dispatchEvent(event);
 }
+
+export type WhatsAppTemplate = 'PORTAL_ACCESS' | 'FEES_REMINDER' | 'ASSESSMENT_RELEASE';
+
+export const getWhatsAppShareData = (student: Student, year: string, term: string, template: WhatsAppTemplate = 'PORTAL_ACCESS') => {
+  const token = generateSecureToken(student.id, year, term);
+  const parentUrl = `${window.location.origin}/?studentId=${student.id}&year=${encodeURIComponent(year)}&term=${encodeURIComponent(term)}&token=${token}&parentMode=true`;
+  
+  let message = "";
+  
+  if (template === 'FEES_REMINDER') {
+    message = `Hello ${student.guardianName || 'Guardian'},\n\n` +
+      `This is a friendly reminder from the school regarding the outstanding fees for *${student.firstName} ${student.lastName}*.\n\n` +
+      `You can view the detailed statement and make payments via the secure Parent Portal here:\n` +
+      `${parentUrl}\n\n` +
+      `Thank you.`;
+  } else if (template === 'ASSESSMENT_RELEASE') {
+    message = `Hello ${student.guardianName || 'Guardian'},\n\n` +
+      `We are pleased to inform you that the *${term}* Academic Assessment results for *${student.firstName} ${student.lastName}* have been released.\n\n` +
+      `You can securely view and download the report card using this link:\n` +
+      `${parentUrl}\n\n` +
+      `Thank you.`;
+  } else {
+    message = `Hello ${student.guardianName || 'Guardian'},\n\n` +
+      `Here is the secure Parent Portal link for *${student.firstName} ${student.lastName}* (${student.id}) to securely view and download the:\n` +
+      `• *Official Term Report Card*\n` +
+      `• *School Fees Statement & Payment Receipts*\n` +
+      `• *Academic Performance Analytics & Remarks*\n\n` +
+      `Access Link: ${parentUrl}\n\n` +
+      `Thank you.`;
+  }
+
+  let formattedPhone = (student.guardianTelephone || '').trim().replace(/[\s\-\(\)\+]/g, '');
+  if (formattedPhone.startsWith('0') && formattedPhone.length === 10) {
+    formattedPhone = '233' + formattedPhone.substring(1);
+  }
+  
+  const whatsappUrl = `https://wa.me/${formattedPhone}?text=${encodeURIComponent(message)}`;
+  return { whatsappUrl, message, formattedPhone };
+};
+
+export const shareParentPortalWhatsApp = (student: Student, year: string, term: string, template: WhatsAppTemplate = 'PORTAL_ACCESS') => {
+  const { whatsappUrl } = getWhatsAppShareData(student, year, term, template);
+  window.open(whatsappUrl, '_blank');
+};
 
 const GHANA_CREST_SVG_WATERMARK = `
 <svg viewBox="0 0 100 100" width="100%" height="100%" style="width: 420px; height: 420px; color: #0f172a;">

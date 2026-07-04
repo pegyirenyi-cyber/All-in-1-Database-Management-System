@@ -28,6 +28,12 @@ import {
   enableIndexedDbPersistence
 } from 'firebase/firestore';
 import {
+  getStorage,
+  ref,
+  uploadString,
+  getDownloadURL
+} from 'firebase/storage';
+import {
   SchoolInfo,
   Student,
   Teacher,
@@ -53,7 +59,11 @@ import {
   BehavioralRemark,
   TeacherReflection,
   AutoBackupConfig,
-  AutoBackupEntry
+  AutoBackupEntry,
+  CloudSyncConfig,
+  DutyAssignment,
+  DutyType,
+  StaffHandbookDocument
 } from './types';
 import firebaseConfig from '../firebase-applet-config.json';
 import CryptoJS from 'crypto-js';
@@ -230,7 +240,8 @@ const DEFAULT_SCHOOL_INFO: SchoolInfo = {
   licensePrice1Year: 350,
   licensePrice2Year: 600,
   licensePrice3Year: 800,
-  licensePrice5Year: 1200
+  licensePrice5Year: 1200,
+  schoolId: ''
 };
 
 export const DEFAULT_CALENDAR: AcademicCalendarConfig = {
@@ -411,7 +422,10 @@ const STORAGE_KEYS = {
   BEHAVIORAL_REMARKS: 'sms_behavioral_remarks',
   TEACHER_REFLECTIONS: 'sms_teacher_reflections',
   AUTO_BACKUP_CONFIG: 'sms_auto_backup_config',
-  AUTO_BACKUPS: 'sms_auto_backups'
+  AUTO_BACKUPS: 'sms_auto_backups',
+  CLOUD_SYNC_CONFIG: 'sms_cloud_sync_config',
+  DUTY_ROSTER: 'sms_duty_roster',
+  STAFF_HANDBOOK: 'sms_staff_handbook'
 };
 
 // Get user-specific key prefix/suffix to support clean multi-user login and cross-device syncing
@@ -572,8 +586,14 @@ export class DbController {
     
     // Inject ownerId for multi-tenancy if logged in and not the users collection
     const currentUser = this.getCurrentUser();
-    if (currentUser && type === 'set' && colName !== 'users') {
-      safeData = { ...safeData, ownerId: currentUser.uid };
+    
+    // Determine the root collection path based on School ID (multi-tenancy)
+    let collectionRef;
+    if (currentUser && colName !== 'users' && colName !== 'settings') {
+      const schoolId = currentUser.schoolId || currentUser.uid;
+      collectionRef = collection(firestoreDb, 'schools', schoolId, colName);
+    } else {
+      collectionRef = collection(firestoreDb, colName);
     }
 
     if (!isOnline) {
@@ -583,10 +603,10 @@ export class DbController {
 
     try {
       if (type === 'set') {
-        const docRef = doc(firestoreDb, colName, safeDocId);
-        await setDoc(docRef, safeData);
+        const docRef = doc(collectionRef, safeDocId);
+        await setDoc(docRef, { ...safeData, ownerId: currentUser?.uid });
       } else if (type === 'delete') {
-        const docRef = doc(firestoreDb, colName, safeDocId);
+        const docRef = doc(collectionRef, safeDocId);
         await deleteDoc(docRef);
       }
       console.log(`[Offline Sync] Successfully synced ${type} on ${colName}/${safeDocId} with Firestore.`);
@@ -746,6 +766,37 @@ export class DbController {
       setStorageItem(STORAGE_KEYS.USERS_LIST, filtered);
     }
 
+    // Ensure sammyotoo06@gmail.com is present in the list as Headteacher
+    const sammyIdx = filtered.findIndex(user => user.email.toLowerCase().trim() === 'sammyotoo06@gmail.com');
+    if (sammyIdx >= 0) {
+      let changed = false;
+      if (filtered[sammyIdx].role !== 'Headteacher') {
+        filtered[sammyIdx].role = 'Headteacher';
+        changed = true;
+      }
+      if (!filtered[sammyIdx].schoolId) {
+        filtered[sammyIdx].schoolId = this.getSchoolInfo().schoolId || 'school_default';
+        changed = true;
+      }
+      if (changed) {
+        setStorageItem(STORAGE_KEYS.USERS_LIST, filtered);
+      }
+    } else {
+      const newHeadteacher: UserAccount = {
+        uid: 'user_sammyotoo_headteacher',
+        email: 'sammyotoo06@gmail.com',
+        name: 'SAMMY OTOO',
+        role: 'Headteacher',
+        createdAt: createdNow,
+        licenseType: 'unlimited',
+        registeredOn: createdNow,
+        requestCode: 'REQ-SAMY-8888',
+        schoolId: this.getSchoolInfo().schoolId || 'school_default'
+      };
+      filtered.push(newHeadteacher);
+      setStorageItem(STORAGE_KEYS.USERS_LIST, filtered);
+    }
+
     // Persist filtered list if it changed
     if (filtered.length !== list.length) {
       setStorageItem(STORAGE_KEYS.USERS_LIST, filtered);
@@ -784,6 +835,24 @@ export class DbController {
       });
     }
 
+    const sammyIdx = sanitized.findIndex(user => user.email.toLowerCase().trim() === 'sammyotoo06@gmail.com');
+    if (sammyIdx >= 0) {
+      sanitized[sammyIdx].role = 'Headteacher';
+    } else {
+      const createdNow = new Date().toISOString();
+      sanitized.push({
+        uid: 'user_sammyotoo_headteacher',
+        email: 'sammyotoo06@gmail.com',
+        name: 'SAMMY OTOO',
+        role: 'Headteacher',
+        createdAt: createdNow,
+        licenseType: 'unlimited',
+        registeredOn: createdNow,
+        requestCode: 'REQ-SAMY-8888',
+        schoolId: this.getSchoolInfo().schoolId || 'school_default'
+      });
+    }
+
     setStorageItem(STORAGE_KEYS.USERS_LIST, sanitized);
     
     const currentUser = this.getCurrentUser();
@@ -812,6 +881,9 @@ export class DbController {
     const trimmedEmail = email.toLowerCase().trim();
     if (trimmedEmail === 'pegyirenyi@gmail.com') {
       return 'Admin';
+    }
+    if (trimmedEmail === 'sammyotoo06@gmail.com') {
+      return 'Headteacher';
     }
     
     // Check if the user is a teacher with assigned classes. If so, they are seen as Class Teachers.
@@ -855,7 +927,7 @@ export class DbController {
     let assignedRole: UserRole = role;
     
     // Strict Access Control: No one should be able to sign in directly unless pre-authorized or pegyirenyi@gmail.com
-    if (trimmedEmail !== 'pegyirenyi@gmail.com') {
+    if (trimmedEmail !== 'pegyirenyi@gmail.com' && trimmedEmail !== 'sammyotoo06@gmail.com') {
       const isAuthorized = users.some(u => u.email.toLowerCase().trim() === trimmedEmail);
       if (!isAuthorized) {
         throw new Error("Access Denied: This email address is not authorized. Please contact the System Administrator (pegyirenyi@gmail.com) to authorize access.");
@@ -864,6 +936,8 @@ export class DbController {
 
     if (trimmedEmail === 'pegyirenyi@gmail.com') {
       assignedRole = 'Admin';
+    } else if (trimmedEmail === 'sammyotoo06@gmail.com') {
+      assignedRole = 'Headteacher';
     } else if (assignedRole === 'Admin') {
       assignedRole = 'Teacher';
     }
@@ -941,7 +1015,7 @@ export class DbController {
     let assignedRole: UserRole = role;
     
     // Check if registering user is already authorized or registering admin
-    if (trimmedEmail !== 'pegyirenyi@gmail.com') {
+    if (trimmedEmail !== 'pegyirenyi@gmail.com' && trimmedEmail !== 'sammyotoo06@gmail.com') {
       const isAuthorized = users.some(u => u.email.toLowerCase().trim() === trimmedEmail);
       // If NOT authorized and we are NOT logged in as Admin or Headteacher, block registration
       const currentUser = this.getCurrentUser();
@@ -967,6 +1041,8 @@ export class DbController {
 
     if (trimmedEmail === 'pegyirenyi@gmail.com') {
       assignedRole = 'Admin';
+    } else if (trimmedEmail === 'sammyotoo06@gmail.com') {
+      assignedRole = 'Headteacher';
     } else {
       const currentUser = this.getCurrentUser();
       const isAdmin = currentUser?.role === 'Admin' || currentUser?.email?.toLowerCase().trim() === 'pegyirenyi@gmail.com';
@@ -982,6 +1058,14 @@ export class DbController {
       }
     }
 
+    const currentUser = this.getCurrentUser();
+    let userSchoolId: string | undefined = undefined;
+    if (assignedRole === 'Headteacher') {
+      userSchoolId = this.generateSpecialSchoolId();
+    } else if (assignedRole === 'Teacher' && currentUser?.schoolId) {
+      userSchoolId = currentUser.schoolId;
+    }
+
     const createdNow = new Date().toISOString();
     const prefix = email.split('@')[0].substring(0, 4).toUpperCase();
     const newUser: UserAccount = {
@@ -989,6 +1073,7 @@ export class DbController {
       email: email,
       name: name,
       role: assignedRole,
+      schoolId: userSchoolId,
       createdAt: createdNow,
       licenseType: 'trial',
       registeredOn: createdNow,
@@ -1143,7 +1228,7 @@ export class DbController {
     const users = this.getRegisteredUsers();
 
     // Check if registering user is already authorized or registering admin
-    if (trimmedEmail !== 'pegyirenyi@gmail.com') {
+    if (trimmedEmail !== 'pegyirenyi@gmail.com' && trimmedEmail !== 'sammyotoo06@gmail.com') {
       const isAuthorized = users.some(u => u.email.toLowerCase().trim() === trimmedEmail);
       // If NOT authorized and we are NOT logged in as Admin or Headteacher, block registration
       const currentUser = this.getCurrentUser();
@@ -1169,6 +1254,8 @@ export class DbController {
 
     if (trimmedEmail === 'pegyirenyi@gmail.com') {
       assignedRole = 'Admin';
+    } else if (trimmedEmail === 'sammyotoo06@gmail.com') {
+      assignedRole = 'Headteacher';
     } else {
       const currentUser = this.getCurrentUser();
       const isAdmin = currentUser?.role === 'Admin' || currentUser?.email?.toLowerCase().trim() === 'pegyirenyi@gmail.com';
@@ -1187,6 +1274,15 @@ export class DbController {
     try {
       const userCredential = await createUserWithEmailAndPassword(firebaseAuth, email, password);
       const uid = userCredential.user.uid;
+      
+      const currentUser = this.getCurrentUser();
+      let userSchoolId: string | undefined = undefined;
+      if (assignedRole === 'Headteacher') {
+        userSchoolId = this.generateSpecialSchoolId();
+      } else if (assignedRole === 'Teacher' && currentUser?.schoolId) {
+        userSchoolId = currentUser.schoolId;
+      }
+
       const createdNow = new Date().toISOString();
       const prefix = email.split('@')[0].substring(0, 4).toUpperCase();
       
@@ -1195,6 +1291,7 @@ export class DbController {
         email,
         name,
         role: assignedRole,
+        schoolId: userSchoolId,
         createdAt: createdNow,
         licenseType: 'trial',
         registeredOn: createdNow,
@@ -1337,6 +1434,113 @@ export class DbController {
     } catch (e) {
       throw e;
     }
+  }
+
+  static async teacherLogin(email: string, schoolId: string): Promise<UserAccount> {
+    const trimmedEmail = email.toLowerCase().trim();
+    
+    // Fallback: check local users list first
+    const cachedUsers = this.getRegisteredUsers();
+    let userAccount = cachedUsers.find(u => u.email.toLowerCase().trim() === trimmedEmail);
+    
+    if (isFirebaseActive && firestoreDb) {
+      try {
+        // Try to fetch from firestore first
+        const usersRef = collection(firestoreDb, 'users');
+        const q = query(usersRef, where("email", "==", trimmedEmail));
+        const querySnapshot = await getDocs(q);
+        
+        if (!querySnapshot.empty) {
+          userAccount = querySnapshot.docs[0].data() as UserAccount;
+        }
+      } catch (e) {
+        console.warn("Failed to fetch user from Firestore during teacher login:", e);
+      }
+    }
+    
+    if (!userAccount) {
+      throw new Error("Account not found. Please ensure you are registered.");
+    }
+    
+    if (userAccount.role !== 'Teacher') {
+      throw new Error("Access Denied: You are not registered as a Teacher.");
+    }
+    
+    if (userAccount.schoolId !== schoolId) {
+      throw new Error("Invalid School ID.");
+    }
+    
+    setStorageItem(STORAGE_KEYS.USER, userAccount);
+    return userAccount;
+  }
+
+  static async teacherLoginByBadge(badgeData: string): Promise<UserAccount> {
+    let email: string | undefined;
+    let staffId: string | undefined;
+    let schoolId: string | undefined;
+
+    // 1. Try parsing badgeData as JSON
+    try {
+      const parsed = JSON.parse(badgeData);
+      if (parsed && typeof parsed === 'object') {
+        email = parsed.email || parsed.Email;
+        staffId = parsed.staffId || parsed.StaffId || parsed.staffid || parsed.id;
+        schoolId = parsed.schoolId || parsed.SchoolId || parsed.schoolid;
+      }
+    } catch (e) {
+      // Not JSON, treat as plain text email or staffId
+      const cleanData = badgeData.trim();
+      if (cleanData.includes('@')) {
+        email = cleanData;
+      } else {
+        staffId = cleanData;
+      }
+    }
+
+    // 2. Locate the corresponding teacher in registry
+    const teachers = this.getTeachers();
+    let matchingTeacher: Teacher | undefined;
+
+    if (email) {
+      matchingTeacher = teachers.find(t => t.email?.toLowerCase().trim() === email?.toLowerCase().trim());
+    }
+    if (!matchingTeacher && staffId) {
+      matchingTeacher = teachers.find(t => t.staffId?.toLowerCase().trim() === staffId?.toLowerCase().trim() || t.id === staffId);
+    }
+
+    if (!matchingTeacher) {
+      throw new Error(`Access Denied: No registered teacher profile matches badge details "${badgeData.substring(0, 50)}${badgeData.length > 50 ? '...' : ''}". Please register the staff member first.`);
+    }
+
+    const teacherEmail = matchingTeacher.email;
+    if (!teacherEmail) {
+      throw new Error(`Access Denied: Teacher ${matchingTeacher.firstName} ${matchingTeacher.lastName} does not have an email address configured. Please set an email address in the teacher's profile first.`);
+    }
+
+    // 3. Find or bootstrap a registered UserAccount
+    const users = this.getRegisteredUsers();
+    let userAccount = users.find(u => u.email.toLowerCase().trim() === teacherEmail.toLowerCase().trim());
+
+    if (!userAccount) {
+      const createdNow = new Date().toISOString();
+      const sId = matchingTeacher.schoolId || this.getSchoolInfo().schoolId || "school_default";
+      userAccount = {
+        uid: 'user_' + Math.random().toString(36).substring(2, 9),
+        email: teacherEmail.toLowerCase().trim(),
+        name: `${matchingTeacher.firstName} ${matchingTeacher.lastName}`,
+        role: 'Teacher',
+        schoolId: sId,
+        createdAt: createdNow,
+        licenseType: 'trial',
+        registeredOn: createdNow
+      };
+      users.push(userAccount);
+      setStorageItem(STORAGE_KEYS.USERS_LIST, users);
+    }
+
+    // 4. Authenticate using the matching email and school ID
+    const targetSchoolId = schoolId || matchingTeacher.schoolId || this.getSchoolInfo().schoolId || "school_default";
+    return await this.teacherLogin(teacherEmail, targetSchoolId);
   }
 
   // Real full-stack Firebase sendPasswordResetEmail method
@@ -1978,7 +2182,7 @@ export class DbController {
 
     // Save public school details
     const currentUser = this.getCurrentUser();
-    const schoolId = currentUser ? `school_${currentUser.uid}` : (info.id || 'school_default');
+    const schoolId = info.schoolId || (currentUser ? `school_${currentUser.uid}` : (info.id || 'school_default'));
     this.performFirestoreWrite('schools', schoolId, 'set', publicFields);
 
     // If there are secret fields, save them to the secure school_secrets document
@@ -1989,9 +2193,45 @@ export class DbController {
       if (twilioAuthToken !== undefined) secrets.twilioAuthToken = twilioAuthToken;
       if (twilioFromNumber !== undefined) secrets.twilioFromNumber = twilioFromNumber;
       
-      const secretsId = currentUser ? `secrets_${currentUser.uid}` : 'school_secrets';
+      const secretsId = info.schoolId ? `secrets_${info.schoolId}` : (currentUser ? `secrets_${currentUser.uid}` : 'school_secrets');
       this.performFirestoreWrite('schools', secretsId, 'set', secrets);
     }
+
+    // Propagation to user profile
+    if (currentUser && info.schoolId && currentUser.schoolId !== info.schoolId) {
+      currentUser.schoolId = info.schoolId;
+      setStorageItem(STORAGE_KEYS.USER, currentUser);
+      if (isFirebaseActive && firestoreDb) {
+        setDoc(doc(firestoreDb, 'users', currentUser.uid), currentUser, { merge: true }).catch(console.error);
+      }
+    }
+  }
+
+  static async updateSchoolId(newId: string): Promise<void> {
+    const info = this.getSchoolInfo();
+    info.schoolId = newId;
+    this.saveSchoolInfo(info);
+
+    const user = this.getCurrentUser();
+    if (user) {
+      user.schoolId = newId;
+      setStorageItem(STORAGE_KEYS.USER, user);
+    }
+
+    this.writeActivityLog(
+      'Special School ID Updated',
+      `School linked to ID: ${newId}. Database access re-routed.`,
+      'high'
+    );
+  }
+
+  static generateSpecialSchoolId(): string {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let result = 'SMS-';
+    for (let i = 0; i < 8; i++) {
+      result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
   }
 
   // -------------------------
@@ -2456,6 +2696,32 @@ export class DbController {
       present,
       schoolOpen
     };
+  }
+
+  static getStudentAttendanceHistory(studentId: string) {
+    let records: AttendanceRecord[];
+    if (this._cache[STORAGE_KEYS.ATTENDANCE]) {
+      records = this._cache[STORAGE_KEYS.ATTENDANCE];
+    } else {
+      records = getStorageItem<AttendanceRecord[]>(STORAGE_KEYS.ATTENDANCE, []);
+      this._cache[STORAGE_KEYS.ATTENDANCE] = records;
+    }
+    return records
+      .filter(r => r.studentId === studentId)
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  }
+
+  static getStudentAcademicTrends(studentId: string) {
+    this.getAssessments(); // ensures _assessmentsByStudent is populated
+    const studentAssessments = this._assessmentsByStudent.get(studentId) || [];
+    
+    // Sort by year and term to get chronological order
+    return studentAssessments.sort((a, b) => {
+      if (a.academicYear !== b.academicYear) {
+        return a.academicYear.localeCompare(b.academicYear);
+      }
+      return a.term.localeCompare(b.term);
+    });
   }
 
   // -------------------------
@@ -3063,7 +3329,8 @@ export class DbController {
       autoSave: true,
       term: 'Term 1' as TermType,
       academicYear: '2026/2027' as AcademicYearType,
-      schoolSystemName: 'GEETECH SMS & ASSESSMENT CENTER'
+      schoolSystemName: 'GEETECH SMS & ASSESSMENT CENTER',
+      idleLogoutTimer: 30 // Default 30 minutes
     });
     this._cache[STORAGE_KEYS.SETTINGS] = settings;
     return settings;
@@ -3108,6 +3375,14 @@ export class DbController {
     const backups = getStorageItem<AutoBackupEntry[]>(STORAGE_KEYS.AUTO_BACKUPS, []);
     this._cache[STORAGE_KEYS.AUTO_BACKUPS] = backups;
     return backups;
+  }
+
+  static getFirebaseConfig() {
+    return {
+      active: isFirebaseActive,
+      projectId: resolvedFirebaseConfig.projectId,
+      authDomain: resolvedFirebaseConfig.authDomain || (resolvedFirebaseConfig.projectId ? `${resolvedFirebaseConfig.projectId}.firebaseapp.com` : '')
+    };
   }
 
   static saveAutoBackups(backups: AutoBackupEntry[]) {
@@ -3156,28 +3431,127 @@ export class DbController {
     this.saveAutoBackups(backups);
   }
 
+  static getCloudSyncConfig(): CloudSyncConfig {
+    const cached = this._cache[STORAGE_KEYS.CLOUD_SYNC_CONFIG];
+    if (cached) return cached;
+
+    const config = getStorageItem<CloudSyncConfig>(STORAGE_KEYS.CLOUD_SYNC_CONFIG, {
+      enabled: false,
+      provider: 'Firebase Cloud Storage',
+      interval: 'daily',
+      lastSyncTime: null,
+      status: 'idle'
+    });
+    this._cache[STORAGE_KEYS.CLOUD_SYNC_CONFIG] = config;
+    return config;
+  }
+
+  static saveCloudSyncConfig(config: CloudSyncConfig) {
+    setStorageItem(STORAGE_KEYS.CLOUD_SYNC_CONFIG, config);
+    this._cache[STORAGE_KEYS.CLOUD_SYNC_CONFIG] = config;
+    this.performFirestoreWrite('settings', 'cloud_sync_config', 'set', config).catch(err => {
+      console.warn("Could not sync cloud sync config to Firestore:", err);
+    });
+  }
+
+  static async performCloudSync(): Promise<{ success: boolean; error?: string }> {
+    const config = this.getCloudSyncConfig();
+    const timestamp = new Date().toISOString();
+    const data = this.exportAllData();
+    const currentUser = this.getCurrentUser();
+    const schoolId = currentUser?.schoolId || currentUser?.uid || 'anonymous';
+    
+    // Use a fixed filename to "overwrite" and keep data updated as requested
+    const fileName = `school_data_snapshot.json`;
+
+    config.status = 'syncing';
+    this.saveCloudSyncConfig(config);
+
+    try {
+      if (config.provider === 'Firebase Cloud Storage') {
+        if (!isFirebaseActive) throw new Error("Firebase is not active.");
+        const storage = getStorage(firebaseApp);
+        const path = `schools/${schoolId}/backups/${fileName}`;
+        const storageRef = ref(storage, path);
+        await uploadString(storageRef, data);
+      } else if (config.provider === 'Google Drive') {
+        throw new Error("Google Drive sync requires an active authorized session. Please sync manually from the Settings tab.");
+      }
+
+      config.status = 'success';
+      config.lastSyncTime = timestamp;
+      config.error = undefined;
+      this.saveCloudSyncConfig(config);
+
+      this.writeActivityLog(
+        'Cloud Database Sync',
+        `Database successfully updated on ${config.provider}. Destination: ${schoolId}/${fileName}`,
+        'info'
+      );
+
+      return { success: true };
+    } catch (e: any) {
+      config.status = 'failed';
+      config.error = e.message || String(e);
+      this.saveCloudSyncConfig(config);
+      
+      this.writeActivityLog(
+        'Cloud Database Sync Failed',
+        `Failed to sync to ${config.provider}: ${config.error}`,
+        'high'
+      );
+
+      return { success: false, error: config.error };
+    }
+  }
+
   static performScheduledBackupCheck(): boolean {
+    let backupPerformed = false;
+
+    // 1. Local Auto Backup
     const config = this.getAutoBackupConfig();
-    if (!config.enabled) return false;
+    if (config.enabled) {
+      const now = new Date();
+      if (!config.lastBackupTime) {
+        this.performAutoBackup();
+        backupPerformed = true;
+      } else {
+        const last = new Date(config.lastBackupTime);
+        const diffMs = now.getTime() - last.getTime();
+        const diffHours = diffMs / (1000 * 60 * 60);
+        const thresholdHours = config.frequency === 'daily' ? 24 : 168;
 
-    const now = new Date();
-    if (!config.lastBackupTime) {
-      this.performAutoBackup();
-      return true;
+        if (diffHours >= thresholdHours) {
+          this.performAutoBackup();
+          backupPerformed = true;
+        }
+      }
     }
 
-    const last = new Date(config.lastBackupTime);
-    const diffMs = now.getTime() - last.getTime();
-    const diffHours = diffMs / (1000 * 60 * 60);
+    // 2. Cloud Sync
+    const cloudConfig = this.getCloudSyncConfig();
+    if (cloudConfig.enabled && cloudConfig.status !== 'syncing') {
+      const now = new Date();
+      if (!cloudConfig.lastSyncTime) {
+        this.performCloudSync();
+        backupPerformed = true;
+      } else {
+        const last = new Date(cloudConfig.lastSyncTime);
+        const diffMs = now.getTime() - last.getTime();
+        const diffHours = diffMs / (1000 * 60 * 60);
+        
+        let thresholdHours = 24;
+        if (cloudConfig.interval === 'weekly') thresholdHours = 168;
+        else if (cloudConfig.interval === 'monthly') thresholdHours = 720;
 
-    const thresholdHours = config.frequency === 'daily' ? 24 : 168;
-
-    if (diffHours >= thresholdHours) {
-      this.performAutoBackup();
-      return true;
+        if (diffHours >= thresholdHours) {
+          this.performCloudSync();
+          backupPerformed = true;
+        }
+      }
     }
 
-    return false;
+    return backupPerformed;
   }
 
   // -------------------------
@@ -3421,123 +3795,165 @@ export class DbController {
     this.clearCache();
   }
 
-  static clearAllData(): void {
+  static getDutyAssignments(): DutyAssignment[] {
+    return getStorageItem<DutyAssignment[]>(STORAGE_KEYS.DUTY_ROSTER, []);
+  }
+
+  static saveDutyAssignment(assignment: DutyAssignment) {
+    const assignments = this.getDutyAssignments();
+    const index = assignments.findIndex(a => a.id === assignment.id);
+    if (index >= 0) {
+      assignments[index] = assignment;
+    } else {
+      assignments.push(assignment);
+    }
+    setStorageItem(STORAGE_KEYS.DUTY_ROSTER, assignments);
+    this._cache[STORAGE_KEYS.DUTY_ROSTER] = assignments;
+  }
+
+  static saveDutyAssignments(newAssignments: DutyAssignment[]) {
+    const assignments = this.getDutyAssignments();
+    newAssignments.forEach(na => {
+      const idx = assignments.findIndex(a => a.id === na.id);
+      if (idx >= 0) {
+        assignments[idx] = na;
+      } else {
+        assignments.push(na);
+      }
+    });
+    setStorageItem(STORAGE_KEYS.DUTY_ROSTER, assignments);
+    this._cache[STORAGE_KEYS.DUTY_ROSTER] = assignments;
+  }
+
+  static deleteDutyAssignment(id: string) {
+    const assignments = this.getDutyAssignments().filter(a => a.id !== id);
+    setStorageItem(STORAGE_KEYS.DUTY_ROSTER, assignments);
+    this._cache[STORAGE_KEYS.DUTY_ROSTER] = assignments;
+  }
+
+  static getStaffHandbook(): StaffHandbookDocument[] {
+    return getStorageItem<StaffHandbookDocument[]>(STORAGE_KEYS.STAFF_HANDBOOK, []);
+  }
+
+  static saveStaffHandbookDocument(doc: StaffHandbookDocument) {
+    const docs = this.getStaffHandbook();
+    const existingIndex = docs.findIndex(d => d.id === doc.id);
+    if (existingIndex !== -1) {
+      docs[existingIndex] = doc;
+    } else {
+      docs.push(doc);
+    }
+    setStorageItem(STORAGE_KEYS.STAFF_HANDBOOK, docs);
+    this._cache[STORAGE_KEYS.STAFF_HANDBOOK] = docs;
+  }
+
+  static deleteStaffHandbookDocument(id: string) {
+    const docs = this.getStaffHandbook().filter(d => d.id !== id);
+    setStorageItem(STORAGE_KEYS.STAFF_HANDBOOK, docs);
+    this._cache[STORAGE_KEYS.STAFF_HANDBOOK] = docs;
+  }
+
+  static async clearAllData(): Promise<void> {
     // 1. If Firebase is active, cleanly clear active Firestore records
     if (isFirebaseActive && firestoreDb) {
       try {
         const students = this.getStudents();
-        students.forEach(s => {
-          deleteDoc(doc(firestoreDb, 'students', s.id)).catch(e => console.error(e));
-        });
-
         const teachers = this.getTeachers();
-        teachers.forEach(t => {
-          deleteDoc(doc(firestoreDb, 'teachers', t.id)).catch(e => console.error(e));
-        });
-
         const attendance = getStorageItem<any[]>(STORAGE_KEYS.ATTENDANCE, []);
-        attendance.forEach(a => {
-          if (a.id) deleteDoc(doc(firestoreDb, 'attendance', a.id)).catch(e => console.error(e));
-        });
-
         const staffAttendance = getStorageItem<any[]>(STORAGE_KEYS.STAFF_ATTENDANCE, []);
-        staffAttendance.forEach(sa => {
-          if (sa.id) deleteDoc(doc(firestoreDb, 'staff_attendance', sa.id)).catch(e => console.error(e));
-        });
-
         const assessments = getStorageItem<any[]>(STORAGE_KEYS.ASSESSMENTS, []);
-        assessments.forEach(ass => {
-          if (ass.id) deleteDoc(doc(firestoreDb, 'assessments', ass.id)).catch(e => console.error(e));
-        });
-
         const fees = getStorageItem<any[]>(STORAGE_KEYS.FEES, []);
-        fees.forEach(f => {
-          if (f.id) deleteDoc(doc(firestoreDb, 'fees', f.id)).catch(e => console.error(e));
-        });
-
         const emis = getStorageItem<any[]>(STORAGE_KEYS.EMIS, []);
-        emis.forEach(e => {
-          if (e.id) deleteDoc(doc(firestoreDb, 'emis', e.id)).catch(err => console.error(err));
-        });
-
         const remarks = getStorageItem<any[]>(STORAGE_KEYS.BEHAVIORAL_REMARKS, []);
-        remarks.forEach(r => {
-          if (r.id) deleteDoc(doc(firestoreDb, 'behavioral_remarks', r.id)).catch(err => console.error(err));
+
+        const deletePromises: Promise<any>[] = [];
+
+        // We use a batch size or limit to avoid overwhelming the network
+        const safeDelete = async (col: string, id: string) => {
+          try {
+            await deleteDoc(doc(firestoreDb, col, id));
+          } catch (e) {
+            console.warn(`[Wipe] Failed to delete ${col}/${id}:`, e);
+          }
+        };
+
+        students.forEach(s => {
+          deletePromises.push(safeDelete('students', s.id));
         });
 
-        // Format/clear school doc on firestore as well
-        const defaultSchool: SchoolInfo = {
-          id: 'school_default',
-          name: '',
-          motto: '',
-          logoUrl: '',
-          schoolNumber: '',
-          emisCode: '',
-          gpsAddress: '',
-          schoolType: 'Public',
-          headteacherName: '',
-          telephone: '',
-          email: '',
-          qualifications: '',
-          highestAcademicQualifications: '',
-          district: '',
-          circuit: '',
-          reopeningDate: '',
-          signatureUrl: '',
-          stampUrl: ''
-        };
-        setDoc(doc(firestoreDb, 'schools', 'school_default'), defaultSchool).catch(e => console.error(e));
+        teachers.forEach(t => {
+          deletePromises.push(safeDelete('teachers', t.id));
+        });
+
+        attendance.forEach(a => {
+          if (a.id) deletePromises.push(safeDelete('attendance', a.id));
+        });
+
+        staffAttendance.forEach(sa => {
+          if (sa.id) deletePromises.push(safeDelete('staff_attendance', sa.id));
+        });
+
+        assessments.forEach(ass => {
+          if (ass.id) deletePromises.push(safeDelete('assessments', ass.id));
+        });
+
+        fees.forEach(f => {
+          if (f.id) deletePromises.push(safeDelete('fees', f.id));
+        });
+
+        emis.forEach(e => {
+          if (e.id) deletePromises.push(safeDelete('emis', e.id));
+        });
+
+        remarks.forEach(r => {
+          if (r.id) deletePromises.push(safeDelete('behavioral_remarks', r.id));
+        });
+
+        // Clear school doc on firestore as well
+        deletePromises.push(setDoc(doc(firestoreDb, 'schools', 'school_default'), DEFAULT_SCHOOL_INFO));
+
+        // Await all deletions with a timeout to prevent hanging the whole app
+        await Promise.allSettled(deletePromises);
       } catch (err) {
         console.error("Error clearing Cloud Firestore data during format:", err);
       }
     }
 
     // 2. Erase all cache & registry records from LocalStorage
-    localStorage.removeItem(STORAGE_KEYS.USER);
-    localStorage.removeItem(STORAGE_KEYS.USERS_LIST);
-    removeStorageItem(STORAGE_KEYS.STUDENTS);
-    removeStorageItem(STORAGE_KEYS.TEACHERS);
-    removeStorageItem(STORAGE_KEYS.ATTENDANCE);
-    removeStorageItem(STORAGE_KEYS.STAFF_ATTENDANCE);
-    removeStorageItem(STORAGE_KEYS.ASSESSMENTS);
-    removeStorageItem(STORAGE_KEYS.SETTINGS);
-    removeStorageItem(STORAGE_KEYS.FEES);
-    removeStorageItem(STORAGE_KEYS.EMIS);
-    removeStorageItem(STORAGE_KEYS.CALENDAR);
-    removeStorageItem(STORAGE_KEYS.ACTIVITY_LOGS);
-    removeStorageItem(STORAGE_KEYS.BEHAVIORAL_REMARKS);
-    removeStorageItem('sms_offline_queue');
+    // Instead of just looping through STORAGE_KEYS, we should clear ALL keys in localStorage
+    // that start with "sms_" to catch all partitioned data.
+    try {
+      const keys = Object.keys(localStorage);
+      keys.forEach(key => {
+        if (key.startsWith('sms_')) {
+          localStorage.removeItem(key);
+        }
+      });
+      
+      // Also clear sessionStorage for this app
+      const sessionKeys = Object.keys(sessionStorage);
+      sessionKeys.forEach(key => {
+        if (key.startsWith('sms_')) {
+          sessionStorage.removeItem(key);
+        }
+      });
+      
+      // Explicitly remove legacy or session specific keys
+      localStorage.removeItem('users_list');
+      localStorage.removeItem('school_students');
+      localStorage.removeItem('school_teachers');
+      localStorage.removeItem('school_assessments');
+      localStorage.removeItem('school_fees_bills');
+      localStorage.removeItem('sms_system_cleared_june_30_v2');
+      localStorage.removeItem('sms_offline_queue');
+      
+      // Write a fully blank SchoolInfo template so that any new login starts with completely blank input data
+      setStorageItem(STORAGE_KEYS.SCHOOL, DEFAULT_SCHOOL_INFO);
+    } catch (e) {
+      console.error("Error clearing local storage:", e);
+    }
 
-    // Make sure we purge legacy keys that some old client tab code might read/write
-    localStorage.removeItem('school_students');
-    localStorage.removeItem('school_teachers');
-    localStorage.removeItem('school_assessments');
-    localStorage.removeItem('school_fees_bills');
-
-    // Write a fully blank SchoolInfo template so that any new login starts with completely blank input data
-    const blankSchool: SchoolInfo = {
-      id: 'school_default',
-      name: '',
-      motto: '',
-      logoUrl: '',
-      schoolNumber: '',
-      emisCode: '',
-      gpsAddress: '',
-      schoolType: 'Public',
-      headteacherName: '',
-      telephone: '',
-      email: '',
-      qualifications: '',
-      highestAcademicQualifications: '',
-      district: '',
-      circuit: '',
-      reopeningDate: '',
-      signatureUrl: '',
-      stampUrl: '',
-      smsRate: 20,
-      crestUrl: ''
-    };
-    localStorage.setItem(STORAGE_KEYS.SCHOOL, JSON.stringify(blankSchool));
     this.clearCache();
+    _lastSessionUid = null;
   }
 }

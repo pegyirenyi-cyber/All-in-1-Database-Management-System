@@ -1,14 +1,17 @@
 import React, { useState, useRef, ChangeEvent, FormEvent, useMemo, useEffect } from 'react';
-import { Teacher, TeacherRank, TEACHER_RANKS, CLASSES, ClassType, SUBJECTS, SubjectType } from '../types';
+import { Teacher, TeacherRank, TEACHER_RANKS, CLASSES, ClassType, SUBJECTS, SubjectType, DutyAssignment, DutyType } from '../types';
 import { DbController } from '../db';
 import { compressImage, getWatermarkHtml, triggerToast } from '../utils';
 import { ThemeStyles } from './ThemeWrapper';
 import { 
   Plus, Search, Edit2, Trash2, Printer, Upload, X, Check, Save, UserCheck, User, Briefcase, Award, GraduationCap, Calendar, FileDown, ShieldAlert, RotateCcw, Eraser, Eye, FileSpreadsheet,
-  ChevronLeft, ChevronRight, Camera, Sparkles, Info, LayoutDashboard, BarChart2, AlertCircle
+  ChevronLeft, ChevronRight, Camera, Sparkles, Info, LayoutDashboard, BarChart2, AlertCircle, Users, ClipboardList, BookOpen, QrCode, IdCard
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import CameraCapture from './CameraCapture';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
+import DutyRoster from './DutyRoster';
+import StaffHandbook from './StaffHandbook';
 import { motion, AnimatePresence } from 'motion/react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Legend } from 'recharts';
 
@@ -59,6 +62,7 @@ const INITIAL_FORM: Partial<Teacher> = {
   circuit: '',
   photoUrl: '',
   email: '',
+  schoolId: '',
   subjectSpecialization: '',
   assignedClass: 'None',
   assignedClasses: [],
@@ -81,10 +85,26 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
   const [isEditing, setIsEditing] = useState(false);
   const [formState, setFormState] = useState<Partial<Teacher>>({ ...INITIAL_FORM });
 
+  // Custom Confirmation Dialog State
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmText?: string;
+    cancelText?: string;
+    danger?: boolean;
+    onConfirm: () => void;
+  } | null>(null);
+
   // Check if current logged-in user is a Headteacher
   const isHeadteacherLoggedIn = useMemo(() => {
     const activeRole = userRole || DbController.getCurrentUser()?.role;
     return activeRole === 'Headteacher';
+  }, [userRole]);
+
+  const isAdmin = useMemo(() => {
+    const activeRole = userRole || DbController.getCurrentUser()?.role;
+    return activeRole === 'Admin';
   }, [userRole]);
 
   // Check if target edited teacher is NOT a Class Teacher (role is Headteacher or Admin)
@@ -102,6 +122,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
     return targetUser ? targetUser.role : 'Teacher';
   }, [formState?.email]);
   const [showFormModal, setShowFormModal] = useState(false);
+  const [selectedIdCardTeacher, setSelectedIdCardTeacher] = useState<Teacher | null>(null);
   const [teacherToDelete, setTeacherToDelete] = useState<string | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
@@ -329,6 +350,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
 
       const rawId = getValue(idIdx);
       const id = rawId || 'T' + Math.floor(1000 + Math.random() * 9000);
+      const currentUser = DbController.getCurrentUser();
 
       const teacher: Partial<Teacher> = {
         id,
@@ -349,6 +371,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
         ssnitNumber: getValue(ssnitIdx),
         district: getValue(districtIdx),
         circuit: getValue(circuitIdx),
+        schoolId: currentUser?.schoolId || '',
         photoUrl: '', // Default blank on bulk uploading
         createdAt: new Date().toISOString()
       };
@@ -538,7 +561,12 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
   };
 
   const handleOpenAdd = () => {
-    setFormState({ ...INITIAL_FORM, id: 'T' + Math.floor(1000 + Math.random() * 9000) });
+    const currentUser = DbController.getCurrentUser();
+    setFormState({ 
+      ...INITIAL_FORM, 
+      id: 'T' + Math.floor(1000 + Math.random() * 9000),
+      schoolId: currentUser?.schoolId || ''
+    });
     setIsEditing(false);
     setShowFormModal(true);
   };
@@ -591,30 +619,53 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
 
   const handleDeleteActiveSelection = () => {
     if (formState.id) {
-      if (window.confirm(`Are you sure you want to delete the active selected teacher "${formState.firstName} ${formState.lastName}"?`)) {
-        DbController.deleteTeacher(formState.id);
-        setFormState({ ...INITIAL_FORM });
-        setIsEditing(false);
-        setShowFormModal(false);
-        onRefresh();
-      }
+      setConfirmModal({
+        isOpen: true,
+        title: "Delete Teacher Profile?",
+        message: `Are you sure you want to delete the active selected teacher "${formState.firstName} ${formState.lastName}"? This will remove all their profile data and associated records from the system.`,
+        confirmText: "Delete Teacher",
+        danger: true,
+        onConfirm: () => {
+          DbController.deleteTeacher(formState.id!);
+          setFormState({ ...INITIAL_FORM });
+          setIsEditing(false);
+          setShowFormModal(false);
+          onRefresh();
+          triggerToast('Teacher deleted successfully.', 'success');
+        }
+      });
     } else if (teachers.length > 0) {
       const first = teachers[0];
-      if (window.confirm(`No active form selection loaded. Do you want to delete the first teacher in the list (${first.firstName} ${first.lastName})?`)) {
-        DbController.deleteTeacher(first.id);
-        onRefresh();
-      }
+      setConfirmModal({
+        isOpen: true,
+        title: "Delete First Teacher?",
+        message: `No active form selection loaded. Do you want to delete the first teacher in the list (${first.firstName} ${first.lastName})?`,
+        confirmText: "Delete First",
+        danger: true,
+        onConfirm: () => {
+          DbController.deleteTeacher(first.id);
+          onRefresh();
+          triggerToast('Teacher deleted successfully.', 'success');
+        }
+      });
     } else {
-      alert("No teachers exist to delete.");
+      triggerToast("No teachers exist to delete.", "error");
     }
   };
 
   const handleDeleteAllTeachers = () => {
-    if (window.confirm("CRITICAL WARNING: Are you sure you want to delete ALL teacher records? This action is irreversible and cannot be undone.")) {
-      DbController.clearAllTeachers();
-      onRefresh();
-      alert("Successfully purged all teacher records from the database state.");
-    }
+    setConfirmModal({
+      isOpen: true,
+      title: "CRITICAL: Delete All Teachers?",
+      message: "CRITICAL WARNING: Are you sure you want to delete ALL teacher records? This action is irreversible and will purge the entire faculty database. Please authorize carefully.",
+      confirmText: "Purge All Teachers",
+      danger: true,
+      onConfirm: () => {
+        DbController.clearAllTeachers();
+        onRefresh();
+        triggerToast("Successfully purged all teacher records.", "success");
+      }
+    });
   };
 
   const handleImageUpload = (e: ChangeEvent<HTMLInputElement>) => {
@@ -778,6 +829,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
       staffId: formState.staffId,
       ntcNumber: formState.ntcNumber || '',
       ssnitNumber: formState.ssnitNumber || '',
+      schoolId: formState.schoolId || '',
       district: formState.district || '',
       circuit: formState.circuit || '',
       photoUrl: formState.photoUrl || '',
@@ -832,8 +884,137 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
     }
   };
 
+  const [teachersSubTab, setTeachersSubTab] = useState<'directory' | 'analytics' | 'duty-roster' | 'handbook'>('directory');
+  const [handbookVersion, setHandbookVersion] = useState(0);
+
+  const unreadCount = useMemo(() => {
+    const user = DbController.getCurrentUser();
+    const userId = user?.uid || user?.email || 'anonymous';
+    let readMap: Record<string, string> = {};
+    try {
+      const data = localStorage.getItem(`sms_handbook_read_${userId}`);
+      if (data) readMap = JSON.parse(data);
+    } catch (e) {}
+
+    const docs = DbController.getStaffHandbook();
+    return docs.filter(doc => {
+      const readTime = readMap[doc.id];
+      return !readTime || new Date(doc.lastUpdated).getTime() > new Date(readTime).getTime();
+    }).length;
+  }, [handbookVersion, teachersSubTab]);
+
+  const staffStats = useMemo(() => {
+    const male = teachers.filter(t => t.gender === 'Male').length;
+    const female = teachers.filter(t => t.gender === 'Female').length;
+    const classTeachers = teachers.filter(t => t.assignedClass && t.assignedClass !== 'None').length;
+    const avgLoad = workloadData.length > 0 
+      ? (workloadData.reduce((sum, w) => sum + w.totalLoad, 0) / workloadData.length).toFixed(1)
+      : '0';
+
+    return { male, female, classTeachers, avgLoad };
+  }, [teachers, workloadData]);
+
   return (
-    <div className="space-y-6 fade-in">
+    <div className="space-y-6 fade-in pb-12">
+      
+      {/* Sub-tab Navigation */}
+      <div className="flex flex-wrap items-center gap-y-2 gap-x-4 sm:gap-x-6 border-b border-slate-200 no-print">
+        <button
+          onClick={() => setTeachersSubTab('directory')}
+          className={`pb-3 text-[11px] font-bold uppercase tracking-widest border-b-2 transition cursor-pointer ${teachersSubTab === 'directory' ? 'border-slate-800 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
+        >
+          <div className="flex items-center gap-2">
+            <Users size={14} />
+            Staff Directory
+          </div>
+        </button>
+        <button
+          onClick={() => setTeachersSubTab('analytics')}
+          className={`pb-3 text-[11px] font-bold uppercase tracking-widest border-b-2 transition cursor-pointer ${teachersSubTab === 'analytics' ? 'border-slate-800 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
+        >
+          <div className="flex items-center gap-2">
+            <BarChart2 size={14} />
+            Faculty Workload Analytics
+          </div>
+        </button>
+        <button
+          onClick={() => setTeachersSubTab('duty-roster')}
+          className={`pb-3 text-[11px] font-bold uppercase tracking-widest border-b-2 transition cursor-pointer ${teachersSubTab === 'duty-roster' ? 'border-slate-800 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
+        >
+          <div className="flex items-center gap-2">
+            <ClipboardList size={14} />
+            Duty Roster
+          </div>
+        </button>
+        <button
+          onClick={() => setTeachersSubTab('handbook')}
+          className={`pb-3 text-[11px] font-bold uppercase tracking-widest border-b-2 transition cursor-pointer ${teachersSubTab === 'handbook' ? 'border-slate-800 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
+        >
+          <div className="flex items-center gap-2 relative">
+            <BookOpen size={14} />
+            Staff Handbook
+            {unreadCount > 0 && (
+              <span className="inline-flex items-center justify-center px-1.5 py-0.5 ml-0.5 text-[9px] font-extrabold leading-none text-white bg-rose-500 rounded-full animate-pulse" id="handbook-unread-badge">
+                {unreadCount}
+              </span>
+            )}
+          </div>
+        </button>
+      </div>
+
+      {teachersSubTab === 'directory' && (
+        <>
+      {/* Summary Dashboard Ribbons */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 no-print">
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
+          <div className="w-10 h-10 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center flex-shrink-0">
+            <UserCheck size={20} />
+          </div>
+          <div>
+            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Faculty</div>
+            <div className="text-xl font-black text-slate-900">{teachers.length}</div>
+          </div>
+        </div>
+
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
+          <div className="w-10 h-10 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center flex-shrink-0">
+            <LayoutDashboard size={20} />
+          </div>
+          <div>
+            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Class Supervisors</div>
+            <div className="text-xl font-black text-slate-900">{staffStats.classTeachers}</div>
+          </div>
+        </div>
+
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
+          <div className="w-10 h-10 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center flex-shrink-0">
+            <BarChart2 size={20} />
+          </div>
+          <div>
+            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Avg Workload</div>
+            <div className="text-xl font-black text-slate-900">{staffStats.avgLoad}</div>
+          </div>
+        </div>
+
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
+          <div className="w-10 h-10 rounded-lg bg-slate-50 text-slate-600 flex items-center justify-center flex-shrink-0">
+            <Users size={20} />
+          </div>
+          <div className="flex-1">
+            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Gender Split</div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold text-slate-700">{staffStats.male}M</span>
+              <div className="h-1 flex-1 bg-slate-100 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-indigo-500" 
+                  style={{ width: `${(staffStats.male / (teachers.length || 1)) * 100}%` }} 
+                />
+              </div>
+              <span className="text-sm font-bold text-slate-700">{staffStats.female}F</span>
+            </div>
+          </div>
+        </div>
+      </div>
       
       {/* Control ribbon workspace */}
       <div className="flex flex-col md:flex-row items-center justify-between gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-sm no-print">
@@ -916,8 +1097,11 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
                     <h4 className="text-sm font-semibold text-slate-800 truncate">
                       {tea.firstName} {tea.middleName ? tea.middleName + ' ' : ''}{tea.lastName}
                     </h4>
-                    <div className="font-mono text-[10px] text-slate-400 mt-0.5">
-                      Staff ID: {tea.staffId} | Gender: {tea.gender}
+                    <div className="font-mono text-[10px] text-slate-400 mt-0.5 space-y-0.5">
+                      <div>Staff ID: {tea.staffId || 'N/A'} | Gender: {tea.gender}</div>
+                      {tea.schoolId && (
+                        <div className="text-[10px] text-indigo-600 font-extrabold font-mono">School ID: {tea.schoolId}</div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -990,6 +1174,13 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
               <div className="bg-slate-50 px-4 py-2 border-t border-slate-100 text-[10px] text-slate-500 font-mono flex justify-between items-center">
                 <div>NTC No: {tea.ntcNumber || 'N/A'}</div>
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setSelectedIdCardTeacher(tea)}
+                    className="p-1 hover:bg-indigo-50 hover:text-indigo-600 rounded text-slate-600 cursor-pointer transition"
+                    title="Print Credential Badge"
+                  >
+                    <QrCode size={12} />
+                  </button>
                   <button
                     onClick={() => handleOpenEdit(tea)}
                     className="p-1 hover:bg-slate-200 rounded text-slate-600 cursor-pointer transition"
@@ -1169,7 +1360,144 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
           Total Faculty Strength: <strong className="text-slate-900">{filteredTeachers.length} Registered Educators</strong>
         </div>
       </div>
-      </div>
+    </div>
+    </>
+    )}
+
+    {teachersSubTab === 'analytics' && (
+        <div className="animate-fade-in space-y-6">
+          {/* Analytics Header */}
+          <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <h3 className="text-lg font-black text-slate-900 leading-tight">Faculty Workload & Distribution</h3>
+              <p className="text-xs text-slate-500 font-medium">Graphical overview of teaching assignments, gender distribution, and rank seniority.</p>
+            </div>
+            <button 
+              onClick={() => setTeachersSubTab('directory')}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-50 text-slate-600 hover:bg-slate-100 rounded-xl text-xs font-bold transition"
+            >
+              <ChevronLeft size={14} /> Back to Directory
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Workload Distribution */}
+            <div className="bg-white p-6 rounded-[24px] border border-slate-200 shadow-xs space-y-4">
+              <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <BarChart2 size={16} className="text-indigo-500" /> Teaching Load per Faculty Member
+              </h4>
+              <div className="h-[300px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={workloadData.slice(0, 8)}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                    <XAxis dataKey="name" fontSize={9} tick={{ fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                    <YAxis fontSize={9} tick={{ fill: '#94a3b8' }} axisLine={false} tickLine={false} label={{ value: 'Assigned Classes/Subs', angle: -90, position: 'insideLeft', fontSize: 9 }} />
+                    <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                    <Bar dataKey="totalLoad" fill="#6366f1" radius={[4, 4, 0, 0]}>
+                      {workloadData.slice(0, 8).map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.isOverloaded ? '#f43f5e' : entry.isUnderloaded ? '#f59e0b' : '#6366f1'} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="flex justify-center gap-4 text-[10px] font-bold">
+                <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-rose-500" /> Overloaded (&gt;8)</div>
+                <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-indigo-500" /> Normal Load</div>
+                <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-amber-500" /> Underloaded (&lt;2)</div>
+              </div>
+            </div>
+
+            {/* Rank Distribution */}
+            <div className="bg-white p-6 rounded-[24px] border border-slate-200 shadow-xs space-y-4">
+              <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <Award size={16} className="text-amber-500" /> Professional Rank Seniority
+              </h4>
+              <div className="h-[300px] w-full">
+                {(() => {
+                  const rankCounts: Record<string, number> = {};
+                  teachers.forEach(t => {
+                    rankCounts[t.rank] = (rankCounts[t.rank] || 0) + 1;
+                  });
+                  const rankData = Object.entries(rankCounts).map(([name, value]) => ({ name, value }));
+
+                  return (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={rankData} layout="vertical">
+                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+                        <XAxis type="number" fontSize={9} tick={{ fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                        <YAxis dataKey="name" type="category" fontSize={8} width={100} tick={{ fill: '#64748b' }} axisLine={false} tickLine={false} />
+                        <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
+                        <Bar dataKey="value" fill="#10b981" radius={[0, 4, 4, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
+
+          {/* Class Coverage Overview */}
+          <div className="bg-white p-6 rounded-[24px] border border-slate-200 shadow-xs overflow-hidden">
+            <h4 className="text-sm font-bold text-slate-800 mb-4 flex items-center gap-2">
+              <ShieldAlert size={16} className="text-blue-500" /> Class Level Supervisor Coverage
+            </h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+              {CLASSES.map(cls => {
+                const coverage = classCoverage[cls];
+                const isUnassigned = !coverage?.primary;
+                return (
+                  <div key={cls} className={`p-3 rounded-xl border transition ${isUnassigned ? 'bg-rose-50/30 border-rose-100' : 'bg-white border-slate-100 hover:border-slate-200 shadow-2xs'}`}>
+                    <div className="flex justify-between items-start mb-2">
+                      <div className="text-[11px] font-black text-slate-900">{cls}</div>
+                      {isUnassigned ? (
+                        <div className="p-1 bg-rose-100 text-rose-600 rounded-lg" title="Unassigned Class Teacher">
+                          <AlertCircle size={12} />
+                        </div>
+                      ) : (
+                        <div className="p-1 bg-emerald-100 text-emerald-600 rounded-lg">
+                          <Check size={12} />
+                        </div>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-slate-500 font-medium">
+                      {isUnassigned ? (
+                        <span className="text-rose-600 italic">No primary supervisor</span>
+                      ) : (
+                        <span className="text-slate-800 font-bold">{coverage.primary}</span>
+                      )}
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {coverage?.teachers.filter(t => t !== coverage.primary).map((t, idx) => (
+                        <span key={idx} className="px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[8px] font-bold">
+                          {t.split(' ')[0]}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {teachersSubTab === 'duty-roster' && (
+        <DutyRoster 
+          theme={theme} 
+          teachers={teachers} 
+          onRefresh={onRefresh} 
+          isAdminOrHead={isAdmin || isHeadteacherLoggedIn} 
+        />
+      )}
+
+      {teachersSubTab === 'handbook' && (
+        <StaffHandbook 
+          theme={theme} 
+          userRole={userRole} 
+          onReadUpdate={() => setHandbookVersion(v => v + 1)}
+        />
+      )}
 
       {/* RICH EDIT / ADD MODAL PANEL (NO-PRINT) */}
       <AnimatePresence>
@@ -1377,6 +1705,17 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-slate-600 font-medium mb-1">School ID Code</label>
+                    <input
+                      type="text"
+                      value={formState.schoolId || ''}
+                      onChange={(e) => setFormState(prev => ({ ...prev, schoolId: e.target.value }))}
+                      className="w-full px-3 py-2 border border-slate-200 bg-white text-slate-800 rounded-lg focus:outline-none focus:ring-1 focus:ring-slate-400 font-mono text-xs font-bold"
+                      placeholder="e.g. SCH-XXXX"
+                    />
+                    <span className="text-[9px] text-slate-400 mt-1 block">Assigned school identifier</span>
+                  </div>
                   <div>
                     <label className="block text-slate-600 font-medium mb-1">Professional Rank *</label>
                     {/* Perfect rank selection selection including "Not applicable" exactly representing instructions! */}
@@ -2202,6 +2541,259 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
         )}
       </AnimatePresence>
 
+      {/* TEACHER CREDENTIAL ID CARD MODAL */}
+      <AnimatePresence>
+        {selectedIdCardTeacher && (
+          <div 
+            onClick={() => setSelectedIdCardTeacher(null)}
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-50 no-print cursor-pointer overflow-y-auto"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              transition={{ ease: "easeOut", duration: 0.15 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-slate-100 dark:bg-slate-900 rounded-[24px] border border-slate-200/50 dark:border-slate-800/80 shadow-2xl max-w-4xl w-full flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-slate-200/80 dark:divide-slate-800 overflow-hidden my-8 max-h-[90vh] cursor-default"
+            >
+              
+              {/* Left Column: ID Card Live Preview */}
+              <div className="flex-1 p-6 overflow-y-auto bg-slate-700 dark:bg-slate-950 flex flex-col justify-between items-center space-y-4">
+                <span className="text-white text-xs font-mono tracking-widest uppercase opacity-70">Teacher ID Card Print Preview</span>
+                
+                {/* ID CARD PORTRAIT COMPONENT WITH STANDARD CR80 PROPORTIONS */}
+                <div 
+                  id="teacher-id-card-print-area" 
+                  className="w-[300px] h-[460px] bg-white text-slate-950 rounded-2xl border border-slate-350 shadow-2xl relative overflow-hidden flex flex-col justify-between font-sans select-none p-4"
+                >
+                  {/* Card Header Wave / Banner */}
+                  <div className="bg-teal-900 text-white p-3 pt-4 text-center relative overflow-hidden flex flex-col items-center justify-center min-h-[75px] rounded-t-xl -m-4 mb-4">
+                    <div className="absolute inset-0 bg-gradient-to-tr from-teal-950 to-teal-800 opacity-90"></div>
+                    
+                    <div className="relative z-10 flex items-center gap-2 max-w-[90%] justify-center">
+                      {DbController.getSchoolInfo().logoUrl ? (
+                        <img 
+                          src={DbController.getSchoolInfo().logoUrl} 
+                          alt="School Logo" 
+                          className="w-7 h-7 object-contain rounded-full bg-white p-0.5"
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        <div className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center text-[10px] font-bold text-white">SCH</div>
+                      )}
+                      
+                      <div className="text-left flex-1 min-w-0">
+                        <h4 className="text-[9px] font-black uppercase tracking-wide truncate leading-tight">
+                          {DbController.getSchoolInfo().name}
+                        </h4>
+                        <p className="text-[6.5px] italic font-mono text-teal-200 truncate leading-none mt-0.5">
+                          "{DbController.getSchoolInfo().motto}"
+                        </p>
+                      </div>
+                    </div>
+                    
+                    {/* ID Card label tab */}
+                    <div className="absolute bottom-0 right-0 left-0 bg-amber-500 text-[6.5px] font-extrabold uppercase tracking-widest py-0.5 text-center text-slate-950 z-10">
+                      Teacher Credential Badge
+                    </div>
+                  </div>
+
+                  {/* Card Body - Photo & Credentials & QR */}
+                  <div className="flex-1 flex flex-col items-center justify-between relative z-10 py-1 bg-radial from-white to-slate-50/50">
+                    {/* Watermark Logo/Badge */}
+                    {DbController.getSchoolInfo().logoUrl && (
+                      <img 
+                        src={DbController.getSchoolInfo().logoUrl} 
+                        alt="Watermark" 
+                        className="absolute inset-0 m-auto w-32 h-32 object-contain opacity-[0.03] pointer-events-none select-none"
+                        referrerPolicy="no-referrer"
+                      />
+                    )}
+
+                    {/* Teacher Details & Photo */}
+                    <div className="flex flex-col items-center space-y-2">
+                      <div className="relative">
+                        <div className="w-20 h-20 rounded-full border-2 border-teal-900 overflow-hidden bg-slate-100 flex items-center justify-center shadow-md">
+                          {selectedIdCardTeacher.photoUrl ? (
+                            <img 
+                              src={selectedIdCardTeacher.photoUrl} 
+                              alt={`${selectedIdCardTeacher.firstName} Photo`} 
+                              className="w-full h-full object-cover"
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <User size={36} className="text-slate-400" />
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="text-center">
+                        <h3 className="text-sm font-bold text-slate-900 uppercase tracking-tight">
+                          {selectedIdCardTeacher.firstName} {selectedIdCardTeacher.lastName}
+                        </h3>
+                        <p className="text-[9px] font-extrabold text-teal-800 uppercase tracking-widest mt-0.5">
+                          {selectedIdCardTeacher.rank}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* QR Code and Credentials block */}
+                    <div className="flex flex-col items-center space-y-2 w-full mt-1 pb-1">
+                      {/* Embedded QR Code */}
+                      <div className="bg-white p-1.5 rounded-xl border border-slate-200/80 shadow-xs">
+                        <QRCodeSVG 
+                          value={JSON.stringify({
+                            staffId: selectedIdCardTeacher.staffId,
+                            email: selectedIdCardTeacher.email,
+                            schoolId: selectedIdCardTeacher.schoolId || DbController.getSchoolInfo().schoolId || "school_default"
+                          })}
+                          size={100}
+                          level="M"
+                          includeMargin={false}
+                        />
+                      </div>
+                      <p className="text-[7px] font-mono font-bold uppercase tracking-widest text-slate-400">
+                        Scan QR Badge to Sign In
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Card Footer / School info */}
+                  <div className="border-t border-slate-100 pt-2 text-center text-[7px] font-mono text-slate-400 space-y-0.5 shrink-0">
+                    <div className="font-bold text-slate-600">STAFF ID: {selectedIdCardTeacher.staffId || "N/A"}</div>
+                    <div>REGISTERED: {selectedIdCardTeacher.dateOfFirstAppointment || "N/A"}</div>
+                    <div className="text-[6.5px] text-teal-800 font-bold uppercase tracking-wider">Ghana Education Service</div>
+                  </div>
+
+                </div>
+              </div>
+
+              {/* Right Column: Information & Export Options */}
+              <div className="flex-1 p-6 bg-white dark:bg-slate-900 flex flex-col justify-between max-h-[90vh] overflow-y-auto">
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <div className="p-2 bg-teal-50 dark:bg-teal-950/40 rounded-xl text-teal-600 dark:text-teal-400">
+                      <IdCard size={22} />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-black text-slate-950 dark:text-slate-100">Identity Badge Generator</h4>
+                      <p className="text-[10px] text-slate-400">Generate, export or print teacher credentials</p>
+                    </div>
+                  </div>
+
+                  {/* Cloud Drive PDF Export Trigger Integration */}
+                  <GoogleDriveExportControl 
+                    elementId="teacher-id-card-print-area" 
+                    defaultFilename={`${selectedIdCardTeacher.firstName}_${selectedIdCardTeacher.lastName}_Credential_Badge.pdf`}
+                    isLandscape={false} 
+                  />
+
+                  <div className="p-3 bg-teal-50 dark:bg-teal-950/20 border border-teal-100 dark:border-teal-900/40 rounded-xl space-y-1 text-teal-950 dark:text-teal-200 text-[11px]">
+                    <span className="font-bold">🖨️ Professional Printing Checklist</span>
+                    <p className="text-[10px] text-teal-800/90 dark:text-teal-400 leading-relaxed">
+                      To achieve standard physical ID badge dimensions, ensure your printing settings conform to the parameters detailed below.
+                    </p>
+                  </div>
+
+                  <div className="space-y-3 text-xs text-slate-700 dark:text-slate-300 font-sans">
+                    <span className="font-bold text-slate-900 dark:text-slate-100 border-b border-slate-100 dark:border-slate-800 pb-1 block">Setup Instructions Checklist:</span>
+                    
+                    <div className="space-y-3">
+                      <div className="flex gap-2">
+                        <div className="font-bold text-[10px] text-slate-600 bg-slate-100 dark:bg-slate-800 w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">1</div>
+                        <p className="text-[11px] leading-relaxed">
+                          Click the <strong className="text-teal-600 font-bold">Trigger Badge Printer</strong> button to open printer controls.
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <div className="font-bold text-[10px] text-slate-600 bg-slate-100 dark:bg-slate-800 w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">2</div>
+                        <p className="text-[11px] leading-relaxed">
+                          Set <strong>Destination</strong> to <strong className="text-slate-900 dark:text-white font-bold">Save as PDF</strong> or select your connected desktop card printer.
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <div className="font-bold text-[10px] text-slate-600 bg-slate-100 dark:bg-slate-800 w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">3</div>
+                        <p className="text-[11px] leading-relaxed">
+                          Under <strong>More Settings</strong>, set Margin to <strong>None</strong> and enable <strong>Background Graphics</strong> to preserve the colors.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex gap-2 pt-4 border-t border-slate-100 dark:border-slate-800 mt-6 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedIdCardTeacher(null)}
+                    className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl text-xs font-semibold cursor-pointer transition text-center"
+                  >
+                    Close Preview
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const printContents = document.getElementById("teacher-id-card-print-area")?.outerHTML;
+                      if (printContents) {
+                        const printWindow = window.open("", "_blank");
+                        if (printWindow) {
+                          const htmlLines = [
+                            '<html>',
+                            '  <head>',
+                            '    <title>Print Teacher Credential Badge</title>',
+                            '    <script src="https://cdn.tailwindcss.com"></script>',
+                            '    <style>',
+                            '      @media print {',
+                            '        body {',
+                            '          margin: 0;',
+                            '          padding: 0;',
+                            '          background: transparent;',
+                            '          display: flex;',
+                            '          align-items: center;',
+                            '          justify-content: center;',
+                            '          height: 100vh;',
+                            '        }',
+                            '        #teacher-id-card-print-area {',
+                            '          border: none !important;',
+                            '          box-shadow: none !important;',
+                            '          transform: scale(1) !important;',
+                            '        }',
+                            '      }',
+                            '    </style>',
+                            '  </head>',
+                            '  <body class="bg-white flex items-center justify-center min-h-screen">',
+                            '    <div id="teacher-id-card-print-area" class="w-[300px] h-[460px] bg-white text-slate-950 rounded-2xl border border-slate-350 relative overflow-hidden flex flex-col justify-between font-sans select-none p-4">',
+                            printContents,
+                            '    </div>',
+                            '    <script>',
+                            '      window.onload = function() {',
+                            '        window.print();',
+                            '        setTimeout(function() { window.close(); }, 500);',
+                            '      }',
+                            '    </script>',
+                            '  </body>',
+                            '</html>'
+                          ];
+                          printWindow.document.write(htmlLines.join('\n'));
+                          printWindow.document.close();
+                        } else {
+                          window.print();
+                        }
+                      }
+                    }}
+                    className="flex-1 py-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-black shadow-md shadow-teal-600/10 cursor-pointer transition flex items-center justify-center gap-1.5"
+                  >
+                    <Printer size={13} />
+                    <span>Trigger Badge Printer</span>
+                  </button>
+                </div>
+
+              </div>
+
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* TEACHERS CSV BULK IMPORT MODAL */}
       <AnimatePresence>
         {showImportModal && (
@@ -2587,6 +3179,50 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
           onCapture={(url) => setFormState(prev => ({ ...prev, photoUrl: url }))} 
           onClose={() => setIsCameraOpen(false)} 
         />
+      )}
+
+      {confirmModal && confirmModal.isOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[110] p-4 no-print animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden text-left p-6 space-y-4 animate-scale-up">
+            <div className="flex items-start gap-3">
+              <div className={`p-2 rounded-xl shrink-0 ${confirmModal.danger ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>
+                <ShieldAlert size={24} className="animate-bounce-slow" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 font-sans tracking-tight">
+                  {confirmModal.title}
+                </h3>
+                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                  {confirmModal.message}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmModal(null)}
+                className="flex-1 py-2 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-xl transition cursor-pointer select-none text-center"
+              >
+                {confirmModal.cancelText || 'Cancel'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  confirmModal.onConfirm();
+                  setConfirmModal(null);
+                }}
+                className={`flex-1 py-2 px-4 text-white font-bold text-xs rounded-xl transition cursor-pointer select-none text-center ${
+                  confirmModal.danger 
+                    ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800' 
+                    : 'bg-amber-600 hover:bg-amber-700 active:bg-amber-800'
+                }`}
+              >
+                {confirmModal.confirmText || 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
     </div>

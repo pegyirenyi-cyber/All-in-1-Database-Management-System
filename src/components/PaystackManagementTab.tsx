@@ -34,9 +34,6 @@ async function fetchJsonSafe(url: string, options?: RequestInit) {
 interface PaystackManagementTabProps {
   themeStyles: {
     primaryBg: string;
-    primaryText: string;
-    accentBg: string;
-    borderAccent: string;
   };
 }
 
@@ -172,8 +169,12 @@ export default function PaystackManagementTab({ themeStyles }: PaystackManagemen
     setVerifying(true);
     setVerifyStatus(null);
 
+    const paymentInfo = payments.find(p => p.reference === reference.trim());
+    const paymentType = paymentInfo?.component === 'SMS Credits' || paymentInfo?.component === 'License' ? 'admin' : 'fees';
+    const resolvedStudentId = paymentInfo?.studentId || 'school_default';
+
     try {
-      const { res, data } = await fetchJsonSafe(`/api/payments/verify/${reference.trim()}`);
+      const { res, data } = await fetchJsonSafe(`/api/payments/verify/${reference.trim()}?paymentType=${paymentType}&studentId=${encodeURIComponent(resolvedStudentId)}`);
 
       if (!res.ok || !data.success) {
         setVerifyStatus({

@@ -60,12 +60,12 @@ async function startServer() {
     app.use(vite.middlewares);
     console.log("[Node Server] Running in Development Mode. Mounted Vite live refresh middleware.");
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    const distPath = path.join(process.cwd(), 'build');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
-    console.log("[Node Server] Running in Production Mode. Serving static compiled resources from /dist.");
+    console.log("[Node Server] Running in Production Mode. Serving static compiled resources from /build.");
   }
 
   app.listen(PORT, '0.0.0.0', () => {

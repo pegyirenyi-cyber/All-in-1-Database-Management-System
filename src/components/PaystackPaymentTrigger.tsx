@@ -27,12 +27,13 @@ interface PaystackPaymentTriggerProps {
   amount: number;
   academicYear: string;
   term: string;
-  component: 'School Fees' | 'Utility Bill' | 'Sports Fees' | 'PTA dues' | 'Other Fee';
+  component: 'School Fees' | 'Utility Bill' | 'Sports Fees' | 'PTA dues' | 'Transportation Bill' | 'Other Fee' | 'License' | 'SMS' | (string & {});
   billId: string;
   onSuccess: (txData: any) => void;
   onCancel?: () => void;
   triggerLabel?: string;
   btnClassName?: string;
+  paymentType: 'admin' | 'fees';
 }
 
 export default function PaystackPaymentTrigger({
@@ -47,7 +48,8 @@ export default function PaystackPaymentTrigger({
   onSuccess,
   onCancel,
   triggerLabel = "Pay via Paystack",
-  btnClassName = ""
+  btnClassName = "",
+  paymentType
 }: PaystackPaymentTriggerProps) {
   const [loading, setLoading] = useState(false);
   const [errorError, setErrorError] = useState<string | null>(null);
@@ -84,7 +86,7 @@ export default function PaystackPaymentTrigger({
   const checkPaymentStatus = async (refToCheck: string, quiet = true) => {
     if (!quiet) setCheckingStatus(true);
     try {
-      const { res, data } = await fetchJsonSafe(`/api/payments/verify/${refToCheck}`);
+      const { res, data } = await fetchJsonSafe(`/api/payments/verify/${refToCheck}?paymentType=${paymentType}&studentId=${encodeURIComponent(studentId)}`);
       
       if (res.ok && data.success) {
         if (data.status === 'success') {
@@ -138,7 +140,8 @@ export default function PaystackPaymentTrigger({
           billId,
           component,
           academicYear,
-          term
+          term,
+          paymentType
         })
       });
 
@@ -174,7 +177,7 @@ export default function PaystackPaymentTrigger({
     setManualVerifying(true);
     setErrorError(null);
     try {
-      const { res, data } = await fetchJsonSafe(`/api/payments/verify/${manualReference.trim()}`);
+      const { res, data } = await fetchJsonSafe(`/api/payments/verify/${manualReference.trim()}?paymentType=${paymentType}&studentId=${encodeURIComponent(studentId)}`);
       
       if (!res.ok || !data.success) {
         throw new Error(data.message || "Verification endpoint rejected code format.");

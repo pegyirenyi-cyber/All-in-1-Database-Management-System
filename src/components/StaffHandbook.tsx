@@ -1,12 +1,15 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { StaffHandbookDocument } from '../types';
+import { StaffHandbookDocument, AttachedGoogleFile } from '../types';
 import { DbController } from '../db';
 import { ThemeStyles } from './ThemeWrapper';
 import { 
-  Plus, Trash2, FileText, BookOpen, Clock, AlertCircle, ChevronLeft, ChevronRight, Edit2, ShieldCheck, Download
+  Plus, Trash2, FileText, BookOpen, Clock, AlertCircle, ChevronLeft, ChevronRight, Edit2, ShieldCheck, Download,
+  CloudLightning, ExternalLink, Link2
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { triggerToast } from '../utils';
+import { initGoogleAuth, googleSignIn, showGooglePicker, isGoogleAuthenticated } from '../googleDriveService';
+import SmartTextarea from './SmartTextarea';
 
 interface Props {
   theme: ThemeStyles;
@@ -33,10 +36,50 @@ export default function StaffHandbook({ theme, userRole, onReadUpdate }: Props) 
   const [formState, setFormState] = useState<Partial<StaffHandbookDocument>>({
     title: '',
     content: '',
-    category: 'Policy'
+    category: 'Policy',
+    attachedFiles: []
   });
 
-  const isAdminOrHead = userRole === 'Admin' || userRole === 'Headteacher';
+  const [isGoogleAuth, setIsGoogleAuth] = useState(isGoogleAuthenticated());
+
+  useEffect(() => {
+    const unsub = initGoogleAuth((user, token) => {
+      setIsGoogleAuth(!!token);
+    });
+    return () => unsub();
+  }, []);
+
+  const handleAttachGoogleFile = async () => {
+    try {
+      await showGooglePicker((file) => {
+        const currentAttached = formState.attachedFiles || [];
+        if (currentAttached.some(f => f.id === file.id)) {
+          triggerToast('File is already attached.', 'info');
+          return;
+        }
+        const newAttached: AttachedGoogleFile[] = [
+          ...currentAttached,
+          {
+            id: file.id,
+            name: file.name,
+            url: file.url,
+            mimeType: file.mimeType
+          }
+        ];
+        setFormState({
+          ...formState,
+          attachedFiles: newAttached
+        });
+        triggerToast(`Attached "${file.name}"`, 'success');
+      });
+    } catch (err: any) {
+      console.error(err);
+      triggerToast(err.message || 'Failed to open Google Picker.', 'error');
+    }
+  };
+
+  const currentUserEmail = DbController.getCurrentUser()?.email?.toLowerCase().trim();
+  const isAdminOrHead = userRole === 'Admin' || userRole === 'Headteacher' || currentUserEmail === 'pegyirenyi@gmail.com';
 
   const categories = ['Policy', 'Mission Statement', 'Pedagogical Guideline', 'Other'];
 
@@ -79,7 +122,8 @@ export default function StaffHandbook({ theme, userRole, onReadUpdate }: Props) 
       content: formState.content,
       category: formState.category as any,
       lastUpdated: new Date().toISOString(),
-      updatedBy: DbController.getCurrentUser()?.name || 'Admin'
+      updatedBy: DbController.getCurrentUser()?.name || 'Admin',
+      attachedFiles: formState.attachedFiles || []
     };
 
     DbController.saveStaffHandbookDocument(doc);
@@ -99,7 +143,7 @@ export default function StaffHandbook({ theme, userRole, onReadUpdate }: Props) 
       onReadUpdate();
     }
 
-    setFormState({ title: '', content: '', category: 'Policy' });
+    setFormState({ title: '', content: '', category: 'Policy', attachedFiles: [] });
     triggerToast('Document saved successfully.', 'success');
   };
 
@@ -117,9 +161,12 @@ export default function StaffHandbook({ theme, userRole, onReadUpdate }: Props) 
 
   const openEditor = (doc?: StaffHandbookDocument) => {
     if (doc) {
-      setFormState(doc);
+      setFormState({
+        ...doc,
+        attachedFiles: doc.attachedFiles || []
+      });
     } else {
-      setFormState({ title: '', content: '', category: 'Policy' });
+      setFormState({ title: '', content: '', category: 'Policy', attachedFiles: [] });
     }
     setIsEditing(true);
   };
@@ -190,13 +237,88 @@ export default function StaffHandbook({ theme, userRole, onReadUpdate }: Props) 
 
             <div className="space-y-2">
               <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">Document Content <span className="text-rose-500">*</span></label>
-              <textarea
+              <SmartTextarea
                 required
                 value={formState.content}
-                onChange={e => setFormState({...formState, content: e.target.value})}
+                onChange={(e: any) => setFormState({...formState, content: e.target.value})}
                 className="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition min-h-[300px] font-sans"
                 placeholder="Enter document content here... (Line breaks will be preserved)"
               />
+            </div>
+
+            {/* Google Picker attachments integration */}
+            <div className="space-y-3 pt-4 border-t border-slate-100">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                    <CloudLightning size={14} className="text-indigo-500" /> Attached Google Drive Resources
+                  </h4>
+                  <p className="text-[10px] text-slate-400">Attach handbooks, references, or curriculum outlines from Google Drive using Google Picker</p>
+                </div>
+                {isGoogleAuth ? (
+                  <button
+                    type="button"
+                    onClick={handleAttachGoogleFile}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-bold rounded-lg transition cursor-pointer self-start"
+                  >
+                    <Plus size={14} /> Choose from Drive
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await googleSignIn();
+                      } catch (err) {
+                        triggerToast('Authentication failed. Try opening the app in a new tab if inside an iframe.', 'error');
+                      }
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 text-xs font-bold rounded-lg transition cursor-pointer shadow-2xs self-start"
+                  >
+                    {/* Material Google icon */}
+                    <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" className="w-3.5 h-3.5 flex-shrink-0">
+                      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
+                      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
+                      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path>
+                      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path>
+                    </svg>
+                    <span>Connect Google Drive</span>
+                  </button>
+                )}
+              </div>
+              
+              {formState.attachedFiles && formState.attachedFiles.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+                  {formState.attachedFiles.map((file) => (
+                    <div key={file.id} className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <FileText size={15} className="text-slate-400 flex-shrink-0" />
+                        <div className="truncate text-xs">
+                          <p className="font-bold text-slate-700 truncate leading-snug">{file.name}</p>
+                          <p className="text-[10px] text-slate-400 font-mono truncate">{file.mimeType.split('/').pop() || 'file'}</p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFormState({
+                            ...formState,
+                            attachedFiles: (formState.attachedFiles || []).filter(f => f.id !== file.id)
+                          });
+                        }}
+                        className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition flex-shrink-0 cursor-pointer"
+                        title="Remove attachment"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-4 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                  <p className="text-[11px] text-slate-400 italic">No Google Drive files attached to this document yet.</p>
+                </div>
+              )}
             </div>
 
             <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
@@ -301,10 +423,38 @@ export default function StaffHandbook({ theme, userRole, onReadUpdate }: Props) 
                   )}
                 </div>
                 
-                <div className="p-8 flex-1 overflow-y-auto prose prose-slate max-w-none prose-sm sm:prose-base custom-scrollbar">
+                <div className="p-8 flex-1 overflow-y-auto prose prose-slate max-w-none prose-sm sm:prose-base custom-scrollbar space-y-6">
                   <div className="whitespace-pre-wrap text-slate-700 leading-relaxed font-serif">
                     {selectedDocument.content}
                   </div>
+
+                  {selectedDocument.attachedFiles && selectedDocument.attachedFiles.length > 0 && (
+                    <div className="mt-8 pt-6 border-t border-slate-100 space-y-3 font-sans">
+                      <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                        <CloudLightning size={14} className="text-indigo-500" /> Linked Google Drive Resources
+                      </h5>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {selectedDocument.attachedFiles.map((file) => (
+                          <a
+                            key={file.id}
+                            href={file.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center justify-between p-3 bg-slate-50 border border-slate-200/80 hover:border-indigo-300 hover:bg-indigo-50/20 hover:shadow-2xs rounded-xl transition group text-left cursor-pointer"
+                          >
+                            <div className="flex items-center gap-3 min-w-0">
+                              <FileText size={18} className="text-indigo-500 flex-shrink-0" />
+                              <div className="truncate">
+                                <p className="text-xs font-bold text-slate-800 group-hover:text-indigo-950 truncate leading-tight">{file.name}</p>
+                                <p className="text-[9px] text-slate-400 font-mono uppercase tracking-wider truncate mt-0.5">{file.mimeType.split('/').pop() || 'resource'}</p>
+                              </div>
+                            </div>
+                            <ExternalLink size={14} className="text-slate-400 group-hover:text-indigo-600 transition flex-shrink-0" />
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 
                 <div className="p-4 border-t border-slate-100 bg-slate-50 text-xs text-slate-500 flex items-center justify-between">

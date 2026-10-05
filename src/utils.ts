@@ -163,12 +163,104 @@ export function getWatermarkHtml(crestUrl?: string | null, size = 320): string {
     : GHANA_CREST_SVG_WATERMARK.replace('width: 420px; height: 420px;', `width: ${size}px; height: ${size}px;`);
 
   return `
-    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); pointer-events: none; z-index: 0; user-select: none; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; opacity: 0.045;">
+    <div class="watermark-overlay" style="position: absolute; inset: 0; pointer-events: none; z-index: 0; user-select: none; display: flex; align-items: center; justify-content: center; opacity: 0.055;">
       <div style="width: ${size}px; height: ${size}px; display: flex; align-items: center; justify-content: center;">
         ${crestMarkup}
       </div>
     </div>
   `;
+}
+
+export interface FormatFilenameOptions {
+  docType: string;
+  studentName?: string;
+  studentId?: string;
+  receiptNo?: string;
+  term?: string;
+  academicYear?: string;
+  className?: string;
+  date?: string;
+  extension?: string;
+}
+
+export function formatIdentifiableFilename(options: FormatFilenameOptions): string {
+  const parts: string[] = [];
+  
+  if (options.docType) parts.push(options.docType.trim());
+  if (options.studentName) parts.push(options.studentName.trim().replace(/\s+/g, ' '));
+  if (options.studentId) parts.push(options.studentId.trim());
+  if (options.receiptNo) parts.push(`Receipt_${options.receiptNo.trim()}`);
+  if (options.className) parts.push(options.className.trim());
+  if (options.term) parts.push(options.term.trim());
+  if (options.academicYear) parts.push(options.academicYear.trim().replace(/[\/\\]/g, '_'));
+  if (options.date) parts.push(options.date.trim().replace(/[\/\\]/g, '-'));
+
+  const ext = (options.extension || 'pdf').replace(/^\./, '');
+  const rawFileName = parts.join('_').replace(/[:*?"<>|]+/g, '');
+  return `${rawFileName}.${ext}`;
+}
+
+export interface AgeCalculationResult {
+  years: number;
+  months: number;
+  days: number;
+  formatted: string;
+  shortFormatted: string;
+  category: string;
+}
+
+/**
+ * Automatically calculates student age based on Date of Birth string (YYYY-MM-DD).
+ */
+export function calculateAgeFromDob(dobString: string): AgeCalculationResult | null {
+  if (!dobString) return null;
+  const dob = new Date(dobString);
+  if (isNaN(dob.getTime())) return null;
+
+  const today = new Date();
+  let years = today.getFullYear() - dob.getFullYear();
+  let months = today.getMonth() - dob.getMonth();
+  let days = today.getDate() - dob.getDate();
+
+  if (days < 0) {
+    months -= 1;
+    const prevMonthLastDay = new Date(today.getFullYear(), today.getMonth(), 0).getDate();
+    days += prevMonthLastDay;
+  }
+  if (months < 0) {
+    years -= 1;
+    months += 12;
+  }
+
+  if (years < 0) return null; // Future date
+
+  let formatted = '';
+  let shortFormatted = '';
+
+  if (years === 0) {
+    if (months === 0) {
+      formatted = `${days} ${days === 1 ? 'day' : 'days'} old`;
+      shortFormatted = `${days}d`;
+    } else {
+      formatted = `${months} ${months === 1 ? 'month' : 'months'} old`;
+      shortFormatted = `${months} mo${months > 1 ? 's' : ''}`;
+    }
+  } else if (months === 0) {
+    formatted = `${years} ${years === 1 ? 'year' : 'years'} old`;
+    shortFormatted = `${years} yrs`;
+  } else {
+    formatted = `${years} ${years === 1 ? 'year' : 'years'}, ${months} ${months === 1 ? 'month' : 'months'} old`;
+    shortFormatted = `${years} yrs ${months} mo${months > 1 ? 's' : ''}`;
+  }
+
+  let category = 'School Age';
+  if (years <= 5) category = 'Preschool / Kindergarten';
+  else if (years <= 11) category = 'Primary School';
+  else if (years <= 15) category = 'JHS / Lower Secondary';
+  else if (years <= 18) category = 'SHS / Upper Secondary';
+  else category = 'Adult Learner';
+
+  return { years, months, days, formatted, shortFormatted, category };
 }
 
 

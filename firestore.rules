@@ -42,6 +42,104 @@ service cloud.firestore {
         (schoolId == 'school_secrets' && isUserRole('Admin')) || 
         (schoolId != 'school_secrets' && isAdminOrHead())
       ) && isValidId(schoolId);
+
+      // Subcollections under school for multi-tenancy
+      match /students/{studentId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isAdminOrHead() && isValidId(studentId);
+      }
+
+      match /teachers/{teacherId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isAdminOrHead() && isValidId(teacherId);
+      }
+
+      match /attendance/{recordId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && (isAdminOrHead() || isUserRole('Teacher')) && isValidId(recordId);
+      }
+
+      match /staff_attendance/{recordId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isAdminOrHead() && isValidId(recordId);
+      }
+
+      match /assessments/{assessmentId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && (isAdminOrHead() || isUserRole('Teacher')) && isValidId(assessmentId);
+      }
+
+      match /assessment_templates/{templateId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && (isAdminOrHead() || isUserRole('Teacher')) && isValidId(templateId);
+      }
+
+      match /fees/{feeId} {
+        allow read: if isSignedIn() || isValidId(feeId);
+        allow create, update: if (isSignedIn() && isAdminOrHead() && isValidId(feeId)) || isValidId(feeId);
+        allow delete: if isSignedIn() && isAdminOrHead() && isValidId(feeId);
+      }
+
+      match /settings/{settingId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isAdminOrHead() && isValidId(settingId);
+      }
+
+      match /emis/{emisId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isAdminOrHead() && isValidId(emisId);
+      }
+
+      match /behavioral_remarks/{remarkId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && (isAdminOrHead() || isUserRole('Teacher')) && isValidId(remarkId);
+      }
+
+      match /activity_logs/{logId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isValidId(logId);
+      }
+
+      match /teacher_reflections/{reflectionId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isValidId(reflectionId);
+      }
+
+      match /leave_requests/{requestId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isValidId(requestId);
+      }
+
+      match /tasks/{taskId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isValidId(taskId);
+      }
+
+      match /communication_templates/{templateId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isAdminOrHead() && isValidId(templateId);
+      }
+
+      match /paystack_payments/{paymentId} {
+        allow read: if isSignedIn() || isValidId(paymentId);
+        allow create, update: if isValidId(paymentId);
+        allow delete: if isSignedIn() && isAdminOrHead() && isValidId(paymentId);
+      }
+
+      match /custom_sections/{secId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isValidId(secId);
+      }
+
+      match /custom_bill_categories/{catId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isValidId(catId);
+      }
+
+      match /financial_audit_logs/{logId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isValidId(logId);
+      }
     }
 
     // Students access (Admin/Head full access)
@@ -56,16 +154,16 @@ service cloud.firestore {
       allow write: if isSignedIn() && isAdminOrHead() && isValidId(teacherId);
     }
 
-    // Attendance access (Admin/Head full access)
+    // Attendance access (Admin/Head/Teacher access)
     match /attendance/{recordId} {
       allow read: if isSignedIn();
-      allow write: if isSignedIn() && isAdminOrHead() && isValidId(recordId);
+      allow write: if isSignedIn() && (isAdminOrHead() || isUserRole('Teacher')) && isValidId(recordId);
     }
 
-    // Assessments access (Admin/Head full access)
+    // Assessments access (Admin/Head/Teacher access)
     match /assessments/{assessmentId} {
       allow read: if isSignedIn();
-      allow write: if isSignedIn() && isAdminOrHead() && isValidId(assessmentId);
+      allow write: if isSignedIn() && (isAdminOrHead() || isUserRole('Teacher')) && isValidId(assessmentId);
     }
 
     // Fees access (Admin/Head full access, plus parent portal payment writes, delete restricted to Admin/Head)
@@ -100,6 +198,11 @@ service cloud.firestore {
       allow write: if isSignedIn() && isAdminOrHead() && isValidId(emisId);
     }
 
+    match /tasks/{taskId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && isValidId(taskId);
+    }
+
     // Real-time synchronization
     match /teacher_headteacher_sync/{syncId} {
       allow read: if isSignedIn() && isAdminOrHead();
@@ -111,6 +214,11 @@ service cloud.firestore {
     // Users credentials registry access (User can read and write their own or Admin can write)
     match /users/{userId} {
       allow read, write: if isSignedIn() && (request.auth.uid == userId || isUserRole('Admin')) && isValidId(userId);
+    }
+
+    match /custom_sections/{secId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && isValidId(secId);
     }
 
     // Connection check test collection (Required for testConnection initialization check)

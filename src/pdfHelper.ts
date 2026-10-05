@@ -121,8 +121,8 @@ export const generatePdfFromHtml = async (
   filename: string, 
   isLandscape: boolean = false
 ): Promise<PDFGenerationResult> => {
-  const element = document.getElementById(elementId);
-  if (!element) {
+  const sourceElement = document.getElementById(elementId);
+  if (!sourceElement) {
     throw new Error(`Element with id "${elementId}" not found for PDF generation.`);
   }
 
@@ -193,7 +193,11 @@ export const generatePdfFromHtml = async (
 
   // 4. Dynamic prototype getter patching for CSSStyleDeclaration.prototype properties
   try {
-    const allDeclProps = Object.getOwnPropertyNames(cssStyleDeclProto);
+    const allDeclProps = [
+      'color', 'backgroundColor', 'background', 'backgroundImage',
+      'borderColor', 'borderLeftColor', 'borderRightColor', 'borderTopColor', 'borderBottomColor',
+      'outlineColor', 'textDecorationColor', 'boxShadow', 'fill', 'stroke'
+    ];
     for (const prop of allDeclProps) {
       if (prop !== 'getPropertyValue' && prop !== 'cssText') {
         const desc = Object.getOwnPropertyDescriptor(cssStyleDeclProto, prop);
@@ -206,7 +210,7 @@ export const generatePdfFromHtml = async (
     // Ignore
   }
 
-  // 5. Patch window.getComputedStyle using Proxy to intercept all properties dynamically (without illegal invocation)
+  // 5. Patch window.getComputedStyle using Proxy to intercept all properties dynamically
   window.getComputedStyle = function(el: Element, pseudoElt?: string | null): CSSStyleDeclaration {
     const style = originalGetComputedStyle(el, pseudoElt);
     return new Proxy(style, {
@@ -225,51 +229,355 @@ export const generatePdfFromHtml = async (
     });
   };
 
-  let canvas;
+  // Create an off-screen sandbox staging host to guarantee 100% visible, non-clipped geometry
+  const isDL = ((elementId === 'fee-receipt-print-area' && !elementId.includes('ledger')) || 
+               (sourceElement.querySelector('#fee-receipt-print-area') !== null && sourceElement.querySelector('#fee-ledger-print-area') === null)) &&
+               elementId !== 'bulk-receipts-print-area' && 
+               sourceElement.querySelector('#bulk-receipts-print-area') === null;
+
+  const targetWidthPx = isDL ? 831 : (isLandscape ? 1123 : 794);
+  const targetHeightPx = isDL ? 416 : (isLandscape ? 794 : 1123);
+
+  const sandbox = document.createElement('div');
+  sandbox.id = '__pdf_render_sandbox__';
+  sandbox.style.cssText = `
+    position: fixed !important;
+    left: 0px !important;
+    top: 0px !important;
+    z-index: -999999 !important;
+    width: ${targetWidthPx}px !important;
+    min-width: ${targetWidthPx}px !important;
+    max-width: ${targetWidthPx}px !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-sizing: border-box !important;
+    overflow: visible !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    pointer-events: none !important;
+    transform: none !important;
+  `;
+
+  // Inject anti-scatter style reset sheet
+  const antiScatterStyle = document.createElement('style');
+  antiScatterStyle.textContent = `
+    #__pdf_render_sandbox__ *, #__pdf_render_sandbox__ *::before, #__pdf_render_sandbox__ *::after {
+      box-sizing: border-box !important;
+      transform: none !important;
+      animation: none !important;
+      transition: none !important;
+      filter: none !important;
+    }
+    #__pdf_render_sandbox__ .print-page, 
+    #__pdf_render_sandbox__ .report-card-print-container, 
+    #__pdf_render_sandbox__ .bulk-report-card-print-page,
+    #__pdf_render_sandbox__ .fee-receipt-print-area {
+      width: ${targetWidthPx}px !important;
+      min-width: ${targetWidthPx}px !important;
+      max-width: ${targetWidthPx}px !important;
+      margin: 0 auto !important;
+      box-shadow: none !important;
+      border-radius: 0 !important;
+      position: relative !important;
+      left: auto !important;
+      top: auto !important;
+      right: auto !important;
+      bottom: auto !important;
+    }
+  `;
+  sandbox.appendChild(antiScatterStyle);
+
+  // Deep clone the source element to sanitize any offscreen positioning or display:none
+  const clone = sourceElement.cloneNode(true) as HTMLElement;
+  clone.id = `${elementId}_pdf_clone`;
+  
+  // Strip hiding classes and coordinates
+  clone.classList.remove(
+    'hidden', 'invisible', 'opacity-0', 'fixed', 'absolute',
+    '-top-[9999px]', '-left-[9999px]', 'top-[-9999px]', 'left-[-9999px]',
+    'z-[-100]', 'no-print'
+  );
+  
+  clone.style.display = 'block';
+  clone.style.visibility = 'visible';
+  clone.style.opacity = '1';
+  clone.style.position = 'relative';
+  clone.style.left = '0px';
+  clone.style.top = '0px';
+  clone.style.width = `${targetWidthPx}px`;
+  clone.style.minWidth = `${targetWidthPx}px`;
+  clone.style.maxWidth = `${targetWidthPx}px`;
+  clone.style.height = 'auto';
+  clone.style.maxHeight = 'none';
+  clone.style.overflow = 'visible';
+  clone.style.backgroundColor = '#ffffff';
+  clone.style.transform = 'none';
+
+  // Copy computed layout properties (flex, grid, dimensions) recursively to prevent layout collapse.
+  // Performance optimization: Using original unpatched getComputedStyle directly bypasses slow proxy traps.
+  // If elementCount is large, we selectively copy styles for major sections to prevent browser thread freeze.
   try {
-    // Capture element using html2canvas with high-DPI scaling
-    canvas = await html2canvas(element, {
-      scale: 2, 
+    const srcAll = sourceElement.querySelectorAll('*');
+    const clnAll = clone.querySelectorAll('*');
+    const nodeCount = srcAll.length;
+    
+    if (nodeCount < 200) {
+      for (let i = 0; i < srcAll.length && i < clnAll.length; i++) {
+        const sNode = srcAll[i] as HTMLElement;
+        const cNode = clnAll[i] as HTMLElement;
+        if (sNode && cNode) {
+          const comp = originalGetComputedStyle(sNode);
+          if (comp.display === 'flex' || comp.display === 'inline-flex') {
+            cNode.style.display = comp.display;
+            cNode.style.flexDirection = comp.flexDirection;
+            cNode.style.justifyContent = comp.justifyContent;
+            cNode.style.alignItems = comp.alignItems;
+            cNode.style.gap = comp.gap;
+            cNode.style.flexWrap = comp.flexWrap;
+          } else if (comp.display === 'grid' || comp.display === 'inline-grid') {
+            cNode.style.display = comp.display;
+            cNode.style.gridTemplateColumns = comp.gridTemplateColumns;
+            cNode.style.gap = comp.gap;
+          }
+          if (comp.width && comp.width !== 'auto') {
+            cNode.style.width = comp.width;
+          }
+        }
+      }
+    } else {
+      // Large print items (e.g. multi-semester transcripts, lists, bulk sheets):
+      // Only copy flex/grid for direct child structures of key layout wrappers
+      const layoutSelectors = '.print-page, .report-card-print-container, .bulk-report-card-print-page, .id-cards-landscape-page, .fee-receipt-print-area, .bulk-receipts-print-page, .bulk-receipt-slip';
+      const srcLayouts = sourceElement.querySelectorAll(layoutSelectors);
+      const clnLayouts = clone.querySelectorAll(layoutSelectors);
+      for (let i = 0; i < srcLayouts.length && i < clnLayouts.length; i++) {
+        const sNode = srcLayouts[i] as HTMLElement;
+        const cNode = clnLayouts[i] as HTMLElement;
+        if (sNode && cNode) {
+          const comp = originalGetComputedStyle(sNode);
+          cNode.style.display = comp.display;
+          cNode.style.width = comp.width || '100%';
+        }
+      }
+    }
+  } catch (e) {
+    // Non-fatal styling copy fallback
+  }
+
+  // Make all inner print pages / items explicitly visible
+  const allHiddenPrintElements = clone.querySelectorAll<HTMLElement>(
+    '.hidden, .print\\:block, [class*="print:block"], .bulk-report-card-print-page, .bulk-receipts-print-page, .bulk-receipt-item, .bulk-id-card-item, .id-card-print-item, .report-card-print-container, .print-page'
+  );
+  allHiddenPrintElements.forEach(el => {
+    el.classList.remove('hidden', 'invisible', 'opacity-0');
+    el.style.display = 'block';
+    el.style.visibility = 'visible';
+    el.style.opacity = '1';
+  });
+
+  // Remove non-print UI elements (buttons, navigation controls, actions)
+  const nonPrintElements = clone.querySelectorAll<HTMLElement>('.no-print, button, .btn, .actions-row, nav');
+  nonPrintElements.forEach(el => {
+    el.style.display = 'none';
+  });
+
+  sandbox.appendChild(clone);
+  document.body.appendChild(sandbox);
+
+  try {
+    // Wait for all images inside the clone to load/decode
+    const images = Array.from(sandbox.querySelectorAll<HTMLImageElement>('img'));
+    if (images.length > 0) {
+      await Promise.all(
+        images.map(img => {
+          if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+          return new Promise(resolve => {
+            img.onload = resolve;
+            img.onerror = resolve;
+            setTimeout(resolve, 600);
+          });
+        })
+      );
+    }
+
+    // Wait for fonts if available
+    if (document.fonts && document.fonts.ready) {
+      try {
+        await document.fonts.ready;
+      } catch (e) {
+        // Ignore font load error
+      }
+    }
+
+    // Short layout settle tick & ensure render pass
+    await new Promise(r => setTimeout(r, 200));
+
+    // Check if there are multiple dedicated pages
+    const pages = Array.from(sandbox.querySelectorAll<HTMLElement>(
+      '.bulk-report-card-print-page, .report-card-print-container, .print-page, .id-cards-landscape-page, .bulk-id-card-item, .id-card-print-item, .bulk-receipts-print-page, .bulk-receipt-item, .fee-receipt-print-area'
+    ));
+
+    const pdfOrientation = isLandscape ? 'l' : 'p';
+    const pdfFormat = isDL ? [220, 110] : 'a4';
+    const pdfWidth = isDL ? 220 : (isLandscape ? 297 : 210);
+    const pdfHeight = isDL ? 110 : (isLandscape ? 210 : 297);
+
+    const pdf = new jsPDF({
+      orientation: pdfOrientation,
+      unit: 'mm',
+      format: pdfFormat,
+    });
+
+    if (pages.length > 1) {
+      // High fidelity multi-page rendering
+      for (let i = 0; i < pages.length; i++) {
+        const pageEl = pages[i];
+        pageEl.style.display = 'block';
+        pageEl.style.visibility = 'visible';
+        pageEl.style.opacity = '1';
+        pageEl.style.overflow = 'visible';
+
+        const pageCanvas = await html2canvas(pageEl, {
+          scale: pages.length > 10 ? 1.25 : (pages.length > 4 ? 1.5 : 1.75),
+          useCORS: true,
+          allowTaint: true,
+          backgroundColor: '#ffffff',
+          logging: false,
+          scrollX: 0,
+          scrollY: 0,
+          x: 0,
+          y: 0,
+          onclone: (clonedDoc) => {
+            const styleElements = clonedDoc.getElementsByTagName('style');
+            for (let s = 0; s < styleElements.length; s++) {
+              const style = styleElements[s];
+              if (style.textContent && (style.textContent.includes('oklch') || style.textContent.includes('oklab'))) {
+                style.textContent = replaceColorFunctions(style.textContent);
+              }
+            }
+          }
+        });
+
+        if (i > 0) {
+          pdf.addPage();
+        }
+
+        const imgData = pageCanvas.toDataURL('image/png', 1.0);
+        pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      }
+
+      const blob = pdf.output('blob');
+      return {
+        blob,
+        filename: filename.endsWith('.pdf') ? filename : `${filename}.pdf`
+      };
+    }
+
+    // Single document or continuous multi-page document
+    // Adjust canvas rendering scale dynamically based on content height to avoid exceeding browser limits (causes blank output)
+    const totalHeight = clone.offsetHeight || clone.scrollHeight || 1000;
+    const canvasScale = totalHeight > 5000 ? 1.0 : (totalHeight > 2500 ? 1.25 : 1.75);
+
+    const canvas = await html2canvas(clone, {
+      scale: canvasScale,
       useCORS: true,
       allowTaint: true,
       backgroundColor: '#ffffff',
       logging: false,
+      scrollX: 0,
+      scrollY: 0,
       onclone: (clonedDoc) => {
-        // Prevent scrollbars or clipping in the cloned element to render full clean document
-        const clonedElement = clonedDoc.getElementById(elementId);
-        if (clonedElement) {
-          clonedElement.style.overflow = 'visible';
-          clonedElement.style.overflowY = 'visible';
-          clonedElement.style.overflowX = 'visible';
-          clonedElement.style.maxHeight = 'none';
-          clonedElement.style.height = 'auto';
-          clonedElement.style.aspectRatio = undefined as any;
-          // Ensure background is solid white for printable pages
-          clonedElement.style.backgroundColor = '#ffffff';
-        }
-
-        // Convert all oklch/oklab colors in clone stylesheets
         const styleElements = clonedDoc.getElementsByTagName('style');
-        for (let i = 0; i < styleElements.length; i++) {
-          const style = styleElements[i];
+        for (let s = 0; s < styleElements.length; s++) {
+          const style = styleElements[s];
           if (style.textContent && (style.textContent.includes('oklch') || style.textContent.includes('oklab'))) {
             style.textContent = replaceColorFunctions(style.textContent);
           }
         }
-
-        // Convert all oklch/oklab colors in inline style attributes of elements
-        const allElements = clonedDoc.getElementsByTagName('*');
-        for (let i = 0; i < allElements.length; i++) {
-          const el = allElements[i] as HTMLElement;
-          const styleAttr = el.getAttribute('style');
-          if (styleAttr && (styleAttr.includes('oklch') || styleAttr.includes('oklab'))) {
-            el.setAttribute('style', replaceColorFunctions(styleAttr));
-          }
-        }
       }
     });
+
+    const imgData = canvas.toDataURL('image/png', 1.0);
+    const margin = isDL ? 0 : 8;
+    const imgWidth = pdfWidth - (margin * 2);
+    const imgHeight = (canvas.height * imgWidth) / canvas.width;
+    const printableHeight = pdfHeight - (margin * 2);
+
+    // If fits on 1 page (with tolerance), center and scale
+    if (imgHeight <= printableHeight + 15) {
+      const imageAspectRatio = canvas.width / canvas.height;
+      const printableAspectRatio = imgWidth / printableHeight;
+
+      let finalWidth = imgWidth;
+      let finalHeight = imgHeight;
+
+      if (imageAspectRatio > printableAspectRatio) {
+        finalWidth = imgWidth;
+        finalHeight = imgWidth / imageAspectRatio;
+      } else {
+        finalHeight = printableHeight;
+        finalWidth = printableHeight * imageAspectRatio;
+      }
+
+      const posX = margin + (imgWidth - finalWidth) / 2;
+      const posY = margin + (printableHeight - finalHeight) / 2;
+
+      pdf.addImage(imgData, 'PNG', posX, posY, finalWidth, finalHeight);
+    } else {
+      // Clean multi-page continuous slicing
+      const pageCanvas = document.createElement('canvas');
+      const srcPageHeight = Math.floor((printableHeight * canvas.width) / imgWidth);
+      pageCanvas.width = canvas.width;
+
+      let srcY = 0;
+      let remainingCanvasHeight = canvas.height;
+      let pageIndex = 0;
+
+      while (remainingCanvasHeight > 0) {
+        if (pageIndex > 0) {
+          pdf.addPage();
+        }
+
+        const currentSliceHeight = Math.min(srcPageHeight, remainingCanvasHeight);
+        pageCanvas.height = currentSliceHeight;
+
+        // Retrieving the context inside the loop is vital as changing the height resets the canvas state
+        const pageCtx = pageCanvas.getContext('2d');
+        if (pageCtx) {
+          pageCtx.fillStyle = '#ffffff';
+          pageCtx.fillRect(0, 0, pageCanvas.width, currentSliceHeight);
+          pageCtx.drawImage(
+            canvas,
+            0, srcY, canvas.width, currentSliceHeight,
+            0, 0, pageCanvas.width, currentSliceHeight
+          );
+        }
+
+        const sliceImgData = pageCanvas.toDataURL('image/png', 1.0);
+        const slicePdfHeight = (currentSliceHeight * imgWidth) / canvas.width;
+
+        pdf.addImage(sliceImgData, 'PNG', margin, margin, imgWidth, slicePdfHeight);
+
+        srcY += currentSliceHeight;
+        remainingCanvasHeight -= currentSliceHeight;
+        pageIndex++;
+      }
+    }
+
+    const blob = pdf.output('blob');
+    return {
+      blob,
+      filename: filename.endsWith('.pdf') ? filename : `${filename}.pdf`
+    };
   } finally {
-    // Restore the browser APIs immediately after rendering concludes
+    // Clean up sandbox
+    if (sandbox.parentNode) {
+      sandbox.parentNode.removeChild(sandbox);
+    }
+
+    // Restore browser APIs immediately
     window.getComputedStyle = originalGetComputedStyle;
     CSSStyleDeclaration.prototype.getPropertyValue = originalGetPropertyValue;
     Element.prototype.getAttribute = originalGetAttribute;
@@ -283,78 +591,6 @@ export const generatePdfFromHtml = async (
       }
     }
   }
-
-  const imgData = canvas.toDataURL('image/png', 1.0);
-  
-  const orientation = isLandscape ? 'l' : 'p';
-  const isDL = elementId === 'fee-receipt-print-area' || 
-               elementId === 'fee-ledger-print-area' || 
-               element.querySelector('#fee-receipt-print-area') !== null || 
-               element.querySelector('#fee-ledger-print-area') !== null;
-  const format = isDL ? [220, 110] : 'a4';
-  
-  const pdf = new jsPDF({
-    orientation: orientation,
-    unit: 'mm',
-    format: format,
-  });
-
-  const pdfWidth = isDL ? 220 : (isLandscape ? 297 : 210);
-  const pdfHeight = isDL ? 110 : (isLandscape ? 210 : 297);
-
-  // Setup margins
-  const margin = 8;
-  const imgWidth = pdfWidth - (margin * 2);
-  const imgHeight = (canvas.height * imgWidth) / canvas.width;
-
-  const pageHeight = pdfHeight;
-  const printableHeight = pageHeight - (margin * 2);
-
-  // If the document fits on one page (or is close enough with a tolerance of 15mm), center and scale it
-  if (imgHeight <= printableHeight + 15) {
-    const imageAspectRatio = canvas.width / canvas.height;
-    const printableAspectRatio = imgWidth / printableHeight;
-
-    let finalWidth = imgWidth;
-    let finalHeight = imgHeight;
-
-    if (imageAspectRatio > printableAspectRatio) {
-      finalWidth = imgWidth;
-      finalHeight = imgWidth / imageAspectRatio;
-    } else {
-      finalHeight = printableHeight;
-      finalWidth = printableHeight * imageAspectRatio;
-    }
-
-    const posX = margin + (imgWidth - finalWidth) / 2;
-    const posY = margin + (printableHeight - finalHeight) / 2;
-
-    pdf.addImage(imgData, 'PNG', posX, posY, finalWidth, finalHeight);
-  } else {
-    // Multi-page slicing
-    let heightLeft = imgHeight;
-    let pageNum = 1;
-
-    // Render the initial page slice starting from the top margin
-    pdf.addImage(imgData, 'PNG', margin, margin, imgWidth, imgHeight);
-    heightLeft -= printableHeight;
-
-    // Add subsequent pages if the content overflows page height
-    while (heightLeft > 0) {
-      pdf.addPage();
-      pageNum++;
-      // Draw the image at a negative offset corresponding to the previous page's cutoff position
-      const posY = margin - ((pageNum - 1) * printableHeight);
-      pdf.addImage(imgData, 'PNG', margin, posY, imgWidth, imgHeight);
-      heightLeft -= printableHeight;
-    }
-  }
-
-  const blob = pdf.output('blob');
-  return {
-    blob,
-    filename: filename.endsWith('.pdf') ? filename : `${filename}.pdf`
-  };
 };
 
 export const downloadBlobLocally = (blob: Blob, filename: string) => {

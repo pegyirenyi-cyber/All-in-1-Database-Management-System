@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import { GoogleGenAI, Type } from "@google/genai";
 
 export const apiRouter = express.Router();
 
@@ -191,15 +192,27 @@ async function logWebhookPaymentToFirestore(paymentData: {
 /**
  * Dynamic helper to load active Paystack keys from Firestore or environment fallbacks.
  */
-async function getDynamicPaystackKeys(): Promise<{ secretKey: string | undefined; publicKey: string | undefined; mode: string }> {
+async function getDynamicPaystackKeys(type: 'admin' | 'fees' = 'admin', studentId?: string): Promise<{ secretKey: string | undefined; publicKey: string | undefined; mode: string }> {
   let secretKey = process.env.PAYSTACK_SECRET_KEY;
   let publicKey = process.env.VITE_PAYSTACK_PUBLIC_KEY;
   let mode = 'test';
 
-  // 1. Load public configuration (schools/school_default)
-  const defaultDoc = await fetchFirestoreDocument('schools', 'school_default');
-  if (defaultDoc && defaultDoc.fields) {
-    const fields = defaultDoc.fields;
+  let schoolId = 'school_default';
+  let secretsId = 'school_secrets';
+
+  if (type === 'fees' && studentId) {
+    // Attempt to resolve school-specific keys if possible
+    const studentDoc = await fetchFirestoreDocument('students', studentId);
+    if (studentDoc?.fields?.schoolId?.stringValue) {
+      schoolId = studentDoc.fields.schoolId.stringValue;
+      secretsId = `${schoolId}_secrets`;
+    }
+  }
+
+  // 1. Load public configuration
+  const schoolDoc = await fetchFirestoreDocument('schools', schoolId);
+  if (schoolDoc && schoolDoc.fields) {
+    const fields = schoolDoc.fields;
     const customPublic = fields.paystackPublicKey?.stringValue;
     const customMode = fields.paystackMode?.stringValue;
     if (customPublic) {
@@ -210,8 +223,8 @@ async function getDynamicPaystackKeys(): Promise<{ secretKey: string | undefined
     }
   }
 
-  // 2. Load secret configuration (schools/school_secrets)
-  const secretsDoc = await fetchFirestoreDocument('schools', 'school_secrets');
+  // 2. Load secret configuration
+  const secretsDoc = await fetchFirestoreDocument('schools', secretsId);
   if (secretsDoc && secretsDoc.fields) {
     const fields = secretsDoc.fields;
     const customSecret = fields.paystackSecretKey?.stringValue;
@@ -585,8 +598,8 @@ apiRouter.post('/communications/send-email', async (req, res) => {
  */
 apiRouter.post('/payments/initialize', async (req, res) => {
   try {
-    const { email, amount, studentId, billId, component, academicYear, term } = req.body;
-    const { secretKey } = await getDynamicPaystackKeys();
+    const { email, amount, studentId, billId, component, academicYear, term, paymentType } = req.body;
+    const { secretKey } = await getDynamicPaystackKeys(paymentType, studentId);
 
     if (!secretKey) {
       console.error("[Paystack] PAYSTACK_SECRET_KEY is missing from environment/database settings.");
@@ -662,7 +675,10 @@ apiRouter.post('/payments/initialize', async (req, res) => {
 apiRouter.get('/payments/verify/:reference', async (req, res) => {
   try {
     const { reference } = req.params;
-    const { secretKey } = await getDynamicPaystackKeys();
+    const paymentType = req.query.paymentType as 'admin' | 'fees' | undefined;
+    const studentId = req.query.studentId as string | undefined;
+    
+    const { secretKey } = await getDynamicPaystackKeys(paymentType || 'admin', studentId);
 
     if (!secretKey) {
       return res.status(500).json({
@@ -793,3 +809,347 @@ apiRouter.get('/payments/callback', (req, res) => {
   console.log(`[Paystack Gateway] Client redirected back with reference: ${reference}`);
   return res.redirect(`/?payment_ref=${reference}`);
 });
+
+/**
+ * Offline spelling check fallback for high reliability
+ */
+function performOfflineSpellcheck(text: string, res: express.Response) {
+  const commonTypos: Record<string, string[]> = {
+    "teh": ["the"],
+    "recieve": ["receive"],
+    "receving": ["receiving"],
+    "seperate": ["separate"],
+    "untill": ["until"],
+    "goverment": ["government"],
+    "enviroment": ["environment"],
+    "recommmend": ["recommend"],
+    "accomodate": ["accommodate"],
+    "definately": ["definitely"],
+    "truely": ["truly"],
+    "comming": ["coming"],
+    "writting": ["writing"],
+    "collegue": ["colleague"],
+    "sucess": ["success"],
+    "sucessful": ["successful"],
+    "tommorow": ["tomorrow"],
+    "yesterdy": ["yesterday"],
+    "studnet": ["student"],
+    "studnets": ["students"],
+    "tacher": ["teacher"],
+    "tachers": ["teachers"],
+    "assessmet": ["assessment"],
+    "assessmets": ["assessments"],
+    "behavour": ["behaviour", "behavior"],
+    "attendence": ["attendance"],
+    "principal": ["principal", "principle"],
+    "libary": ["library"],
+    "sience": ["science"],
+    "maths": ["maths", "math"],
+    "english": ["English"],
+    "ghana": ["Ghana"],
+    "accra": ["Accra"],
+    "parent": ["parent"],
+    "shool": ["school"],
+    "shools": ["schools"]
+  };
+
+  const words = text.match(/\b[a-zA-Z']+\b/g) || [];
+  const errors: Array<{ word: string; suggestions: string[] }> = [];
+  let correctedText = text;
+  const processed = new Set<string>();
+
+  for (const rawWord of words) {
+    const lowerWord = rawWord.toLowerCase();
+    if (processed.has(lowerWord)) continue;
+    
+    if (commonTypos[lowerWord]) {
+      processed.add(lowerWord);
+      const isCapitalized = rawWord[0] === rawWord[0].toUpperCase();
+      const suggestions = commonTypos[lowerWord].map(s => {
+        if (isCapitalized) {
+          return s.charAt(0).toUpperCase() + s.slice(1);
+        }
+        return s;
+      });
+
+      errors.push({
+        word: rawWord,
+        suggestions
+      });
+
+      const regex = new RegExp(`\\b${rawWord}\\b`, 'g');
+      correctedText = correctedText.replace(regex, suggestions[0]);
+    }
+  }
+
+  return res.json({ errors, correctedText });
+}
+
+/**
+ * AI-powered Spelling Check API endpoint using Gemini-3.5-flash
+ */
+apiRouter.post('/spellcheck', async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ error: 'Text parameter is required and must be a string.' });
+    }
+
+    if (!process.env.GEMINI_API_KEY) {
+      console.log("[Spellcheck API] GEMINI_API_KEY is not defined, utilizing offline dictionary fallback.");
+      return performOfflineSpellcheck(text, res);
+    }
+
+    const ai = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: `Identify spelling and grammar errors in the following text and suggest corrections. Also provide the fully corrected text.
+Text to check: "${text}"`,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            errors: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  word: { type: Type.STRING, description: "The misspelled or grammatically incorrect word or phrase" },
+                  suggestions: {
+                    type: Type.ARRAY,
+                    items: { type: Type.STRING },
+                    description: "Suggestions for correction"
+                  }
+                },
+                required: ["word", "suggestions"]
+              }
+            },
+            correctedText: { type: Type.STRING, description: "The fully corrected text" }
+          },
+          required: ["errors", "correctedText"]
+        }
+      }
+    });
+
+    const resultText = response.text;
+    if (!resultText) {
+      throw new Error("Empty response from Gemini API");
+    }
+
+    return res.json(JSON.parse(resultText));
+  } catch (err: any) {
+    console.error("[Spellcheck API Error] Falling back to offline engine:", err);
+    try {
+      const { text } = req.body;
+      return performOfflineSpellcheck(text || '', res);
+    } catch (fallbackErr) {
+      return res.status(500).json({ error: 'Failed to check spelling' });
+    }
+  }
+});
+
+// ==========================================
+// FINANCES: BILL CATEGORY VALIDATION ENGINE
+// Server-side duplicate prevention and data sanitization
+// ==========================================
+
+const DEFAULT_SYSTEM_CATEGORIES = [
+  'Academic',
+  'Facilities & Utilities',
+  'Welfare & Feeding',
+  'Extra-Curricular',
+  'Logistics & Transport',
+  'Materials & Books',
+  'Special Projects'
+];
+
+const DEFAULT_SYSTEM_BILL_COMPONENTS = [
+  { name: 'School Fees', code: 'SCH-FEES' },
+  { name: 'Tuition / School Fees', code: 'TUITION' },
+  { name: 'Utility Bill', code: 'UTIL' },
+  { name: 'Sports Fees', code: 'SPORTS' },
+  { name: 'PTA Dues', code: 'PTA' },
+  { name: 'Transportation Bill', code: 'TRANS' },
+  { name: 'Canteen (Feeding Fee)', code: 'CANTEEN' },
+  { name: 'Excursion', code: 'EXCURS' },
+  { name: 'Textbooks', code: 'BOOKS' },
+  { name: 'Other Fee', code: 'OTHER' }
+];
+
+function normalizeString(str: string): string {
+  return str.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+// 1. Preflight real-time duplicate check endpoint
+apiRouter.get('/finances/bill-categories/check-duplicate', (req, res) => {
+  try {
+    const rawName = typeof req.query.name === 'string' ? req.query.name : '';
+    const rawCode = typeof req.query.code === 'string' ? req.query.code : '';
+    const excludeId = typeof req.query.excludeId === 'string' ? req.query.excludeId : '';
+
+    if (!rawName.trim()) {
+      return res.json({ isDuplicate: false });
+    }
+
+    const normName = normalizeString(rawName);
+    const normCode = rawCode.trim().toUpperCase();
+
+    // Check system components
+    const systemNameMatch = DEFAULT_SYSTEM_BILL_COMPONENTS.some(
+      c => normalizeString(c.name) === normName
+    );
+    if (systemNameMatch) {
+      return res.json({
+        isDuplicate: true,
+        field: 'name',
+        message: `"${rawName.trim()}" is already a reserved default bill category in the system.`
+      });
+    }
+
+    if (normCode) {
+      const systemCodeMatch = DEFAULT_SYSTEM_BILL_COMPONENTS.some(
+        c => c.code.toUpperCase() === normCode
+      );
+      if (systemCodeMatch) {
+        return res.json({
+          isDuplicate: true,
+          field: 'code',
+          message: `Category code "${normCode}" is reserved by the core finance system.`
+        });
+      }
+    }
+
+    return res.json({ isDuplicate: false });
+  } catch (err: any) {
+    console.error('[Bill Category Preflight Error]', err);
+    return res.status(500).json({ error: 'Failed to perform preflight duplicate check' });
+  }
+});
+
+// 2. Full Server-Side Bill Category Validation and Sanitization
+apiRouter.post('/finances/bill-categories/validate', async (req, res) => {
+  try {
+    const { 
+      name, 
+      code, 
+      category, 
+      defaultAmount, 
+      existingCategories = [], 
+      existingComponents = [],
+      excludeId 
+    } = req.body;
+
+    // Validate Name
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({
+        valid: false,
+        error: 'EMPTY_NAME',
+        message: 'Bill category name is required.'
+      });
+    }
+
+    const trimmedName = name.trim();
+    if (trimmedName.length < 2 || trimmedName.length > 100) {
+      return res.status(400).json({
+        valid: false,
+        error: 'INVALID_NAME_LENGTH',
+        message: 'Bill category name must be between 2 and 100 characters long.'
+      });
+    }
+
+    const normalizedNewName = normalizeString(trimmedName);
+
+    // Duplicate Check: Standard System Categories & Components
+    const reservedMatch = DEFAULT_SYSTEM_BILL_COMPONENTS.find(
+      c => normalizeString(c.name) === normalizedNewName
+    );
+    if (reservedMatch) {
+      return res.status(409).json({
+        valid: false,
+        error: 'DUPLICATE_RESERVED_NAME',
+        message: `A bill category with the name "${reservedMatch.name}" is a core system component and cannot be duplicated.`
+      });
+    }
+
+    // Duplicate Check: User Existing Components list
+    if (Array.isArray(existingComponents)) {
+      const duplicateComp = existingComponents.find((c: any) => {
+        if (excludeId && c.id === excludeId) return false;
+        return normalizeString(c.name || '') === normalizedNewName;
+      });
+
+      if (duplicateComp) {
+        return res.status(409).json({
+          valid: false,
+          error: 'DUPLICATE_NAME',
+          message: `A bill category named "${duplicateComp.name}" already exists in your school database. Please choose a distinct name.`
+        });
+      }
+
+      // Check duplicate code if provided
+      if (code && typeof code === 'string' && code.trim()) {
+        const trimmedCode = code.trim().toUpperCase();
+        const duplicateCode = existingComponents.find((c: any) => {
+          if (excludeId && c.id === excludeId) return false;
+          return c.code && c.code.trim().toUpperCase() === trimmedCode;
+        });
+
+        if (duplicateCode) {
+          return res.status(409).json({
+            valid: false,
+            error: 'DUPLICATE_CODE',
+            message: `The short code "${trimmedCode}" is already assigned to "${duplicateCode.name}". Please specify a unique code.`
+          });
+        }
+      }
+    }
+
+    // Validate Category Group
+    let validatedCategory = 'Academic';
+    if (category && typeof category === 'string' && category.trim()) {
+      validatedCategory = category.trim();
+    }
+
+    // Validate Default Amount
+    const parsedAmount = Number(defaultAmount);
+    if (isNaN(parsedAmount) || parsedAmount < 0) {
+      return res.status(400).json({
+        valid: false,
+        error: 'INVALID_AMOUNT',
+        message: 'Default amount must be a non-negative number.'
+      });
+    }
+
+    // Generate sanitized clean data
+    const sanitizedCode = (code && typeof code === 'string' && code.trim())
+      ? code.trim().toUpperCase()
+      : trimmedName.split(' ').map(w => w[0]).join('').toUpperCase().substring(0, 8) || 'CAT-' + Math.floor(100 + Math.random() * 900);
+
+    return res.json({
+      valid: true,
+      sanitized: {
+        name: trimmedName,
+        code: sanitizedCode,
+        category: validatedCategory,
+        defaultAmount: parsedAmount
+      }
+    });
+  } catch (err: any) {
+    console.error('[Bill Category Validation Error]', err);
+    return res.status(500).json({ 
+      valid: false,
+      error: 'SERVER_VALIDATION_ERROR',
+      message: 'Server-side validation failed due to an unexpected internal error.' 
+    });
+  }
+});
+

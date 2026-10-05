@@ -1,71 +1,125 @@
 import React, { useState, useEffect, FormEvent, useMemo, ReactNode, DragEvent, useCallback } from 'react';
 import { 
   SchoolInfo, Student, Teacher, UserAccount, UserRole, ThemeType,
-  AcademicYearType, TermType, WebAuthnCredential, AttendanceRecord, StudentAssessment, TeacherReflection
+  AcademicYearType, TermType, WebAuthnCredential, AttendanceRecord, StudentAssessment, TeacherReflection,
+  ACADEMIC_YEARS, TERMS, ClassType
 } from './types';
 import { DbController } from './db';
 import { onAuthStateChanged } from 'firebase/auth';
+import { onSnapshot, doc, collection } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 import { THEME_CONFIGS, ThemeStyles } from './components/ThemeWrapper';
 import DeveloperStatus from './components/DeveloperStatus';
 // @ts-ignore
 import geetechLogo from './assets/images/geetech_new_logo_1782900372763.jpg';
-const SchoolProfileTab = React.lazy(() => import('./components/SchoolProfileTab'));
-const ParentPortal = React.lazy(() => import('./components/ParentPortal'));
 import { generateSecureToken, getWhatsAppShareData, shareParentPortalWhatsApp, WhatsAppTemplate, triggerToast } from './utils';
-
-const StudentsTab = React.lazy(() => import('./components/StudentsTab'));
-const TeachersTab = React.lazy(() => import('./components/TeachersTab'));
-const AttendanceTab = React.lazy(() => import('./components/AttendanceTab'));
-const AssessmentTab = React.lazy(() => import('./components/AssessmentTab'));
-const SettingsTab = React.lazy(() => import('./components/SettingsTab'));
-const SchoolFeesTab = React.lazy(() => import('./components/SchoolFeesTab'));
-const DashboardSummaryTab = React.lazy(() => import('./components/DashboardSummaryTab'));
-const TeacherDashboardTab = React.lazy(() => import('./components/TeacherDashboardTab'));
-const CommunicationsTab = React.lazy(() => import('./components/CommunicationsTab'));
-const AcademicCalendarTab = React.lazy(() => import('./components/AcademicCalendarTab'));
-const EmisTab = React.lazy(() => import('./components/EmisTab'));
-const PaystackManagementTab = React.lazy(() => import('./components/PaystackManagementTab'));
-const AdminDashboardTab = React.lazy(() => import('./components/AdminDashboardTab'));
 import { evaluateSubscription } from './subscription';
+
+import StudentsTab from './components/StudentsTab';
+import TeachersTab from './components/TeachersTab';
+import AttendanceTab from './components/AttendanceTab';
+import AssessmentTab from './components/AssessmentTab';
+import SchoolFeesTab from './components/SchoolFeesTab';
+import FinancesTab from './components/FinancesTab';
+import DashboardSummaryTab from './components/DashboardSummaryTab';
+import TeacherDashboardTab from './components/TeacherDashboardTab';
+import CommunicationsTab from './components/CommunicationsTab';
+import AcademicCalendarTab from './components/AcademicCalendarTab';
+import EmisTab from './components/EmisTab';
+import PaystackManagementTab from './components/PaystackManagementTab';
+import AdminDashboardTab from './components/AdminDashboardTab';
+import SettingsTab from './components/SettingsTab';
+import SchoolProfileTab from './components/SchoolProfileTab';
+import ParentPortal from './components/ParentPortal';
 import SubscriptionLockModal from './components/SubscriptionLockModal';
 import { PrintPreviewModal } from './components/PrintPreviewModal';
 import QuickSearchModal from './components/QuickSearchModal';
+import KeyboardShortcutsModal from './components/KeyboardShortcutsModal';
 import QRBadgeScanner from './components/QRBadgeScanner';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence, type Variants } from 'framer-motion';
 import { 
   Landmark, Users, UserCheck, CalendarCheck, FileSpreadsheet, Settings, 
   LogOut, ShieldAlert, Lock, Mail, User, BookOpen, GraduationCap, Sparkles, Coins, RotateCcw,
   ChevronDown, MoreHorizontal, TrendingUp, Power, Smartphone, CalendarDays, Menu, X, ClipboardCheck,
   CreditCard, Fingerprint, Check, Save, Database, GripVertical, Eye, EyeOff, Search, Share, RefreshCw, ExternalLink, ChevronRight,
-  LayoutDashboard, ShieldCheck, Award, MessageSquare, QrCode
+  LayoutDashboard, ShieldCheck, Award, MessageSquare, QrCode, Palette, Clock,
+  Printer, Keyboard, PanelLeft, PanelLeftClose, PanelLeftOpen, Layers
 } from 'lucide-react';
 
 const AVAILABLE_TABS = [
-  { id: 'dashboard', label: 'Dashboard Summary', icon: LayoutDashboard, refresh: true },
-  { id: 'admin_dashboard', label: 'Admin Panel', icon: ShieldCheck, refresh: false },
-  { id: 'school_profile', label: 'School Profile', icon: Landmark, refresh: false },
-  { id: 'calendar', label: 'Academic Calendar', icon: CalendarDays, refresh: false },
-  { id: 'students', label: 'Student Profiles', icon: GraduationCap, refresh: false },
-  { id: 'teachers', label: 'Teacher Profiles', icon: UserCheck, refresh: false },
-  { id: 'attendance', label: 'Class Attendance Roster', icon: CalendarCheck, refresh: false },
-  { id: 'assessments', label: 'Academic Assessments', icon: Award, refresh: true },
-  { id: 'fees', label: 'School Fees Ledger', icon: Coins, refresh: true },
-  { id: 'paystack', label: 'Paystack Ledger', icon: CreditCard, refresh: true },
-  { id: 'communications', label: 'Parent Messages', icon: MessageSquare, refresh: false },
-  { id: 'emis', label: 'GES EMIS Census', icon: Database, refresh: false },
-  { id: 'settings', label: 'System Controls', icon: Settings, refresh: false }
+  { id: 'dashboard', label: 'Dashboard Summary', icon: LayoutDashboard, refresh: true, category: 'Management' },
+  { id: 'admin_dashboard', label: 'Admin Panel', icon: ShieldCheck, refresh: false, category: 'Management' },
+  { id: 'school_profile', label: 'School Profile', icon: Landmark, refresh: false, category: 'Management' },
+  { id: 'calendar', label: 'Academic Calendar', icon: CalendarDays, refresh: false, category: 'Academic' },
+  { id: 'students', label: 'Student Profiles', icon: GraduationCap, refresh: false, category: 'Management' },
+  { id: 'teachers', label: 'Teacher Profiles', icon: UserCheck, refresh: false, category: 'Management' },
+  { id: 'attendance', label: 'Class Attendance Roster', icon: CalendarCheck, refresh: false, category: 'Academic' },
+  { id: 'assessments', label: 'Academic Assessments', icon: Award, refresh: true, category: 'Academic' },
+  { id: 'finances', label: 'Finances', icon: Coins, refresh: true, category: 'Finances' },
+  { id: 'paystack', label: 'Paystack Ledger', icon: CreditCard, refresh: true, category: 'Management' },
+  { id: 'communications', label: 'Parent Messages', icon: MessageSquare, refresh: false, category: 'Management' },
+  { id: 'emis', label: 'GES EMIS Census', icon: Database, refresh: false, category: 'System' },
+  { id: 'settings', label: 'System Controls', icon: Settings, refresh: false, category: 'System' }
 ];
+
+// Motion variants optimized for ultra-smooth 60fps mobile transitions without GPU filter bottlenecks
+const moduleSlideVariants: Variants = {
+  enter: (direction: number) => ({
+    x: direction > 0 ? 18 : direction < 0 ? -18 : 0,
+    opacity: 0,
+  }),
+  center: {
+    zIndex: 1,
+    x: 0,
+    opacity: 1,
+    transition: {
+      duration: 0.16,
+      ease: [0.16, 1, 0.3, 1],
+    },
+  },
+  exit: (direction: number) => ({
+    zIndex: 0,
+    x: direction < 0 ? 18 : direction > 0 ? -18 : 0,
+    opacity: 0,
+    transition: {
+      duration: 0.12,
+      ease: [0.25, 0.1, 0.25, 1],
+    },
+  }),
+};
+
+
+interface SubscriptionCountdownProps {
+  currentUser: UserAccount;
+}
+
+function SubscriptionCountdown({ currentUser }: SubscriptionCountdownProps) {
+  const [, setTicker] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setTicker(prev => prev + 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const subscriptionStatus = evaluateSubscription(currentUser);
+  if (!subscriptionStatus) return null;
+
+  return <span>{subscriptionStatus.countdownString}</span>;
+}
 
 
 function AppContent() {
   // Global Session Identity State
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(DbController.getCurrentUser());
   
-  const subscriptionStatus = currentUser ? evaluateSubscription(currentUser) : null;
+  const subscriptionStatus = useMemo(() => {
+    return currentUser ? evaluateSubscription(currentUser) : null;
+  }, [currentUser]);
+  const isSubscriptionLocked = subscriptionStatus?.isLocked || false;
   const [isFirebaseChecking, setIsFirebaseChecking] = useState(DbController.isFirebaseEnabled());
 
-  const isAdmin = currentUser?.role === 'Admin';
+  const isAdmin = currentUser?.role === 'Admin' || currentUser?.email?.toLowerCase().trim() === 'pegyirenyi@gmail.com';
 
   // Parent Access Portal State
   const [parentPortalState, setParentPortalState] = useState<{
@@ -104,17 +158,21 @@ function AppContent() {
   const [reflections, setReflections] = useState<TeacherReflection[]>(DbController.getTeacherReflections());
 
   const teacherProfile = useMemo(() => {
-    if (!currentUser || currentUser.role !== 'Teacher') return null;
+    if (!currentUser) return null;
     const teachersList = Array.isArray(teachers) ? teachers : [];
     const userEmail = currentUser.email?.toLowerCase().trim();
-    if (!userEmail) return null;
-    return teachersList.find(
-      t => t.email?.toLowerCase().trim() === userEmail
+    const userStaffId = currentUser.staffId?.toLowerCase().trim();
+    const userUid = currentUser.uid;
+
+    return teachersList.find(t => 
+      (userEmail && t.email?.toLowerCase().trim() === userEmail) ||
+      (userStaffId && t.staffId?.toLowerCase().trim() === userStaffId) ||
+      (userUid && (t.id === userUid || (t as any).userId === userUid))
     ) || null;
   }, [currentUser, teachers]);
 
   const assignedClasses = useMemo(() => {
-    const classesList: string[] = [];
+    const classesList: ClassType[] = [];
     if (teacherProfile) {
       if (Array.isArray(teacherProfile.assignedClasses)) {
         classesList.push(...teacherProfile.assignedClasses);
@@ -135,6 +193,373 @@ function AppContent() {
     return teacherProfile.assignedSubjects;
   }, [teacherProfile]);
 
+  const maleStudentsCount = useMemo(() => (students || []).filter(s => s.gender?.toLowerCase().startsWith('m')).length, [students]);
+  const femaleStudentsCount = useMemo(() => (students || []).filter(s => s.gender?.toLowerCase().startsWith('f')).length, [students]);
+
+  const handlePrintSchoolSummary = useCallback(() => {
+    const classCounts: Record<string, { male: number; female: number; total: number }> = {};
+    const CLASSES_LIST = [
+      'Creche', 'Nursery 1', 'Nursery 2', 'KG. 1', 'KG. 2',
+      'Basic 1', 'Basic 2', 'Basic 3', 'Basic 4', 'Basic 5', 'Basic 6', 'Basic 7', 'Basic 8', 'Basic 9'
+    ];
+    
+    CLASSES_LIST.forEach(className => {
+      classCounts[className] = { male: 0, female: 0, total: 0 };
+    });
+    
+    (students || []).forEach(student => {
+      const cls = student.class;
+      if (cls) {
+        if (!classCounts[cls]) {
+          classCounts[cls] = { male: 0, female: 0, total: 0 };
+        }
+        classCounts[cls].total++;
+        if (student.gender?.toLowerCase().startsWith('m')) {
+          classCounts[cls].male++;
+        } else if (student.gender?.toLowerCase().startsWith('f')) {
+          classCounts[cls].female++;
+        }
+      }
+    });
+
+    let maleTeachers = 0;
+    let femaleTeachers = 0;
+    (teachers || []).forEach(t => {
+      if (t.gender?.toLowerCase().startsWith('m')) maleTeachers++;
+      else if (t.gender?.toLowerCase().startsWith('f')) femaleTeachers++;
+    });
+
+    const activeClasses = CLASSES_LIST.filter(cls => classCounts[cls].total > 0);
+    const hasActiveClasses = activeClasses.length > 0;
+
+    const logoHtml = schoolInfo.logoUrl 
+      ? `<img src="${schoolInfo.logoUrl}" alt="Logo" class="header-logo" />` 
+      : `<div class="header-logo" style="display: flex; align-items: center; justify-content: center; background: #e2e8f0; font-weight: bold; color: #475569; font-size: 24px;">GES</div>`;
+
+    const tableRowsHtml = (hasActiveClasses ? activeClasses : CLASSES_LIST)
+      .map(className => {
+        const stats = classCounts[className] || { male: 0, female: 0, total: 0 };
+        return `
+          <tr>
+            <td style="font-weight: 600;">${className}</td>
+            <td style="text-align: center;">${stats.male}</td>
+            <td style="text-align: center;">${stats.female}</td>
+            <td style="text-align: center; font-weight: bold; background-color: #f8fafc;">${stats.total}</td>
+          </tr>
+        `;
+      }).join('');
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <title>School Records Summary Report - ${schoolInfo.name || 'GES School'}</title>
+        <style>
+          @media print {
+            body {
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+              margin: 15mm;
+            }
+          }
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            color: #1c1917;
+            margin: 40px;
+            line-height: 1.5;
+            background: #ffffff;
+          }
+          .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 3px double #0284c7;
+            padding-bottom: 20px;
+            margin-bottom: 25px;
+          }
+          .header-logo {
+            width: 75px;
+            height: 75px;
+            object-fit: contain;
+            border-radius: 12px;
+            border: 1px solid #e4e4e7;
+          }
+          .header-title-section {
+            text-align: center;
+            flex: 1;
+            margin: 0 20px;
+          }
+          .school-name {
+            font-size: 22px;
+            font-weight: 800;
+            color: #0c0a09;
+            text-transform: uppercase;
+            margin: 0 0 4px 0;
+            letter-spacing: 0.5px;
+          }
+          .school-motto {
+            font-style: italic;
+            color: #44403c;
+            font-size: 13px;
+            margin: 0 0 6px 0;
+            font-family: Georgia, serif;
+          }
+          .school-meta {
+            font-size: 11px;
+            color: #0284c7;
+            font-family: monospace;
+            font-weight: bold;
+          }
+          .report-title-container {
+            text-align: center;
+            margin-bottom: 30px;
+          }
+          .report-title {
+            display: inline-block;
+            border-bottom: 2px solid #0c0a09;
+            padding-bottom: 4px;
+            font-size: 16px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #0c0a09;
+          }
+          .grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 20px;
+            margin-bottom: 30px;
+          }
+          .card {
+            background-color: #fafaf9;
+            border: 1px solid #e7e5e4;
+            border-radius: 12px;
+            padding: 16px;
+          }
+          .card-title {
+            font-size: 11px;
+            font-weight: 800;
+            text-transform: uppercase;
+            color: #0284c7;
+            margin-top: 0;
+            margin-bottom: 12px;
+            border-bottom: 1px solid #e7e5e4;
+            padding-bottom: 6px;
+            letter-spacing: 0.5px;
+          }
+          .stat-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            margin-bottom: 8px;
+            font-family: monospace;
+          }
+          .stat-row:last-child {
+            margin-bottom: 0;
+          }
+          .stat-label {
+            color: #57534e;
+          }
+          .stat-value {
+            font-weight: 700;
+            color: #0c0a09;
+          }
+          .section-heading {
+            font-size: 13px;
+            font-weight: 800;
+            text-transform: uppercase;
+            color: #0c0a09;
+            margin-top: 30px;
+            margin-bottom: 12px;
+            letter-spacing: 0.5px;
+          }
+          .table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 35px;
+          }
+          .table th, .table td {
+            border: 1px solid #e7e5e4;
+            padding: 10px 12px;
+            text-align: left;
+            font-size: 12px;
+          }
+          .table th {
+            background-color: #f5f5f4;
+            font-weight: 800;
+            color: #44403c;
+            text-transform: uppercase;
+            font-size: 11px;
+            letter-spacing: 0.5px;
+          }
+          .table tr:nth-child(even) td {
+            background-color: #fafaf9;
+          }
+          .footer {
+            margin-top: 60px;
+            display: flex;
+            justify-content: space-between;
+          }
+          .signature-box {
+            width: 220px;
+            text-align: center;
+            font-size: 12px;
+          }
+          .signature-line {
+            border-bottom: 1.5px solid #a8a29e;
+            margin-bottom: 6px;
+            height: 45px;
+          }
+          .signature-label {
+            color: #44403c;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 10px;
+            letter-spacing: 0.5px;
+          }
+          .print-date {
+            font-size: 10px;
+            color: #78716c;
+            text-align: center;
+            margin-top: 50px;
+            font-family: monospace;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          ${logoHtml}
+          <div class="header-title-section">
+            <h1 class="school-name">${schoolInfo.name || 'Official School Station'}</h1>
+            ${schoolInfo.motto ? `<p class="school-motto">"${schoolInfo.motto}"</p>` : ''}
+            <p class="school-meta">
+              EMIS CODE: ${schoolInfo.emisCode || 'UNASSIGNED'} 
+              ${schoolInfo.schoolNumber ? `• REG NO: ${schoolInfo.schoolNumber}` : ''}
+              ${schoolInfo.circuit ? `• CIRCUIT: ${schoolInfo.circuit}` : ''}
+            </p>
+          </div>
+          <div style="width: 75px; height: 75px; visibility: hidden;"></div>
+        </div>
+
+        <div class="report-title-container">
+          <span class="report-title">Official School Records & Summary Report</span>
+        </div>
+
+        <div class="grid">
+          <div class="card">
+            <h3 class="card-title">Student Enrollment Summary</h3>
+            <div class="stat-row">
+              <span class="stat-label">Total Pupils Enrolled:</span>
+              <span class="stat-value">${students.length}</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-label">Male Pupils (Boys):</span>
+              <span class="stat-value">${maleStudentsCount}</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-label">Female Pupils (Girls):</span>
+              <span class="stat-value">${femaleStudentsCount}</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-label">Gender Ratio (M / F):</span>
+              <span class="stat-value">${femaleStudentsCount > 0 ? (maleStudentsCount / femaleStudentsCount).toFixed(2) : maleStudentsCount} : 1</span>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3 class="card-title">Faculty & Institutional Details</h3>
+            <div class="stat-row">
+              <span class="stat-label">Total Teaching Staff:</span>
+              <span class="stat-value">${teachers.length}</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-label">Male Faculty:</span>
+              <span class="stat-value">${maleTeachers}</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-label">Female Faculty:</span>
+              <span class="stat-value">${femaleTeachers}</span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-label">Region / District:</span>
+              <span class="stat-value">${schoolInfo.district || 'GES District'}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-heading">Class Breakdown of Enrolled Pupils</div>
+        <table class="table">
+          <thead>
+            <tr>
+              <th style="width: 40%;">Class / Grade</th>
+              <th style="width: 20%; text-align: center;">Boys</th>
+              <th style="width: 20%; text-align: center;">Girls</th>
+              <th style="width: 20%; text-align: center; background-color: #f5f5f4;">Total Count</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${tableRowsHtml}
+          </tbody>
+        </table>
+
+        <div class="footer">
+          <div class="signature-box">
+            <div class="signature-line"></div>
+            <div class="signature-label">Prepared By (Admin/Registrar)</div>
+          </div>
+          <div class="signature-box">
+            <div class="signature-line"></div>
+            <div class="signature-label">Approved By (Headteacher)</div>
+          </div>
+        </div>
+
+        <div class="print-date">
+          Report Generated on: ${new Date().toLocaleString()} • Powered by GTM Systems School Portal
+        </div>
+      </body>
+      </html>
+    `;
+
+    showToast("Preparing and formatting summary report for printing...", "info");
+
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '-100px'; // Offscreen to avoid any visual overlay
+    iframe.style.bottom = '-100px';
+    iframe.style.width = '1px'; // Tiny physical size so mobile WebKit treats it as visible
+    iframe.style.height = '1px';
+    iframe.style.opacity = '0.01'; // Semi-transparent, visually hidden but functionally active
+    iframe.style.pointerEvents = 'none';
+    iframe.style.border = '0';
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentWindow?.document || iframe.contentDocument;
+    if (doc) {
+      doc.open();
+      doc.write(htmlContent);
+      doc.close();
+
+      setTimeout(() => {
+        try {
+          iframe.contentWindow?.focus();
+          iframe.contentWindow?.print();
+        } catch (printErr) {
+          console.error("Iframe print error:", printErr);
+          showToast("Printing failed inside browser container. Trying system print...", "error");
+          window.print();
+        }
+        
+        // Postpone removal to allow slow mobile devices/print spools to finish loading
+        setTimeout(() => {
+          if (document.body.contains(iframe)) {
+            document.body.removeChild(iframe);
+          }
+        }, 5000);
+      }, 800);
+    }
+  }, [students, teachers, schoolInfo, maleStudentsCount, femaleStudentsCount]);
+
   const visibleTabs = useMemo(() => {
     const classes = Array.isArray(assignedClasses) ? assignedClasses : [];
     const subjects = Array.isArray(assignedSubjects) ? assignedSubjects : [];
@@ -151,9 +576,11 @@ function AppContent() {
         }
         return allowedTabs.includes(tab.id);
       }
-      if (subscriptionStatus && subscriptionStatus.isLocked) {
+      
+      if (subscriptionStatus && subscriptionStatus.isLocked && currentUser?.role !== 'Admin') {
         return tab.id === 'settings';
       }
+      
       if (tab.id === 'admin_dashboard') return isAdmin;
       if (tab.id === 'paystack') return isAdmin;
       return true;
@@ -174,30 +601,110 @@ function AppContent() {
       return 'Sophisticated Dark';
     }
   });
-  const [isAutoSave, setIsAutoSave] = useState<boolean>(true);
+  const [isAutoSave, setIsAutoSave] = useState<boolean>(() => {
+    try {
+      const settings = DbController.getSystemSettings();
+      return settings?.autoSave !== false;
+    } catch {
+      return true;
+    }
+  });
+
+  const handleAutoSaveToggle = (active: boolean) => {
+    setIsAutoSave(active);
+    try {
+      const config = DbController.getSystemSettings();
+      DbController.saveSystemSettings({ ...config, autoSave: active });
+    } catch (e) {
+      console.warn("Could not save autoSave preference:", e);
+    }
+  };
   const [activeTab, setActiveTab] = useState<string>(() => {
     try {
       const q = new URLSearchParams(window.location.search);
-      return q.get('tab') || 'dashboard';
+      const tabParam = q.get('tab') || 'dashboard';
+      return tabParam === 'fees' ? 'finances' : tabParam;
     } catch {
       return 'dashboard';
     }
   });
-  const [settingsSubTab, setSettingsSubTab] = useState<'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers' | 'security'>('general');
+
+  const [isDesktopSidebarOpen, setIsDesktopSidebarOpen] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('sms_desktop_sidebar_open');
+      return saved !== null ? saved === 'true' : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const toggleDesktopSidebar = () => {
+    setIsDesktopSidebarOpen(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('sms_desktop_sidebar_open', String(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  const [tabDirection, setTabDirection] = useState<number>(0);
+  const [settingsSubTab, setSettingsSubTab] = useState<'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers' | 'security' | 'archive'>('general');
   const [showBillingEvenIfLocked, setShowBillingEvenIfLocked] = useState<boolean>(false);
   const [selectedYear, setSelectedYear] = useState<AcademicYearType>('2026/2027');
   const [selectedTerm, setSelectedTerm] = useState<TermType>('Term 1');
   const [isMoreDropdownOpen, setIsMoreDropdownOpen] = useState<boolean>(false);
+  const [isMoreToolsOpen, setIsMoreToolsOpen] = useState<boolean>(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
   const [isSearchOpen, setIsSearchOpen] = useState<boolean>(false);
+  const [isShortcutsHelpOpen, setIsShortcutsHelpOpen] = useState<boolean>(false);
 
   // Drag and Drop Tab Reordering State & Handlers
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [tabOrder, setTabOrder] = useState<string[]>([]);
   
-  // Contextual Visibility States
+  // Contextual Visibility & View Density States
   const [hiddenTabs, setHiddenTabs] = useState<string[]>([]);
   const [isVisibilityMenuOpen, setIsVisibilityMenuOpen] = useState(false);
+  const [isPalettePickerOpen, setIsPalettePickerOpen] = useState(false);
+  const [isContextPickerOpen, setIsContextPickerOpen] = useState(false);
+
+  const [viewDensity, setViewDensity] = useState<'cozy' | 'compact'>(() => {
+    try {
+      const settings = DbController.getSystemSettings();
+      return settings.densityMode || 'cozy';
+    } catch {
+      return 'cozy';
+    }
+  });
+
+  const handleDensityChange = (density: 'cozy' | 'compact') => {
+    setViewDensity(density);
+    try {
+      const config = DbController.getSystemSettings();
+      DbController.saveSystemSettings({ ...config, densityMode: density });
+    } catch (e) {
+      console.warn("Could not save density preference:", e);
+    }
+    triggerToast(`View density switched to ${density === 'compact' ? 'Compact (Dense Rows)' : 'Cozy (Spacious Layout)'}`, 'info');
+  };
+
+  useEffect(() => {
+    if (viewDensity === 'compact') {
+      document.documentElement.classList.add('density-compact');
+      document.body.classList.add('density-compact');
+    } else {
+      document.documentElement.classList.remove('density-compact');
+      document.body.classList.remove('density-compact');
+    }
+  }, [viewDensity]);
+
+  const handleThemeChange = (theme: ThemeType) => {
+    setActiveTheme(theme);
+    const config = DbController.getSystemSettings();
+    DbController.saveSystemSettings({ ...config, theme });
+    showToast(`Accent theme updated to ${theme}!`, "success");
+  };
 
   // Global Advanced Print Preview System State
   const [globalPrintPreview, setGlobalPrintPreview] = useState<{
@@ -251,23 +758,63 @@ function AppContent() {
   useEffect(() => {
     const originalPrint = window.print;
     
+    // Register global print helper to explicitly trigger the PrintPreviewModal from any component
+    (window as any).printTarget = (elementId: string, title: string, isLandscape = false, customHtml?: string) => {
+      setGlobalPrintPreview({
+        isOpen: true,
+        elementId,
+        customHtml: customHtml || undefined,
+        documentTitle: title,
+        isLandscape
+      });
+    };
+
     window.print = () => {
+      if (document.body.classList.contains('sms-printing-active')) {
+        originalPrint();
+        return;
+      }
+
       // List of all print areas across the application
       const printTargets = [
         { id: 'teacher-registry-print-area', title: 'Faculty & Staff Register', landscape: true },
         { id: 'teachers-roster-preview-card', title: 'Staff Directory Mini-Draft', landscape: true },
+        { id: 'teacher-id-card-print-area', title: 'Teacher Identification Badge', landscape: true },
         { id: 'students-roster-preview-card', title: 'Student Directory Roster', landscape: true },
+        { id: 'student-id-card-print-area', title: 'Student Identification Badge', landscape: true },
+        { id: 'bulk-student-id-cards-print-area', title: 'Bulk Student Identification Badges', landscape: true },
+        { id: 'student-qr-print-area', title: 'Student Portal Access QR Code', landscape: false },
+        { id: 'bulk-qr-print-area', title: 'Bulk Student Portal Access Keys', landscape: false },
+        { id: 'bulk-teacher-qr-print-area', title: 'Bulk Teacher ID Badges', landscape: false },
         { id: 'assessment-roster-preview-landscape', title: 'Academic Assessment Gradebook', landscape: true },
         { id: 'fee-receipt-print-area', title: 'Official Payment Receipt', landscape: false },
         { id: 'fee-ledger-print-area', title: 'Student Financial Ledger Statement', landscape: false },
+        { id: 'bulk-receipts-print-area', title: 'Bulk Official Payment Receipts', landscape: false },
         { id: 'fees-reminder-notice-canvas', title: 'GES Academic Payment Reminder', landscape: false },
+        { id: 'fees-invoice-notice-canvas', title: 'Official Student Fee Invoice', landscape: false },
+        { id: 'transportation-manifest-print-area', title: 'Transportation & Commuter Manifest', landscape: true },
+        { id: 'canteen-ledger-print-area', title: 'Canteen & Feeding Fee Register', landscape: false },
+        { id: 'canteen-receipt-print-area', title: 'Canteen Meal Subscription Receipt', landscape: false },
+        { id: 'excursion-manifest-print-area', title: 'Educational Excursion Manifest & Ledger', landscape: true },
+        { id: 'sports-ledger-print-area', title: 'Sports & Athletics Financial Ledger', landscape: false },
+        { id: 'sports-receipt-print-area', title: 'Sports Subscription Receipt', landscape: false },
+        { id: 'textbooks-ledger-print-area', title: 'Textbook Inventory & Issuance Register', landscape: true },
+        { id: 'expenses-register-print-area', title: 'School Expenditure & Voucher Register', landscape: true },
+        { id: 'expense-pv-slip-print-area', title: 'Official Payment Voucher Slip (PV)', landscape: false },
+        { id: 'accounting-overview-print-area', title: 'Official Financial Statement & P&L Matrix', landscape: true },
+        { id: 'bill-components-schedule-print-area', title: 'Bill Components & Fee Structure Schedule', landscape: false },
         { id: 'school-profile-print-area', title: 'School Official Profile Document', landscape: false },
         { id: 'school-profile-preview-card', title: 'School Official Profile Document', landscape: false },
-        { id: 'student-id-card-print-area', title: 'Student Identification Badge', landscape: false },
-        { id: 'student-qr-print-area', title: 'Student Portal Access QR Code', landscape: false },
-        { id: 'bulk-qr-print-area', title: 'Bulk Student Portal Access Keys', landscape: false },
         { id: 'emis-census-print-area', title: 'GES EMIS Official Census Report', landscape: false },
         { id: 'attendance-roster-print-area', title: 'Class Attendance Roster', landscape: false },
+        { id: 'pristine-report-card-preview', title: 'Student Terminal Report Card', landscape: false },
+        { id: 'pristine-transcript-preview', title: 'Official Academic Portfolio Transcript', landscape: false },
+        { id: 'bulk-transcripts-print-page', title: 'Class Bulk Academic Transcripts', landscape: false },
+        { id: 'report-center-preview-content', title: 'Academic Performance Report Card', landscape: false },
+        { id: 'reflections-print-area', title: 'Teacher Activity & Reflections Journal', landscape: false },
+        { id: 'staff-monthly-report-printable', title: 'Staff Monthly Attendance Report', landscape: false },
+        { id: 'student-monthly-roster-printable', title: 'Student Monthly Attendance Register', landscape: true },
+        { id: 'assessment-report-preview-portrait', title: 'Academic Assessment Summary Sheet', landscape: false },
       ];
 
       let foundTargetId: string | undefined = undefined;
@@ -275,15 +822,87 @@ function AppContent() {
       let foundLandscape = false;
       let foundHtml = '';
 
-      for (const target of printTargets) {
-        if (target.id) {
-          const el = document.getElementById(target.id);
-          if (el && el.innerHTML.trim().length > 0) {
-            foundTargetId = target.id;
-            foundTitle = target.title;
-            foundLandscape = target.landscape;
-            break;
-          }
+      // Map targets that exist in the DOM with content
+      const existingTargets = printTargets.map(t => {
+        const el = document.getElementById(t.id);
+        return { ...t, el };
+      }).filter(t => t.el && t.el.innerHTML.trim().length > 0);
+
+      if (existingTargets.length > 0) {
+        const targetToTabMap: Record<string, string> = {
+          'teacher-registry-print-area': 'teachers',
+          'teachers-roster-preview-card': 'teachers',
+          'teacher-id-card-print-area': 'teachers',
+          'bulk-teacher-qr-print-area': 'teachers',
+          'students-roster-preview-card': 'students',
+          'student-id-card-print-area': 'students',
+          'student-qr-print-area': 'students',
+          'bulk-qr-print-area': 'students',
+          'assessment-roster-preview-landscape': 'assessments',
+          'fee-receipt-print-area': 'finances',
+          'fee-ledger-print-area': 'finances',
+          'bulk-receipts-print-area': 'finances',
+          'fees-reminder-notice-canvas': 'finances',
+          'fees-invoice-notice-canvas': 'finances',
+          'transportation-manifest-print-area': 'finances',
+          'canteen-ledger-print-area': 'finances',
+          'canteen-receipt-print-area': 'finances',
+          'excursion-manifest-print-area': 'finances',
+          'sports-ledger-print-area': 'finances',
+          'sports-receipt-print-area': 'finances',
+          'textbooks-ledger-print-area': 'finances',
+          'expenses-register-print-area': 'finances',
+          'expense-pv-slip-print-area': 'finances',
+          'accounting-overview-print-area': 'finances',
+          'bill-components-schedule-print-area': 'finances',
+          'school-profile-print-area': 'school_profile',
+          'school-profile-preview-card': 'school_profile',
+          'emis-census-print-area': 'emis',
+          'attendance-roster-print-area': 'attendance',
+          'pristine-report-card-preview': 'assessments',
+          'pristine-transcript-preview': 'assessments',
+          'bulk-transcripts-print-page': 'assessments',
+          'report-center-preview-content': 'assessments',
+          'reflections-print-area': 'teachers',
+          'staff-monthly-report-printable': 'attendance',
+          'student-monthly-roster-printable': 'attendance',
+          'assessment-report-preview-portrait': 'assessments',
+        };
+
+        // 1. First priority: Check if a modal/dialog is open containing a specific print target
+        const activeModal = document.querySelector('[role="dialog"], .fixed.inset-0:not(.pointer-events-none)');
+        let bestTarget = activeModal 
+          ? existingTargets.find(t => t.el && activeModal.contains(t.el))
+          : undefined;
+
+        // 2. Second priority: Find visible targets that belong to the current active tab
+        if (!bestTarget) {
+          const tabTargets = existingTargets.filter(t => targetToTabMap[t.id] === activeTab);
+          bestTarget = tabTargets.find(t => {
+            if (!t.el) return false;
+            const rect = t.el.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          }) || tabTargets[0];
+        }
+
+        // 3. Third priority: Find any visible target across any tab
+        if (!bestTarget) {
+          bestTarget = existingTargets.find(t => {
+            if (!t.el) return false;
+            const rect = t.el.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          });
+        }
+
+        // 4. Final fallback: First target in DOM with content
+        if (!bestTarget) {
+          bestTarget = existingTargets[0];
+        }
+
+        if (bestTarget) {
+          foundTargetId = bestTarget.id;
+          foundTitle = bestTarget.title;
+          foundLandscape = bestTarget.landscape;
         }
       }
 
@@ -312,6 +931,12 @@ function AppContent() {
         }
       }
 
+      // If absolutely no print targets are found, fallback to original full page printing
+      if (!foundTargetId && !foundHtml) {
+        originalPrint();
+        return;
+      }
+
       // Trigger the custom high-fidelity layout preview modal
       setGlobalPrintPreview({
         isOpen: true,
@@ -324,16 +949,42 @@ function AppContent() {
 
     return () => {
       window.print = originalPrint;
+      delete (window as any).printTarget;
     };
-  }, []);
+  }, [activeTab]);
 
   useEffect(() => {
     try {
       const email = currentUser?.email || 'guest';
       const saved = localStorage.getItem(`tab_order_${email}`);
       const savedHidden = localStorage.getItem(`hidden_tabs_${email}`);
-      setTabOrder(saved ? JSON.parse(saved) : []);
-      setHiddenTabs(savedHidden ? JSON.parse(savedHidden) : []);
+      let parsedOrder: string[] = saved ? JSON.parse(saved) : [];
+      let parsedHidden: string[] = savedHidden ? JSON.parse(savedHidden) : [];
+
+      // Auto-migrate legacy 'fees' -> 'finances'
+      parsedOrder = parsedOrder.map(id => id === 'fees' ? 'finances' : id);
+      parsedHidden = parsedHidden.map(id => id === 'fees' ? 'finances' : id);
+
+      // Ensure 'finances' is NEVER hidden
+      parsedHidden = parsedHidden.filter(id => id !== 'finances' && id !== 'fees');
+
+      // If custom order exists and doesn't contain 'finances', inject 'finances' right after 'assessments'
+      if (parsedOrder.length > 0 && !parsedOrder.includes('finances')) {
+        const assessIdx = parsedOrder.indexOf('assessments');
+        if (assessIdx !== -1) {
+          parsedOrder.splice(assessIdx + 1, 0, 'finances');
+        } else {
+          const settingsIdx = parsedOrder.indexOf('settings');
+          if (settingsIdx !== -1) {
+            parsedOrder.splice(settingsIdx, 0, 'finances');
+          } else {
+            parsedOrder.push('finances');
+          }
+        }
+      }
+
+      setTabOrder(parsedOrder);
+      setHiddenTabs(parsedHidden);
     } catch {
       setTabOrder([]);
       setHiddenTabs([]);
@@ -341,19 +992,34 @@ function AppContent() {
   }, [currentUser]);
 
   const orderedVisibleTabs = useMemo(() => {
-    let tabs = visibleTabs.filter(tab => !hiddenTabs.includes(tab.id));
+    const isTeacher = currentUser?.role === 'Teacher';
+    // Explicitly guarantee 'finances' is never filtered out by hiddenTabs for non-teacher users, and completely restricted for teachers
+    let tabs = visibleTabs.filter(tab => {
+      if (isTeacher && (tab.id === 'finances' || tab.id === 'fees')) return false;
+      return (!isTeacher && tab.id === 'finances') || !hiddenTabs.includes(tab.id);
+    });
     if (tabs.length === 0 && visibleTabs.length > 0) {
       tabs = [visibleTabs.find(t => t.id === 'dashboard') || visibleTabs[0]];
     }
 
     if (tabOrder.length === 0) return tabs;
+    
+    const getTabOrderIdx = (tabId: string) => {
+      let idx = tabOrder.indexOf(tabId);
+      if (idx === -1 && tabId === 'finances') {
+        idx = tabOrder.indexOf('fees');
+      }
+      if (idx === -1) {
+        const defaultIdx = AVAILABLE_TABS.findIndex(t => t.id === tabId);
+        return defaultIdx !== -1 ? defaultIdx : 999;
+      }
+      return idx;
+    };
+
     return [...tabs].sort((a, b) => {
-      const indexA = tabOrder.indexOf(a.id);
-      const indexB = tabOrder.indexOf(b.id);
-      if (indexA !== -1 && indexB !== -1) return indexA - indexB;
-      if (indexA !== -1) return -1;
-      if (indexB !== -1) return 1;
-      return 0;
+      const indexA = getTabOrderIdx(a.id);
+      const indexB = getTabOrderIdx(b.id);
+      return indexA - indexB;
     });
   }, [visibleTabs, tabOrder, hiddenTabs]);
 
@@ -398,8 +1064,32 @@ function AppContent() {
     setDraggedTabId(null);
   };
 
-  const currentActiveTab = orderedVisibleTabs.find(t => t.id === activeTab) || orderedVisibleTabs[0];
-  const CurrentActiveIcon = currentActiveTab.icon;
+  const handleTabSwitch = React.useCallback((targetTabId: string, explicitDirection?: number) => {
+    if (targetTabId === activeTab) return;
+    
+    // Explicitly block Teacher accounts from accessing finances or fees
+    if (currentUser?.role === 'Teacher' && (targetTabId === 'finances' || targetTabId === 'fees')) {
+      triggerToast('Finances tab is restricted for Teacher accounts. Please contact an Administrator or Headteacher.', 'error');
+      return;
+    }
+    
+    let dir = explicitDirection ?? 0;
+    if (dir === 0) {
+      const currentIdx = orderedVisibleTabs.findIndex(t => t.id === activeTab);
+      const targetIdx = orderedVisibleTabs.findIndex(t => t.id === targetTabId);
+      if (currentIdx !== -1 && targetIdx !== -1) {
+        dir = targetIdx > currentIdx ? 1 : -1;
+      } else {
+        dir = 1;
+      }
+    }
+    
+    setTabDirection(dir);
+    setActiveTab(targetTabId);
+  }, [activeTab, orderedVisibleTabs, currentUser]);
+
+  const currentActiveTab = orderedVisibleTabs.find(t => t.id === activeTab) || orderedVisibleTabs[0] || AVAILABLE_TABS[0];
+  const CurrentActiveIcon = currentActiveTab?.icon || LayoutDashboard;
 
   useEffect(() => {
     if (orderedVisibleTabs.length > 0 && !orderedVisibleTabs.find(t => t.id === activeTab)) {
@@ -407,8 +1097,16 @@ function AppContent() {
     }
   }, [orderedVisibleTabs, activeTab]);
 
+  // Protect against Teacher accounts accessing finances on login or state change
+  useEffect(() => {
+    if (currentUser?.role === 'Teacher' && (activeTab === 'finances' || activeTab === 'fees')) {
+      setActiveTab('dashboard');
+    }
+  }, [currentUser, activeTab]);
+
   // Login & Registration state for both Local and secure full-stack Firebase Authentication
   const [isRegisterMode, setIsRegisterMode] = useState(false);
+  const [authSubMode, setAuthSubMode] = useState<'sso'>('sso');
   const [regName, setRegName] = useState('');
   const [regEmail, setRegEmail] = useState('');
   const [regPassword, setRegPassword] = useState('');
@@ -443,12 +1141,28 @@ function AppContent() {
   // === QR BADGE SCANNER STATES ===
   const [isQRScannerOpen, setIsQRScannerOpen] = useState(false);
 
-  const handleQRBadgeScanSuccess = async (decodedValue: string) => {
+  const openQRScanner = () => {
+    if (isSubscriptionLocked) {
+      triggerToast("Scan QR Badge is inactive for expired accounts. Please contact admin to renew license.", "error");
+      return;
+    }
+    // Dismiss transient mobile slide-out or tool menus cleanly
+    setIsMobileMenuOpen(false);
+    setIsMoreToolsOpen(false);
+    try {
+      if (typeof window !== 'undefined' && 'vibrate' in navigator) {
+        navigator.vibrate(50);
+      }
+    } catch {}
+    setIsQRScannerOpen(true);
+  };
+
+  const handleQRBadgeScanSuccess = async (decodedValue: string, expectedTeacherId?: string) => {
     setIsQRScannerOpen(false);
     setAuthError(null);
     setAuthLoading(true);
     try {
-      const account = await DbController.teacherLoginByBadge(decodedValue);
+      const account = await DbController.teacherLoginByBadge(decodedValue, expectedTeacherId);
       setCurrentUser(account);
       
       if (DbController.isFirebaseEnabled()) {
@@ -491,7 +1205,7 @@ function AppContent() {
     
     // Hardcoded root admin accounts are completely immune to security revocation
     const userEmail = currentUser?.email?.toLowerCase().trim() || '';
-    const isRootAdmin = false;
+    const isRootAdmin = userEmail === 'pegyirenyi@gmail.com' || userEmail === 'multimediageetech@gmail.com';
       
     if (isRootAdmin || !userEmail) return;
     
@@ -596,6 +1310,7 @@ function AppContent() {
   const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [pendingSyncCount, setPendingSyncCount] = useState<number>(0);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [syncProgress, setSyncProgress] = useState<{ current: number; total: number } | null>(null);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
   // --- MANUAL SAVE STATES ---
@@ -606,32 +1321,31 @@ function AppContent() {
     setIsManualSaving(true);
     setManualSaveStep(0);
     
-    // Step 0 -> Step 1 (Validate records)
-    await new Promise(resolve => setTimeout(resolve, 400));
+    // Step 1: Validate records
     setManualSaveStep(1);
     
-    // Step 1 -> Step 2 (Commit cached states to storage)
-    await new Promise(resolve => setTimeout(resolve, 500));
+    // Step 2: Commit cached states to storage
     setManualSaveStep(2);
     
-    // Step 2 -> Step 3 (Sync to secure Firestore Cloud if online)
+    // Step 3: Sync to secure Firestore Cloud immediately if online
     if (isOnline && DbController.isFirebaseEnabled()) {
       try {
+        if (currentUser?.uid) {
+          await DbController.syncCurrentUserToFirebase(currentUser);
+        }
         await DbController.syncOfflineQueue();
       } catch (e) {
         console.warn("Queue sync skipped/delayed in manual save:", e);
       }
     }
-    await new Promise(resolve => setTimeout(resolve, 600));
     setManualSaveStep(3);
     
-    // Step 3 -> Step 4 (Rebuild fast-lookup maps and indices)
+    // Step 4: Rebuild fast-lookup maps and indices
     refreshAllLogs();
-    await new Promise(resolve => setTimeout(resolve, 400));
     setManualSaveStep(4);
     
-    // Step 4 -> Finished (Success state)
-    await new Promise(resolve => setTimeout(resolve, 1200));
+    // Brief smooth transition to finished
+    await new Promise(resolve => setTimeout(resolve, 350));
     setHasUnsavedChanges(false);
     setIsManualSaving(false);
   };
@@ -646,10 +1360,24 @@ function AppContent() {
     const updateSyncCount = () => {
       setPendingSyncCount(DbController.getOfflineQueueSize());
     };
+    const handleSyncProgress = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail) {
+        setSyncProgress(detail);
+      }
+    };
+    const handleUserSynced = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail && detail.uid) {
+        setCurrentUser(detail);
+      }
+    };
 
     window.addEventListener('online', updateOnlineStatus);
     window.addEventListener('offline', updateOnlineStatus);
     window.addEventListener('sms_sync_status_changed', updateSyncCount);
+    window.addEventListener('sms_sync_progress', handleSyncProgress as any);
+    window.addEventListener('sms_user_synced', handleUserSynced as any);
 
     // Bootstrap local sync count checks
     setPendingSyncCount(DbController.getOfflineQueueSize());
@@ -658,21 +1386,39 @@ function AppContent() {
       window.removeEventListener('online', updateOnlineStatus);
       window.removeEventListener('offline', updateOnlineStatus);
       window.removeEventListener('sms_sync_status_changed', updateSyncCount);
+      window.removeEventListener('sms_sync_progress', handleSyncProgress as any);
+      window.removeEventListener('sms_user_synced', handleUserSynced as any);
     };
   }, []);
 
-  const handleManualSync = async () => {
-    if (!navigator.onLine) return;
+  const handleManualSync = async (silent: boolean = false) => {
+    if (!navigator.onLine) {
+      if (!silent) triggerToast("Cannot sync: device is currently offline.", "error");
+      return;
+    }
+    const total = DbController.getOfflineQueueSize();
+    if (total > 0) {
+      setSyncProgress({ current: 0, total });
+    }
     setIsSyncing(true);
     try {
-      const result = await DbController.syncOfflineQueue();
-      if (result.syncedCount > 0) {
-        refreshAllLogs();
+      if (currentUser?.uid) {
+        await DbController.syncCurrentUserToFirebase(currentUser);
       }
-    } catch (err) {
+      const result = await DbController.syncOfflineQueue();
+      await DbController.syncAllDataFromFirebase();
+      refreshAllLogs();
+      if (!silent) {
+        triggerToast(`Login User ID (${currentUser?.uid || 'Account'}) successfully synced to Cloud Firestore.`, 'success');
+      }
+    } catch (err: any) {
       console.warn("Manual background sync error during retry:", err);
+      if (!silent) {
+        triggerToast(err.message || "Cloud sync notice: database updated locally.", "info");
+      }
     } finally {
       setIsSyncing(false);
+      setSyncProgress(null);
       setPendingSyncCount(DbController.getOfflineQueueSize());
     }
   };
@@ -719,7 +1465,7 @@ function AppContent() {
   useEffect(() => {
     const config = DbController.getSystemSettings();
     setActiveTheme(config.theme || 'Sophisticated Dark');
-    setIsAutoSave(true);
+    setIsAutoSave(config.autoSave !== false);
     if (config.academicYear) setSelectedYear(config.academicYear);
     if (config.term) setSelectedTerm(config.term);
   }, []);
@@ -750,37 +1496,121 @@ function AppContent() {
     }
 
     // Subscribe to Firebase Auth state
+    let profileUnsubscribe: (() => void) | null = null;
+
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       try {
+        if (profileUnsubscribe) {
+          profileUnsubscribe();
+          profileUnsubscribe = null;
+        }
+
         if (firebaseUser) {
-          console.log("Firebase Auth found active session for", firebaseUser.email);
-          let localProfile = DbController.getCurrentUser();
-          
-          if (!localProfile || localProfile.uid !== firebaseUser.uid) {
-            const remoteProfile = await DbController.getFirebaseUserProfile(firebaseUser.uid);
-            if (remoteProfile) {
-              setCurrentUser(remoteProfile);
-              // We do not set localStorage here to avoid triggering reloads in other tabs
-              // and to allow multi-user session isolation per tab.
-            } else {
-              // Create default fallback profile
-              const fallbackEmail = firebaseUser.email?.toLowerCase().trim() || '';
-              const fallbackRole = fallbackEmail === 'pegyirenyi@gmail.com' 
-                ? 'Admin' 
-                : (fallbackEmail === 'sammyotoo06@gmail.com' ? 'Headteacher' : 'Teacher');
-              const fallback: UserAccount = {
-                uid: firebaseUser.uid,
-                email: firebaseUser.email || '',
-                name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
-                role: fallbackRole,
-                createdAt: new Date().toISOString()
-              };
-              await DbController.saveGoogleProfile(fallback);
-              setCurrentUser(fallback);
-            }
+          if (firebaseUser.uid === 'H5nlyq30sANEMixDEmURnYoyUzU2') {
+            console.warn("User ID H5nlyq30sANEMixDEmURnYoyUzU2 is removed from the system. Terminating session.");
+            DbController.logout();
+            await auth.signOut();
+            setCurrentUser(null);
+            setIsFirebaseChecking(false);
+            return;
           }
+          console.log("Firebase Auth found active session for", firebaseUser.email);
           
-          // Now that auth is fully initialized and authenticated, do a secure background sync
+          // IMMEDIATE OPTIMIZATION: Set local profile immediately if available to prevent UI blocking 
+          // while we fetch the fresh remote profile from Firestore.
+          const cachedProfile = DbController.getCurrentUser();
+          if (cachedProfile && cachedProfile.uid === firebaseUser.uid) {
+            console.log("Immediate UI hydration from local session cache for:", firebaseUser.uid);
+            setCurrentUser(cachedProfile);
+            
+            // UI UNLOCK: If we have a cached profile, we can unlock the UI immediately
+            // and let the remote sync happen in the background.
+            setIsFirebaseChecking(false);
+          }
+
+          // Setup real-time Firestore sync listener for the active user account
+          const firestoreInstance = DbController.getFirestoreInstance();
+          if (firestoreInstance) {
+            console.log("Setting up real-time sync snapshot listener for user profile:", firebaseUser.uid);
+            profileUnsubscribe = onSnapshot(doc(firestoreInstance, 'users', firebaseUser.uid), async (snapshot) => {
+              if (snapshot.exists()) {
+                const updatedProfile = snapshot.data() as UserAccount;
+                console.log("Real-time profile sync received via Firestore listener:", updatedProfile);
+                const syncedProfile = DbController.saveProfileLocally(updatedProfile);
+                setCurrentUser(syncedProfile);
+                // Also ensure UI is unlocked if it wasn't already
+                setIsFirebaseChecking(false);
+              }
+            }, (error) => {
+              console.warn("Real-time profile sync observer error:", error);
+              setIsFirebaseChecking(false);
+            });
+          }
+
+          // Fetch the latest user profile from Firestore in the background or with a shorter timeout
+          // to ensure we pick up immediate license status, authorization status, etc.
+          (async () => {
+            let remoteProfile: UserAccount | null = null;
+            try {
+              remoteProfile = await DbController.getFirebaseUserProfile(firebaseUser.uid);
+            } catch (e) {
+              console.warn("Background profile fetch error, proceeding with local fallback:", e);
+            }
+
+            try {
+              if (remoteProfile) {
+                const syncedProfile = await DbController.saveGoogleProfile(remoteProfile);
+                DbController.ensureConnectedTeacherProfile(syncedProfile);
+                setCurrentUser(syncedProfile);
+
+                // Fetch assigned school profile if user has schoolId
+                const activeSchoolId = syncedProfile.schoolId || DbController.resolveActiveSchoolId();
+                if (activeSchoolId) {
+                  const schoolProfile = await DbController.getFirebaseSchoolProfile(activeSchoolId);
+                  if (schoolProfile) {
+                    DbController.saveSchoolInfo(schoolProfile);
+                    setSchoolInfo(schoolProfile);
+                  }
+                }
+              } else {
+                // If remote profile is not found or fetch failed, and we have a matched local cached profile, use it.
+                // Otherwise, construct a resilient fallback profile from Firebase Auth state so session never hangs.
+                const currentCached = DbController.getCurrentUser();
+                if (currentCached && currentCached.uid === firebaseUser.uid) {
+                  DbController.ensureConnectedTeacherProfile(currentCached);
+                  setCurrentUser(currentCached);
+                } else {
+                  const fallbackEmail = firebaseUser.email?.toLowerCase().trim() || '';
+                  const fallbackRole: UserRole = fallbackEmail === 'pegyirenyi@gmail.com' 
+                    ? 'Admin' 
+                    : (fallbackEmail === 'multimediageetech@gmail.com' || fallbackEmail === 'sammyotoo06@gmail.com' || fallbackEmail === 'wilkinsonannan@gmail.com' ? 'Headteacher' : 'Teacher');
+                  const isWilkinson = fallbackEmail === 'wilkinsonannan@gmail.com';
+                  const isSammy = fallbackEmail === 'sammyotoo06@gmail.com';
+                  const trialDays = isWilkinson ? 21 : isSammy ? 15 : 14;
+                  const fallback: UserAccount = {
+                    uid: firebaseUser.uid,
+                    email: firebaseUser.email || '',
+                    name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
+                    role: fallbackRole,
+                    schoolId: DbController.generateUniqueSchoolId(firebaseUser.uid),
+                    licenseType: fallbackRole === 'Admin' ? 'unlimited' : 'trial',
+                    registeredOn: new Date().toISOString(),
+                    trialEndDate: fallbackRole === 'Admin' ? undefined : new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000).toISOString(),
+                    createdAt: new Date().toISOString()
+                  };
+                  const syncedFallback = await DbController.saveGoogleProfile(fallback);
+                  DbController.ensureConnectedTeacherProfile(syncedFallback);
+                  setCurrentUser(syncedFallback);
+                }
+              }
+            } catch (err) {
+              console.error("Critical session restoration fallback error:", err);
+            } finally {
+              setIsFirebaseChecking(false);
+            }
+          })();
+          
+          // Concurrent background sync for all data
           console.log("Syncing database with authenticated Firebase Auth credentials...");
           DbController.syncAllDataFromFirebase().then(() => {
             refreshAllLogs();
@@ -789,15 +1619,20 @@ function AppContent() {
           });
         } else {
           console.log("Firebase Auth: No active session.");
+          setIsFirebaseChecking(false);
         }
       } catch (err) {
         console.error("Error in Firebase Auth observer:", err);
-      } finally {
         setIsFirebaseChecking(false);
       }
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      if (profileUnsubscribe) {
+        profileUnsubscribe();
+      }
+    };
   }, []);
 
   // Automatic Scheduled Backup background checking task
@@ -819,20 +1654,133 @@ function AppContent() {
     return () => clearInterval(interval);
   }, []);
 
-  // Keyboard Shortcut listener for Quick-Search modal (Ctrl+K or Cmd+K)
+  // Global Keyboard Shortcuts (Tabs switching, Quick-Search, Save Data, Shortcuts Help)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isInput = !!(target && (
+        target.tagName === 'INPUT' || 
+        target.tagName === 'TEXTAREA' || 
+        target.tagName === 'SELECT' || 
+        target.isContentEditable
+      ));
+
+      // 1. Save Data progress (Ctrl+S or Cmd+S)
+      if ((e.ctrlKey || e.metaKey) && e.key?.toLowerCase() === 's') {
+        e.preventDefault();
+        handleManualSaveProgress();
+        return;
+      }
+
+      // 2. Quick Search modal (Ctrl+K or Cmd+K)
       if ((e.ctrlKey || e.metaKey) && e.key?.toLowerCase() === 'k') {
-        const isAdmin = currentUser?.role === 'Admin' || currentUser?.role === 'Headteacher';
-        if (isAdmin) {
-          e.preventDefault();
-          setIsSearchOpen(prev => !prev);
+        e.preventDefault();
+        setIsSearchOpen(prev => !prev);
+        return;
+      }
+
+      // 3. Shortcuts Help Overlay (? without modifier when not in input, OR Ctrl+/ OR Alt+H OR F1)
+      if (
+        ((e.ctrlKey || e.metaKey) && e.key === '/') ||
+        (e.altKey && e.key?.toLowerCase() === 'h') ||
+        e.key === 'F1' ||
+        (!isInput && !e.ctrlKey && !e.metaKey && !e.altKey && e.key === '?')
+      ) {
+        e.preventDefault();
+        setIsShortcutsHelpOpen(prev => !prev);
+        return;
+      }
+
+      // 4. Escape key to close modals & menus
+      if (e.key === 'Escape') {
+        if (isMobileMenuOpen) {
+          setIsMobileMenuOpen(false);
+          return;
+        }
+        if (isMoreToolsOpen) {
+          setIsMoreToolsOpen(false);
+          return;
+        }
+        if (isPalettePickerOpen) {
+          setIsPalettePickerOpen(false);
+          return;
+        }
+        if (isVisibilityMenuOpen) {
+          setIsVisibilityMenuOpen(false);
+          return;
+        }
+        if (isShortcutsHelpOpen) {
+          setIsShortcutsHelpOpen(false);
+          return;
+        }
+        if (isSearchOpen) {
+          setIsSearchOpen(false);
+          return;
         }
       }
+
+      // 5. Workspace Tab Switching via Alt + Number (Alt+1 to Alt+9)
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.key >= '1' && e.key <= '9') {
+        const targetIndex = parseInt(e.key, 10) - 1;
+        if (targetIndex >= 0 && targetIndex < orderedVisibleTabs.length) {
+          e.preventDefault();
+          handleTabSwitch(orderedVisibleTabs[targetIndex].id);
+          return;
+        }
+      }
+
+      // 6. Workspace Tab Cycling via Alt+ArrowRight / Alt+]
+      if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'ArrowRight' || e.key === ']')) {
+        e.preventDefault();
+        if (orderedVisibleTabs.length > 0) {
+          const currentIndex = orderedVisibleTabs.findIndex(t => t.id === activeTab);
+          const nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % orderedVisibleTabs.length;
+          handleTabSwitch(orderedVisibleTabs[nextIndex].id, 1);
+        }
+        return;
+      }
+
+      // 7. Workspace Tab Cycling via Alt+ArrowLeft / Alt+[
+      if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'ArrowLeft' || e.key === '[')) {
+        e.preventDefault();
+        if (orderedVisibleTabs.length > 0) {
+          const currentIndex = orderedVisibleTabs.findIndex(t => t.id === activeTab);
+          const prevIndex = currentIndex === -1 ? 0 : (currentIndex - 1 + orderedVisibleTabs.length) % orderedVisibleTabs.length;
+          handleTabSwitch(orderedVisibleTabs[prevIndex].id, -1);
+        }
+        return;
+      }
+
+      // 8. Toggle Desktop Sidebar via Ctrl+B or Cmd+B
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b' && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        toggleDesktopSidebar();
+        return;
+      }
     };
+
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentUser]);
+  }, [currentUser, activeTab, orderedVisibleTabs, isShortcutsHelpOpen, isSearchOpen, handleTabSwitch]);
+
+  // Global Scroll-lock and Freeze Prevention Manager for Modals & Mobile Drawer
+  useEffect(() => {
+    const isAnyModalOrDrawerOpen = isMobileMenuOpen || isQRScannerOpen || isSearchOpen || isShortcutsHelpOpen || isPalettePickerOpen || isVisibilityMenuOpen;
+    if (typeof document !== 'undefined') {
+      if (isAnyModalOrDrawerOpen) {
+        document.body.style.overflow = 'hidden';
+      } else {
+        document.body.style.overflow = '';
+        document.documentElement.style.overflow = '';
+      }
+    }
+    return () => {
+      if (typeof document !== 'undefined') {
+        document.body.style.overflow = '';
+        document.documentElement.style.overflow = '';
+      }
+    };
+  }, [isMobileMenuOpen, isQRScannerOpen, isSearchOpen, isShortcutsHelpOpen, isPalettePickerOpen, isVisibilityMenuOpen]);
 
   // Background-sync Firestore ledger data if user state changes after auth ready
   useEffect(() => {
@@ -857,7 +1805,7 @@ function AppContent() {
     setReflections(DbController.getTeacherReflections());
     const config = DbController.getSystemSettings();
     setActiveTheme(config.theme || 'Sophisticated Dark');
-    setIsAutoSave(true);
+    setIsAutoSave(config.autoSave !== false);
   }, []);
 
   const handleShare = useCallback(() => {
@@ -959,7 +1907,7 @@ function AppContent() {
 
     // Handler for fallback StorageEvents (cross-tab localstorage changes)
     const handleStorageSyncEvent = (e: StorageEvent) => {
-      if (e.key === 'sms_teachers' || e.key === 'sms_users_list') {
+      if (e.key && e.key.startsWith('sms_')) {
         DbController.clearCache();
         refreshAllLogs();
       }
@@ -977,9 +1925,94 @@ function AppContent() {
     };
   }, [refreshAllLogs]);
 
+  // Real-time Firestore Snapshot Listeners for multi-tenant school sync (Teacher <-> Headteacher)
+  useEffect(() => {
+    if (!DbController.isFirebaseEnabled()) return;
+    const firestoreInstance = DbController.getFirestoreInstance();
+    if (!firestoreInstance) return;
+
+    const activeSchoolId = DbController.resolveActiveSchoolId() || currentUser?.schoolId || schoolInfo?.schoolId;
+    if (!activeSchoolId) return;
+
+    const collectionsToSync = [
+      'students',
+      'teachers',
+      'attendance',
+      'staff_attendance',
+      'assessments',
+      'assessment_templates',
+      'fees',
+      'teacher_reflections',
+      'behavioral_remarks',
+      'leave_requests',
+      'tasks',
+      'emis',
+      'quick_notes'
+    ];
+
+    const unsubs: (() => void)[] = [];
+
+    // Real-time listener for the main school profile document
+    try {
+      const schoolDocRef = doc(firestoreInstance, 'schools', activeSchoolId);
+      const unsubSchool = onSnapshot(schoolDocRef, (docSnap) => {
+        if (docSnap.exists()) {
+          const updatedSchool = docSnap.data() as SchoolInfo;
+          DbController.saveSchoolInfo(updatedSchool);
+          setSchoolInfo(updatedSchool);
+          refreshAllLogs();
+        }
+      }, (err) => {
+        console.warn('[Real-time School Info Listener] Notice for active school:', err);
+      });
+      unsubs.push(unsubSchool);
+
+      if (activeSchoolId !== 'school_default') {
+        const defaultDocRef = doc(firestoreInstance, 'schools', 'school_default');
+        const unsubDef = onSnapshot(defaultDocRef, (docSnap) => {
+          if (docSnap.exists()) {
+            const updatedSchool = docSnap.data() as SchoolInfo;
+            const current = DbController.getSchoolInfo();
+            if (!current.name && !current.motto && !current.logoUrl && !current.crestUrl) {
+              DbController.saveSchoolInfo(updatedSchool);
+              setSchoolInfo(updatedSchool);
+              refreshAllLogs();
+            }
+          }
+        }, () => {});
+        unsubs.push(unsubDef);
+      }
+    } catch (err) {
+      console.warn('[Real-time School Info Listener] Could not attach doc listener:', err);
+    }
+
+    collectionsToSync.forEach((colName) => {
+      try {
+        const colRef = collection(firestoreInstance, 'schools', activeSchoolId, colName);
+        const unsub = onSnapshot(colRef, (snapshot) => {
+          if (!snapshot.empty) {
+            const items = snapshot.docs.map(d => d.data());
+            DbController.syncDatasetFromSnapshot(colName, items);
+            refreshAllLogs();
+          }
+        }, (err) => {
+          console.warn(`[Real-time School Listener] Notice for ${colName}:`, err);
+        });
+        unsubs.push(unsub);
+      } catch (err) {
+        console.warn(`[Real-time School Listener] Could not attach listener for ${colName}:`, err);
+      }
+    });
+
+    return () => {
+      unsubs.forEach(unsub => unsub());
+    };
+  }, [currentUser?.schoolId, schoolInfo?.schoolId, refreshAllLogs]);
+
   const handleResetAndClear = async () => {
     // Clear all fields State
     setIsRegisterMode(false);
+    setAuthSubMode('sso');
     setRegName('');
     setRegEmail('');
     setRegPassword('');
@@ -1168,7 +2201,19 @@ function AppContent() {
     const message = err.message || '';
 
     if (code === 'auth/operation-not-allowed' || message.includes('operation-not-allowed')) {
-      return renderOperationNotAllowedError();
+      return (
+        <div className="space-y-2 mt-1 text-xs text-slate-300 font-sans">
+          <p className="font-semibold text-red-400 flex items-center gap-1.5">
+            <span>❌ Email/Password Sign-In Provider Disabled</span>
+          </p>
+          <p>
+            The Email & Password authentication provider is currently disabled in the project's Firebase Console. 
+          </p>
+          <p className="text-[11px] text-slate-400 mt-1">
+            💡 <strong>Action Required:</strong> To enable email registration and login, please navigate to your Firebase Console under <strong>Authentication &gt; Sign-in method</strong>, and enable the <strong>Email/Password</strong> provider.
+          </p>
+        </div>
+      );
     }
     if (code === 'auth/unauthorized-domain' || message.includes('unauthorized-domain') || message.includes('auth/unauthorized-client-identifier')) {
       return renderUnauthorizedDomainError();
@@ -1243,29 +2288,11 @@ function AppContent() {
     );
   };
 
-  const renderOperationNotAllowedError = () => {
-    return (
-      <div className="space-y-2 mt-1 text-xs text-slate-300 font-sans">
-        <p className="font-semibold text-amber-400 flex items-center gap-1.5">
-          <span>⚠️ Unauthorized Access</span>
-        </p>
-        <p>
-          This authentication provider is currently disabled or restricted on this domain. Please verify your credentials or contact your administrator to enable access.
-        </p>
-      </div>
-    );
-  };
-
   const handleLoginSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!loginEmail) return;
 
-    // Enforce Admin Email restriction
-    if (loginPathway === 'Admin' && loginEmail.toLowerCase().trim() !== 'pegyirenyi@gmail.com') {
-      setAuthError("Administrative Access Restricted: This portal is reserved for authorized system administrators only.");
-      return;
-    }
-
+    // Admin login path
     setAuthError(null);
     setAuthLoading(true);
 
@@ -1409,21 +2436,97 @@ function AppContent() {
   // Parent Access Secure Portal override
   if (parentPortalState.isActive) {
     return (
-      <React.Suspense fallback={<div className="p-8 flex justify-center w-full"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>}>
-        <ParentPortal 
-          studentId={parentPortalState.studentId}
-          year={parentPortalState.year}
-          term={parentPortalState.term}
-          token={parentPortalState.token}
-          onExit={() => {
-            setParentPortalState({ isActive: false, studentId: '', year: '', term: '', token: '' });
-            if (typeof window !== 'undefined') {
-              const cleanUrl = window.location.origin + window.location.pathname;
-              window.history.replaceState({}, document.title, cleanUrl);
-            }
-          }}
-        />
-      </React.Suspense>
+      <ParentPortal 
+        studentId={parentPortalState.studentId}
+        year={parentPortalState.year}
+        term={parentPortalState.term}
+        token={parentPortalState.token}
+        onExit={() => {
+          setParentPortalState({ isActive: false, studentId: '', year: '', term: '', token: '' });
+          if (typeof window !== 'undefined') {
+            const cleanUrl = window.location.origin + window.location.pathname;
+            window.history.replaceState({}, document.title, cleanUrl);
+          }
+        }}
+      />
+    );
+  }
+
+  if (isFirebaseChecking && DbController.isFirebaseEnabled()) {
+    return (
+      <div className="min-h-screen bg-[#020617] flex flex-col items-center justify-center p-4 relative overflow-hidden">
+        {/* Ambient background flares */}
+        <div className="absolute top-[-20%] left-[-10%] w-[500px] h-[500px] rounded-full bg-indigo-900/10 blur-[120px] animate-pulse" />
+        <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] rounded-full bg-violet-900/10 blur-[120px] animate-pulse" />
+        
+        <div className="relative z-10 flex flex-col items-center space-y-8 max-w-sm w-full text-center">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="relative w-24 h-24 rounded-[2rem] bg-white p-4 shadow-2xl shadow-indigo-500/10 border border-slate-800/50 flex items-center justify-center"
+          >
+            <img 
+              src={geetechLogo} 
+              alt="GEETECH Logo" 
+              className="w-full h-full object-contain"
+            />
+            {/* Spinning loading ring around logo */}
+            <div className="absolute -inset-1 border-2 border-indigo-500/20 rounded-[2.2rem]" />
+            <motion.div 
+              animate={{ rotate: 360 }}
+              transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
+              className="absolute -inset-1 border-t-2 border-indigo-500 rounded-[2.2rem]"
+            />
+          </motion.div>
+
+          <div className="space-y-3">
+            <motion.h1 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.1 }}
+              className="text-xl font-display font-black tracking-tighter text-white uppercase"
+            >
+              GEETECH MULTIMEDIA
+            </motion.h1>
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ delay: 0.2 }}
+              className="flex flex-col items-center space-y-1"
+            >
+              <div className="flex items-center gap-2 text-indigo-400 font-mono text-[10px] uppercase tracking-[0.2em] font-bold">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500"></span>
+                </span>
+                Secure Session Verification
+              </div>
+              <div className="flex items-center gap-1.5 px-2 py-0.5 bg-slate-900 border border-slate-800 rounded-full">
+                <ShieldAlert size={8} className="text-emerald-500" />
+                <span className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">GES Standard Compliant</span>
+              </div>
+              <p className="text-slate-500 text-[10px] font-medium max-w-[200px] leading-relaxed">
+                Authenticating with central database. This ensures your school records are synchronized...
+              </p>
+            </motion.div>
+          </div>
+
+          <div className="w-full max-w-[140px] h-1 bg-slate-900 rounded-full overflow-hidden">
+            <motion.div 
+              initial={{ width: "0%" }}
+              animate={{ width: "100%" }}
+              transition={{ duration: 2, ease: "easeInOut" }}
+              className="h-full bg-gradient-to-r from-indigo-600 to-violet-600"
+            />
+          </div>
+        </div>
+
+        <div className="absolute bottom-8 left-0 right-0 text-center">
+          <p className="text-[9px] font-mono text-slate-600 uppercase tracking-widest">
+            © 2026 GEETECH | Secure Cloud Protocol v4.0
+          </p>
+        </div>
+      </div>
     );
   }
 
@@ -1451,13 +2554,18 @@ function AppContent() {
           </>
         )}
 
-        <div className={`max-w-sm w-full rounded-2xl p-6 shadow-2xl relative z-10 space-y-4 fade-in transition-all duration-500 ${
-          isDarkTheme 
-            ? 'bg-slate-900/90 border border-slate-800 text-slate-100 shadow-slate-950/60' 
-            : activeTheme === 'Crystal Glass'
-              ? 'bg-white/45 backdrop-blur-md border border-white/50 text-slate-800 shadow-xl shadow-sky-950/5'
-              : 'bg-white border border-slate-200/80 text-slate-800 shadow-2xl shadow-slate-200/50'
-        }`}>
+        <motion.div 
+          initial={{ opacity: 0, y: 15, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
+          className={`max-w-sm w-full rounded-2xl p-6 shadow-2xl relative z-10 space-y-4 transition-all duration-500 ${
+            isDarkTheme 
+              ? 'bg-slate-900/90 border border-slate-800 text-slate-100 shadow-slate-950/60' 
+              : activeTheme === 'Crystal Glass'
+                ? 'bg-white/45 backdrop-blur-md border border-white/50 text-slate-800 shadow-xl shadow-sky-950/5'
+                : 'bg-white border border-slate-200/80 text-slate-800 shadow-2xl shadow-slate-200/50'
+          }`}
+        >
           
           <div className="text-center space-y-1">
             <div className={`relative w-16 h-16 rounded-2xl border overflow-hidden mx-auto mb-2 bg-white flex items-center justify-center p-1.5 transition-all duration-500 ${
@@ -1512,395 +2620,110 @@ function AppContent() {
             </motion.div>
           )}
 
-          <AnimatePresence mode="wait">
-            {!isRegisterMode ? (
-              // STEP: Standard / Firebase Login form
+          <AnimatePresence>
+            {authSubMode === 'sso' && (
               <motion.div 
-                key="login-form"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="space-y-5 text-xs"
+                key="sso-login-panel"
+                initial={{ opacity: 0, x: -12 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 12 }}
+                transition={{ duration: 0.15, ease: "easeInOut" }}
+                className="space-y-4 text-xs"
               >
-                {/* Compact Professional Pathway Switcher */}
-                <div className="relative flex bg-slate-100 dark:bg-slate-800 rounded-xl p-1 overflow-hidden h-10 border border-slate-200 dark:border-slate-750">
-                  <motion.div
-                    className="absolute top-1 bottom-1 bg-white dark:bg-slate-700 shadow-sm rounded-lg z-0 border border-slate-200/50 dark:border-slate-600/50"
-                    initial={false}
-                    animate={{
-                      left: loginPathway === 'Admin' ? '4px' : loginPathway === 'Headteacher' ? '33.33%' : '66.66%',
-                      width: 'calc(33.33% - 4px)'
-                    }}
-                    transition={{ type: 'spring', stiffness: 400, damping: 30 }}
-                  />
-                  <button 
-                    type="button" 
-                    onClick={() => setLoginPathway('Admin')}
-                    className={`flex-1 relative z-10 text-[9px] font-black uppercase tracking-wider transition-colors duration-300 ${loginPathway === 'Admin' ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}
-                  >
-                    Admin
-                  </button>
-                  <button 
-                    type="button" 
-                    onClick={() => setLoginPathway('Headteacher')}
-                    className={`flex-1 relative z-10 text-[9px] font-black uppercase tracking-wider transition-colors duration-300 ${loginPathway === 'Headteacher' ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}
-                  >
-                    HeadTeacher
-                  </button>
-                  <button 
-                    type="button" 
-                    onClick={() => setLoginPathway('Teacher')}
-                    className={`flex-1 relative z-10 text-[9px] font-black uppercase tracking-wider transition-colors duration-300 ${loginPathway === 'Teacher' ? 'text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}
-                  >
-                    Teacher
-                  </button>
-                </div>
-                <form onSubmit={handleLoginSubmit} className="space-y-3">
-                  <div className="space-y-3">
-                    <div className="relative group">
-                      <label className={`text-[9px] font-extrabold uppercase tracking-wider ml-1 mb-1 block transition-colors ${isDarkTheme ? 'text-slate-500 group-focus-within:text-indigo-400' : 'text-slate-400 group-focus-within:text-indigo-600'}`}>
-                        Email Address
-                      </label>
-                      <div className="relative">
-                        <Mail className={`absolute left-3 top-2.5 transition-colors ${isDarkTheme ? 'text-slate-600' : 'text-slate-400'}`} size={14} />
-                        <input 
-                          type="email" 
-                          required
-                          placeholder="e.g. administrator@ges-school.gov.gh"
-                          value={loginEmail}
-                          onChange={(e) => setLoginEmail(e.target.value)}
-                          className={`w-full pl-9 pr-3 py-2 border rounded-xl transition-all outline-none font-sans font-medium text-xs ${
-                            isDarkTheme 
-                              ? 'border-slate-800 bg-slate-950/50 text-slate-200 focus:border-indigo-500/50 focus:bg-slate-950 ring-1 ring-transparent focus:ring-indigo-500/20' 
-                              : 'border-slate-200 bg-slate-50 text-slate-800 focus:bg-white focus:border-indigo-500 focus:shadow-md focus:shadow-indigo-500/5 ring-1 ring-transparent focus:ring-indigo-500/10'
-                          }`}
-                        />
-                      </div>
-                    </div>
-
-                    <AnimatePresence mode="popLayout" initial={false}>
-                      {loginPathway === 'Teacher' ? (
-                        <motion.div 
-                          key="school-id-field"
-                          initial={{ opacity: 0, x: -10 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          exit={{ opacity: 0, x: 10 }}
-                          className="relative group"
-                        >
-                          <label className={`text-[9px] font-extrabold uppercase tracking-wider ml-1 mb-1 block transition-colors ${isDarkTheme ? 'text-slate-500 group-focus-within:text-indigo-400' : 'text-slate-400 group-focus-within:text-indigo-600'}`}>
-                            Access ID (School ID)
-                          </label>
-                          <div className="relative">
-                            <Lock className={`absolute left-3 top-2.5 transition-colors ${isDarkTheme ? 'text-slate-600' : 'text-slate-400'}`} size={14} />
-                            <input 
-                              type="text" 
-                              required
-                              placeholder="e.g. SMS-ABC12345"
-                              value={loginSchoolId}
-                              onChange={(e) => setLoginSchoolId(e.target.value)}
-                              className={`w-full pl-9 pr-12 py-2 border rounded-xl transition-all outline-none font-mono font-bold text-xs uppercase tracking-wider ${
-                                isDarkTheme 
-                                  ? 'border-slate-800 bg-slate-950/50 text-slate-200 focus:border-indigo-500/50 focus:bg-slate-950 ring-1 ring-transparent focus:ring-indigo-500/20' 
-                                  : 'border-slate-200 bg-slate-50 text-slate-800 focus:bg-white focus:border-indigo-500 focus:shadow-md focus:shadow-indigo-500/5 ring-1 ring-transparent focus:ring-indigo-500/10'
-                              }`}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => setIsQRScannerOpen(true)}
-                              title="Scan Badge QR Code"
-                              className={`absolute right-3 top-2.5 transition-colors cursor-pointer hover:scale-105 active:scale-95 ${
-                                isDarkTheme ? 'text-indigo-400 hover:text-indigo-300' : 'text-indigo-600 hover:text-indigo-800'
-                              }`}
-                            >
-                              <QrCode size={15} />
-                            </button>
-                          </div>
-                          <div className="mt-1 flex justify-end">
-                            <button
-                              type="button"
-                              onClick={() => setIsQRScannerOpen(true)}
-                              className={`inline-flex items-center gap-1 text-[8.5px] font-bold uppercase tracking-wider transition ${
-                                isDarkTheme ? 'text-indigo-400 hover:text-indigo-300' : 'text-indigo-600 hover:text-indigo-800'
-                              }`}
-                            >
-                              <QrCode size={10} /> Scan school credential badge
-                            </button>
-                          </div>
-                        </motion.div>
-                      ) : (
-                        <motion.div 
-                          key="password-field"
-                          initial={{ opacity: 0, x: -10 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          exit={{ opacity: 0, x: 10 }}
-                          className="relative group"
-                        >
-                          <label className={`text-[9px] font-extrabold uppercase tracking-wider ml-1 mb-1 block transition-colors ${isDarkTheme ? 'text-slate-500 group-focus-within:text-indigo-400' : 'text-slate-400 group-focus-within:text-indigo-600'}`}>
-                            Secret Key (Password)
-                          </label>
-                          <div className="relative">
-                            <Lock className={`absolute left-3 top-2.5 transition-colors ${isDarkTheme ? 'text-slate-600' : 'text-slate-400'}`} size={14} />
-                            <input 
-                              type={showLoginPassword ? "text" : "password"} 
-                              required
-                              placeholder="••••••••"
-                              value={loginPassword}
-                              onChange={(e) => setLoginPassword(e.target.value)}
-                              className={`w-full pl-9 pr-10 py-2 border rounded-xl transition-all outline-none font-sans font-medium text-xs ${
-                                isDarkTheme 
-                                  ? 'border-slate-800 bg-slate-950/50 text-slate-200 focus:border-indigo-500/50 focus:bg-slate-950 ring-1 ring-transparent focus:ring-indigo-500/20' 
-                                  : 'border-slate-200 bg-slate-50 text-slate-800 focus:bg-white focus:border-indigo-500 focus:shadow-md focus:shadow-indigo-500/5 ring-1 ring-transparent focus:ring-indigo-500/10'
-                              }`}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => setShowLoginPassword(!showLoginPassword)}
-                              className={`absolute right-3 top-2.5 transition-colors cursor-pointer ${isDarkTheme ? 'text-slate-600 hover:text-slate-300' : 'text-slate-400 hover:text-slate-700'}`}
-                            >
-                              {showLoginPassword ? <EyeOff size={15} /> : <Eye size={15} />}
-                            </button>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-
-                  <button 
-                    type="submit"
-                    disabled={authLoading}
-                    className={`group w-full py-2.5 font-bold uppercase tracking-wider rounded-xl transition-all duration-300 shadow-md flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 text-[10px] overflow-hidden relative ${
-                      isDarkTheme 
-                        ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-500/10' 
-                        : 'bg-slate-900 hover:bg-slate-800 text-white shadow-slate-900/10'
-                    }`}
-                  >
-                    <div className="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300" />
-                    <span className="relative z-10">Access Dashboard</span>
-                    {authLoading ? (
-                      <RefreshCw size={13} className="animate-spin relative z-10" />
-                    ) : (
-                      <ChevronRight size={13} className="relative z-10 group-hover:translate-x-1 transition-transform" />
-                    )}
-                  </button>
-                </form>
-
-                <div className="relative flex items-center justify-center py-0.5">
-                  <div className={`absolute inset-x-0 h-px ${isDarkTheme ? 'bg-slate-800' : 'bg-slate-200/60'}`} />
-                  <span className={`relative px-3 font-mono text-[7.5px] font-black uppercase tracking-[0.25em] leading-none ${
-                    isDarkTheme ? 'bg-slate-900 text-slate-600' : 'bg-white text-slate-300'
-                  }`}>System Gateways</span>
+                <div className="text-center py-0.5">
+                  <p className={`text-[11px] leading-relaxed font-sans ${
+                    isDarkTheme ? 'text-slate-400' : 'text-slate-500'
+                  }`}>
+                    Access your school management dashboard securely using single sign-on.
+                  </p>
                 </div>
 
-                <div className="space-y-2">
-                  <div className="grid grid-cols-2 gap-2">
-                    {DbController.isFirebaseEnabled() ? (
+                <div className="space-y-2.5">
+                  {DbController.isFirebaseEnabled() ? (
+                    <>
                       <button 
                         type="button"
                         onClick={handleGoogleLogin}
                         disabled={authLoading}
-                        className={`py-2 px-1.5 border rounded-xl transition-all shadow-xs flex items-center justify-center gap-1.5 font-bold text-[9px] uppercase tracking-wider cursor-pointer disabled:opacity-50 active:scale-[0.98] ${
+                        className={`w-full py-3 px-4 border rounded-xl transition-all shadow-xs flex items-center justify-center gap-3 font-bold text-xs uppercase tracking-wider cursor-pointer disabled:opacity-50 active:scale-[0.98] ${
                           isDarkTheme 
-                            ? 'bg-slate-800 hover:bg-slate-700 text-slate-100 border-slate-700' 
-                            : 'bg-white hover:bg-slate-50 text-slate-800 border-slate-200'
+                            ? 'bg-slate-800 hover:bg-slate-700 text-slate-100 border-slate-700 focus:ring-2 focus:ring-indigo-500/20' 
+                            : 'bg-white hover:bg-slate-50 text-slate-800 border-slate-200 focus:ring-2 focus:ring-indigo-500/10'
                         }`}
                       >
-                        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-3.5 h-3.5" alt="Google" />
-                        <span>Google SSO</span>
+                        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-4 h-4" alt="Google" />
+                        <span>Continue with Google</span>
                       </button>
-                    ) : (
-                      <div className={`text-center py-2 px-1.5 rounded-xl border flex items-center justify-center gap-1 font-bold text-[8.5px] uppercase tracking-wider ${
-                        isDarkTheme 
-                          ? 'text-amber-400 bg-amber-950/20 border-amber-900/20' 
-                          : 'text-amber-700 bg-amber-50/50 border-amber-200/50 shadow-xs'
-                      }`}>
-                        <ShieldAlert size={11} className="shrink-0" />
-                        <span>Offline Mode</span>
-                      </div>
-                    )}
+                    </>
+                  ) : (
+                    <div className={`text-center py-3 px-4 rounded-xl border flex items-center justify-center gap-2 font-bold text-[10px] uppercase tracking-wider ${
+                      isDarkTheme 
+                        ? 'text-amber-400 bg-amber-950/20 border-amber-900/20' 
+                        : 'text-amber-700 bg-amber-50/50 border-amber-200/50 shadow-xs'
+                    }`}>
+                      <ShieldAlert size={14} className="shrink-0" />
+                      <span>System Connection Offline</span>
+                    </div>
+                  )}
 
-                    <button 
-                      type="button"
-                      onClick={handleBiometricLoginTrigger}
-                      disabled={authLoading}
-                      className={`py-2 px-1.5 border rounded-xl transition-all shadow-xs flex items-center justify-center gap-1.5 font-bold text-[9px] uppercase tracking-wider cursor-pointer disabled:opacity-50 active:scale-[0.98] ${
-                        isDarkTheme 
-                          ? 'bg-slate-800 hover:bg-slate-700 text-slate-100 border-slate-700' 
-                          : 'bg-white hover:bg-slate-50 text-slate-800 border-slate-200'
-                      }`}
-                    >
-                      <Fingerprint size={13} className={isDarkTheme ? 'text-indigo-400' : 'text-indigo-600'} />
-                      <span>Biometrics</span>
-                    </button>
+                  <div className="relative flex items-center py-1">
+                    <div className="flex-grow border-t border-slate-200 dark:border-slate-800"></div>
+                    <span className="flex-shrink mx-3 text-[8.5px] font-mono text-slate-400 uppercase tracking-widest">or biometrics</span>
+                    <div className="flex-grow border-t border-slate-200 dark:border-slate-800"></div>
                   </div>
 
-                  <button
+                  <button 
                     type="button"
-                    onClick={() => setIsQRScannerOpen(true)}
+                    onClick={handleBiometricLoginTrigger}
                     disabled={authLoading}
-                    className={`w-full py-2 border rounded-xl transition-all duration-300 font-bold flex items-center justify-center gap-1.5 cursor-pointer text-[9px] uppercase tracking-wider ${
+                    className={`w-full py-3 px-4 border rounded-xl transition-all shadow-md flex items-center justify-center gap-3 font-bold text-xs uppercase tracking-wider cursor-pointer disabled:opacity-50 active:scale-[0.98] ${
                       isDarkTheme 
-                        ? 'bg-indigo-950/20 hover:bg-indigo-950/35 text-indigo-400 border-indigo-900/30' 
-                        : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200 shadow-sm hover:shadow-md'
+                        ? 'bg-gradient-to-r from-emerald-950/50 to-teal-950/50 hover:from-emerald-900 hover:to-teal-900 text-emerald-400 border-emerald-900/40 focus:ring-2 focus:ring-emerald-500/20' 
+                        : 'bg-gradient-to-r from-emerald-50 to-teal-50 hover:from-emerald-100 hover:to-teal-100 text-emerald-950 border-emerald-200 focus:ring-2 focus:ring-emerald-500/10'
                     }`}
                   >
-                    <QrCode size={13} className={isDarkTheme ? 'text-indigo-400' : 'text-indigo-600'} />
-                    <span>Quick QR Badge Login</span>
+                    <Fingerprint size={16} className="text-emerald-500 animate-pulse" />
+                    <span>One-Click Biometric Login</span>
                   </button>
 
                   <button 
                     type="button"
-                    onClick={() => setIsExited(true)}
-                    className={`w-full py-2 border rounded-xl transition-all duration-300 font-bold flex items-center justify-center gap-1.5 cursor-pointer text-[9px] uppercase tracking-wider ${
-                      isDarkTheme 
-                        ? 'bg-rose-950/20 hover:bg-rose-950/35 text-rose-400 border-rose-900/30' 
-                        : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200'
+                    onClick={() => {
+                      if (isSubscriptionLocked) {
+                        triggerToast("Scan QR Badge is inactive for expired accounts. Please contact admin to renew license.", "error");
+                        return;
+                      }
+                      setIsQRScannerOpen(true);
+                    }}
+                    disabled={authLoading || isSubscriptionLocked}
+                    className={`w-full py-3 px-4 border rounded-xl transition-all shadow-md flex items-center justify-center gap-3 font-bold text-xs uppercase tracking-wider ${
+                      isSubscriptionLocked
+                        ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 border-slate-300 dark:border-slate-700 opacity-60 cursor-not-allowed'
+                        : isDarkTheme 
+                          ? 'bg-gradient-to-r from-indigo-950/40 to-violet-950/40 hover:from-indigo-900 hover:to-violet-900 text-indigo-400 border-indigo-900/40 focus:ring-2 focus:ring-indigo-500/20 cursor-pointer active:scale-[0.98]' 
+                          : 'bg-gradient-to-r from-indigo-50/50 to-violet-50/50 hover:from-indigo-100/50 hover:to-violet-100/50 text-indigo-950 border-indigo-200 focus:ring-2 focus:ring-indigo-500/10 cursor-pointer active:scale-[0.98]'
                     }`}
+                    title={isSubscriptionLocked ? "Scan QR Badge is inactive for expired users" : "Scan QR Badge Login"}
                   >
-                    <Power size={11} />
-                    <span>Exit Platform</span>
+                    <QrCode size={16} className={isSubscriptionLocked ? "text-slate-400" : "text-indigo-500"} />
+                    <span>{isSubscriptionLocked ? "Scan QR Badge (Inactive)" : "Scan QR Badge Login"}</span>
                   </button>
-                </div>
-              </motion.div>
-            ) : (
-              <motion.div
-                key="register-form"
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                className="space-y-5 text-xs"
-              >
-                {DbController.isFirebaseEnabled() && (
-                  <>
-                    <button 
-                      type="button"
-                      onClick={handleGoogleLogin}
-                      disabled={authLoading}
-                      className={`w-full py-3.5 bg-white hover:bg-slate-50 text-slate-900 border rounded-2xl transition-all shadow-sm flex items-center justify-center gap-3 font-bold text-[11px] cursor-pointer disabled:opacity-50 active:scale-[0.98] ${
-                        isDarkTheme ? 'border-slate-800' : 'border-slate-200'
-                      }`}
-                    >
-                      <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="Google" />
-                      <span>Sign Up with Identity Provider</span>
-                    </button>
-
-                    <div className="relative flex items-center justify-center py-1">
-                      <div className={`absolute inset-x-0 h-px ${isDarkTheme ? 'bg-slate-800' : 'bg-slate-200/60'}`} />
-                      <span className={`relative px-4 font-mono text-[8px] font-black uppercase tracking-[0.3em] leading-none ${
-                        isDarkTheme ? 'bg-slate-900 text-slate-600' : 'bg-white text-slate-300'
-                      }`}>or utilize email</span>
-                    </div>
-                  </>
-                )}
-
-                <form 
-                  onSubmit={handleRegisterSubmit} 
-                  className="space-y-4"
-                >
-                  <div className="space-y-4">
-                    <div className="relative group">
-                      <label className={`text-[10px] font-bold uppercase tracking-widest ml-1 mb-1.5 block transition-colors ${isDarkTheme ? 'text-slate-500 group-focus-within:text-indigo-400' : 'text-slate-400 group-focus-within:text-indigo-600'}`}>
-                        Account Holder Name
-                      </label>
-                      <div className="relative">
-                        <User className={`absolute left-3.5 top-3 transition-colors ${isDarkTheme ? 'text-slate-600' : 'text-slate-400'}`} size={16} />
-                        <input 
-                          type="text" 
-                          required
-                          placeholder="e.g. Paul Egyirenyi"
-                          value={regName}
-                          onChange={(e) => setRegName(e.target.value)}
-                          className={`w-full pl-11 pr-4 py-3 border rounded-2xl transition-all outline-none font-sans font-medium text-sm ${
-                            isDarkTheme 
-                              ? 'border-slate-800 bg-slate-950/50 text-slate-200 focus:border-indigo-500/50 focus:bg-slate-950 ring-1 ring-transparent focus:ring-indigo-500/20' 
-                              : 'border-slate-200 bg-slate-50 text-slate-800 focus:bg-white focus:border-indigo-500 focus:shadow-lg focus:shadow-indigo-500/5 ring-1 ring-transparent focus:ring-indigo-500/10'
-                          }`}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="relative group">
-                      <label className={`text-[10px] font-bold uppercase tracking-widest ml-1 mb-1.5 block transition-colors ${isDarkTheme ? 'text-slate-500 group-focus-within:text-indigo-400' : 'text-slate-400 group-focus-within:text-indigo-600'}`}>
-                        Access Email Address
-                      </label>
-                      <div className="relative">
-                        <Mail className={`absolute left-3.5 top-3 transition-colors ${isDarkTheme ? 'text-slate-600' : 'text-slate-400'}`} size={16} />
-                        <input 
-                          type="email" 
-                          required
-                          placeholder="e.g. headteacher@ges-school.gov.gh"
-                          value={regEmail}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setRegEmail(val);
-                            setRegRole('Headteacher');
-                          }}
-                          className={`w-full pl-11 pr-4 py-3 border rounded-2xl transition-all outline-none font-sans font-medium text-sm ${
-                            isDarkTheme 
-                              ? 'border-slate-800 bg-slate-950/50 text-slate-200 focus:border-indigo-500/50 focus:bg-slate-950 ring-1 ring-transparent focus:ring-indigo-500/20' 
-                              : 'border-slate-200 bg-slate-50 text-slate-800 focus:bg-white focus:border-indigo-500 focus:shadow-lg focus:shadow-indigo-500/5 ring-1 ring-transparent focus:ring-indigo-500/10'
-                          }`}
-                        />
-                      </div>
-                    </div>
-
-                    {DbController.isFirebaseEnabled() && (
-                      <div className="relative group">
-                        <label className={`text-[10px] font-bold uppercase tracking-widest ml-1 mb-1.5 block transition-colors ${isDarkTheme ? 'text-slate-500 group-focus-within:text-indigo-400' : 'text-slate-400 group-focus-within:text-indigo-600'}`}>
-                          Secure Gateway Password
-                        </label>
-                        <div className="relative">
-                          <Lock className={`absolute left-3.5 top-3 transition-colors ${isDarkTheme ? 'text-slate-600' : 'text-slate-400'}`} size={16} />
-                          <input 
-                            type={showRegPassword ? "text" : "password"} 
-                            required
-                            placeholder="Min 6 characters"
-                            value={regPassword}
-                            onChange={(e) => setRegPassword(e.target.value)}
-                            className={`w-full pl-11 pr-12 py-3 border rounded-2xl transition-all outline-none font-sans font-medium text-sm ${
-                              isDarkTheme 
-                                ? 'border-slate-800 bg-slate-950/50 text-slate-200 focus:border-indigo-500/50 focus:bg-slate-950 ring-1 ring-transparent focus:ring-indigo-500/20' 
-                                : 'border-slate-200 bg-slate-50 text-slate-800 focus:bg-white focus:border-indigo-500 focus:shadow-lg focus:shadow-indigo-500/5 ring-1 ring-transparent focus:ring-indigo-500/10'
-                            }`}
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowRegPassword(!showRegPassword)}
-                            className={`absolute right-4 top-3 transition-colors cursor-pointer ${isDarkTheme ? 'text-slate-600 hover:text-slate-300' : 'text-slate-400 hover:text-slate-700'}`}
-                          >
-                            {showRegPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
 
                   <div className="pt-2">
                     <button 
-                      type="submit"
-                      disabled={authLoading}
-                      className={`group w-full py-4 font-black uppercase tracking-widest rounded-2xl transition-all duration-300 shadow-lg shadow-indigo-500/10 flex items-center justify-center gap-3 cursor-pointer disabled:opacity-50 text-[11px] overflow-hidden relative ${
+                      type="button"
+                      onClick={() => setIsExited(true)}
+                      className={`w-full py-2 border rounded-xl transition-all duration-300 font-bold flex items-center justify-center gap-1.5 cursor-pointer text-[9px] uppercase tracking-wider ${
                         isDarkTheme 
-                          ? 'bg-indigo-600 hover:bg-indigo-500 text-white' 
-                          : 'bg-slate-900 hover:bg-slate-800 text-white shadow-slate-900/10'
+                          ? 'bg-rose-950/10 hover:bg-rose-950/30 text-rose-400 border-rose-900/20' 
+                          : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200'
                       }`}
                     >
-                      <div className="absolute inset-0 bg-white/10 translate-y-full group-hover:translate-y-0 transition-transform duration-300" />
-                      <span className="relative z-10">{authLoading ? "Provisioning..." : "Create Account"}</span>
-                      {!authLoading && <ChevronRight size={14} className="relative z-10 group-hover:translate-x-1 transition-transform" />}
+                      <Power size={11} />
+                      <span>Exit Platform</span>
                     </button>
                   </div>
-
-                  <div className="text-center pt-2">
-                    <span className={`text-[10px] font-medium ${isDarkTheme ? 'text-slate-500' : 'text-slate-400'}`}>Already a registered user? </span>
-                    <button 
-                      type="button" 
-                      onClick={() => { setIsRegisterMode(false); setAuthError(null); }}
-                      className={`text-[10px] font-black uppercase tracking-wider hover:underline transition-colors ${isDarkTheme ? 'text-indigo-400 hover:text-indigo-300' : 'text-indigo-600 hover:text-indigo-700'}`}
-                    >
-                      Login Here
-                    </button>
-                  </div>
-                </form>
+                </div>
               </motion.div>
             )}
           </AnimatePresence>
@@ -1913,7 +2736,7 @@ function AppContent() {
               <p>+233 544 052 717 | pegyirenyi@gmail.com | © 2026</p>
             </div>
           </div>
-        </div>
+        </motion.div>
 
         {/* Biometric Credentials Device Profile Selector Modal */}
         {isBiometricSelectorOpen && (
@@ -2120,12 +2943,17 @@ function AppContent() {
           </div>
         )}
 
-        {isQRScannerOpen && (
-          <QRBadgeScanner
-            onScanSuccess={handleQRBadgeScanSuccess}
-            onClose={() => setIsQRScannerOpen(false)}
-          />
-        )}
+        <AnimatePresence>
+          {isQRScannerOpen && (
+            <QRBadgeScanner
+              key="login-qr-badge-scanner"
+              onScanSuccess={handleQRBadgeScanSuccess}
+              onClose={() => setIsQRScannerOpen(false)}
+              isSubscriptionLocked={isSubscriptionLocked}
+              isLoginMode={true}
+            />
+          )}
+        </AnimatePresence>
 
 
       </div>
@@ -2163,7 +2991,7 @@ function AppContent() {
             initial={{ opacity: 0, y: -20, scale: 0.95 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -20, scale: 0.95 }}
-            className="fixed top-6 left-1/2 -translate-x-1/2 z-50 bg-indigo-600/95 backdrop-blur-md text-white font-sans text-xs px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-3 border border-indigo-500/30 select-none no-print"
+            className="fixed top-4 sm:top-6 left-1/2 -translate-x-1/2 z-50 bg-indigo-600/95 backdrop-blur-md text-white font-sans text-xs px-4 sm:px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-3 border border-indigo-500/30 select-none no-print w-[calc(100vw-2rem)] sm:w-auto max-w-md justify-center"
           >
             <div className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-amber-300 flex-shrink-0">
               <Sparkles size={12} className="animate-spin" />
@@ -2177,105 +3005,120 @@ function AppContent() {
       </AnimatePresence>
 
       {/* Contact Support Modal Overlay */}
-      {isContactModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
-          <motion.div 
-            initial={{ opacity: 0, scale: 0.95, y: 10 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.95, y: 10 }}
-            className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-4 text-slate-100 relative"
-          >
-            <div className="flex justify-between items-center pb-2 border-b border-slate-800">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center">
-                  <Mail size={16} />
+      <AnimatePresence>
+        {isContactModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-hidden">
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              onClick={() => setIsContactModalOpen(false)}
+              className="fixed inset-0 bg-slate-950/60 backdrop-blur-md transition-opacity"
+            />
+
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.97, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.97, y: 12 }}
+              transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+              className="relative w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-4 text-slate-100 z-10"
+            >
+              <div className="flex justify-between items-center pb-2 border-b border-slate-800">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center">
+                    <Mail size={16} />
+                  </div>
+                  <h3 className="font-bold text-slate-200">Contact Support</h3>
                 </div>
-                <h3 className="font-bold text-slate-200">Contact Support</h3>
-              </div>
-              <button 
-                type="button"
-                onClick={() => setIsContactModalOpen(false)}
-                className="text-slate-500 hover:text-slate-300 transition text-sm font-bold border-0 bg-transparent cursor-pointer"
-              >
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={handleContactSubmit} className="space-y-4 text-xs font-sans">
-              <p className="text-slate-400 leading-normal font-sans">
-                Submit an issue or request to our technical team.
-              </p>
-
-              <div className="space-y-1 text-left">
-                <label className="block text-slate-400 font-semibold mb-1">Your Name / Role</label>
-                <input 
-                  type="text"
-                  required
-                  placeholder="e.g. John Doe (Teacher)"
-                  value={contactForm.nameRole}
-                  onChange={(e) => setContactForm({ ...contactForm, nameRole: e.target.value })}
-                  className="w-full px-3 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 focus:outline-none focus:border-indigo-500 text-sm"
-                />
-              </div>
-
-              <div className="space-y-1 text-left">
-                <label className="block text-slate-400 font-semibold mb-1">Contact Number / Email</label>
-                <input 
-                  type="text"
-                  required
-                  placeholder="e.g. john@example.com or +233..."
-                  pattern="^([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|[+]?[\d\s-]{9,})$"
-                  title="Please enter a valid email address or phone number"
-                  value={contactForm.contactInfo}
-                  onChange={(e) => setContactForm({ ...contactForm, contactInfo: e.target.value })}
-                  className="w-full px-3 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 focus:outline-none focus:border-indigo-500 text-sm"
-                />
-              </div>
-
-              <div className="space-y-1 text-left">
-                <label className="block text-slate-400 font-semibold mb-1">Description of Issue / Request</label>
-                <textarea
-                  required
-                  rows={4}
-                  minLength={20}
-                  placeholder="Please describe your issue or request in detail (min 20 chars)..."
-                  value={contactForm.description}
-                  onChange={(e) => setContactForm({ ...contactForm, description: e.target.value })}
-                  className="w-full px-3 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 focus:outline-none focus:border-indigo-500 text-sm resize-none"
-                ></textarea>
-              </div>
-
-              <div className="flex gap-2.5 justify-end pt-2 font-sans">
-                <button
+                <button 
                   type="button"
-                  disabled={isContactSubmitting}
                   onClick={() => setIsContactModalOpen(false)}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-bold rounded-xl transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 rounded-xl border border-rose-500/20 hover:border-rose-500/35 shadow-xs transition cursor-pointer text-xs font-bold font-sans select-none shrink-0"
                 >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isContactSubmitting}
-                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition cursor-pointer flex items-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed min-w-[140px] justify-center"
-                >
-                  {isContactSubmitting ? (
-                    <>
-                      <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                      Processing...
-                    </>
-                  ) : (
-                    'Send to Support'
-                  )}
+                  <X size={13} className="stroke-[2.5]" />
+                  <span>Close</span>
                 </button>
               </div>
-            </form>
-          </motion.div>
-        </div>
-      )}
+
+              <form onSubmit={handleContactSubmit} className="space-y-4 text-xs font-sans">
+                <p className="text-slate-400 leading-normal font-sans">
+                  Submit an issue or request to our technical team.
+                </p>
+
+                <div className="space-y-1 text-left">
+                  <label className="block text-slate-400 font-semibold mb-1">Your Name / Role</label>
+                  <input 
+                    type="text"
+                    required
+                    placeholder="e.g. John Doe (Teacher)"
+                    value={contactForm.nameRole}
+                    onChange={(e) => setContactForm({ ...contactForm, nameRole: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 focus:outline-none focus:border-indigo-500 text-sm"
+                  />
+                </div>
+
+                <div className="space-y-1 text-left">
+                  <label className="block text-slate-400 font-semibold mb-1">Contact Number / Email</label>
+                  <input 
+                    type="text"
+                    required
+                    placeholder="e.g. john@example.com or +233..."
+                    pattern="^([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|[+]?[\d\s-]{9,})$"
+                    title="Please enter a valid email address or phone number"
+                    value={contactForm.contactInfo}
+                    onChange={(e) => setContactForm({ ...contactForm, contactInfo: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 focus:outline-none focus:border-indigo-500 text-sm"
+                  />
+                </div>
+
+                <div className="space-y-1 text-left">
+                  <label className="block text-slate-400 font-semibold mb-1">Description of Issue / Request</label>
+                  <textarea
+                    required
+                    rows={4}
+                    minLength={20}
+                    placeholder="Please describe your issue or request in detail (min 20 chars)..."
+                    value={contactForm.description}
+                    onChange={(e) => setContactForm({ ...contactForm, description: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-800 rounded-xl bg-slate-950 text-slate-200 focus:outline-none focus:border-indigo-500 text-sm resize-none"
+                  ></textarea>
+                </div>
+
+                <div className="flex gap-2.5 justify-end pt-2 font-sans">
+                  <button
+                    type="button"
+                    disabled={isContactSubmitting}
+                    onClick={() => setIsContactModalOpen(false)}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 border border-rose-500/20 hover:border-rose-500/35 text-xs font-bold rounded-xl shadow-xs transition cursor-pointer select-none disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <X size={13} className="stroke-[2.5]" />
+                    <span>Cancel</span>
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isContactSubmitting}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition cursor-pointer flex items-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed min-w-[140px] justify-center"
+                  >
+                    {isContactSubmitting ? (
+                      <>
+                        <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                        Processing...
+                      </>
+                    ) : (
+                      'Send to Support'
+                    )}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Global Stacked Toast Notifications */}
-      <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-3 max-w-sm w-full no-print pointer-events-none">
+      <div className="fixed bottom-4 right-4 sm:bottom-6 sm:right-6 left-4 sm:left-auto max-w-sm z-50 flex flex-col gap-3 no-print pointer-events-none">
         <AnimatePresence>
           {toasts.map((toast) => (
             <motion.div
@@ -2320,128 +3163,512 @@ function AppContent() {
 
       {/* Dynamic Institutional Board Header */}
       <header className={`bg-gradient-to-r ${themeStyles.gradientHeader} text-white shadow-md py-4 px-6 no-print`}>
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
+        <div className="max-w-7xl mx-auto flex flex-col lg:flex-row items-center justify-between gap-4">
           
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-white/15 backdrop-blur-sm border border-white/20 flex items-center justify-center text-amber-300 overflow-hidden">
-              {schoolInfo.logoUrl ? (
-                <img src={schoolInfo.logoUrl} className="w-full h-full object-cover" alt="School logo" referrerPolicy="no-referrer" />
-              ) : (
-                <BookOpen size={22} className="animate-pulse" />
+          <div className="flex flex-col sm:flex-row items-center gap-3 text-center sm:text-left">
+            <div className="flex items-center gap-2">
+              <div className="w-12 h-12 rounded-full bg-white/15 backdrop-blur-sm border border-white/20 flex items-center justify-center text-amber-300 overflow-hidden shrink-0 shadow-sm">
+                {(schoolInfo.logoUrl || schoolInfo.crestUrl) ? (
+                  <img 
+                    src={schoolInfo.logoUrl || schoolInfo.crestUrl} 
+                    className="w-full h-full object-cover" 
+                    alt="School logo" 
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      (e.currentTarget as HTMLElement).style.display = 'none';
+                    }} 
+                  />
+                ) : (
+                  <BookOpen size={24} className="animate-pulse" />
+                )}
+              </div>
+              {schoolInfo.crestUrl && schoolInfo.logoUrl && schoolInfo.crestUrl !== schoolInfo.logoUrl && (
+                <div className="w-10 h-10 rounded-full bg-white/15 backdrop-blur-sm border border-white/20 hidden md:flex items-center justify-center text-amber-300 overflow-hidden shrink-0 shadow-sm">
+                  <img 
+                    src={schoolInfo.crestUrl} 
+                    className="w-full h-full object-cover" 
+                    alt="School crest" 
+                    referrerPolicy="no-referrer" 
+                    onError={(e) => {
+                      (e.currentTarget as HTMLElement).style.display = 'none';
+                    }}
+                  />
+                </div>
               )}
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-base font-display font-black tracking-tight uppercase">{schoolInfo.name}</h1>
-                <span className="bg-amber-400 text-slate-900 text-[9px] px-1.5 py-0.5 rounded font-black font-mono">EMIS: {schoolInfo.emisCode}</span>
+              <div className="flex flex-col sm:flex-row items-center gap-2">
+                <h1 className="text-base font-display font-black tracking-tight uppercase leading-tight">
+                  {schoolInfo.name || 'GES Basic School'}
+                </h1>
+                {schoolInfo.emisCode && (
+                  <span className="bg-amber-400 text-slate-900 text-[9px] px-1.5 py-0.5 rounded font-black font-mono mt-1 sm:mt-0">
+                    EMIS: {schoolInfo.emisCode}
+                  </span>
+                )}
               </div>
-              <p className="text-[11px] opacity-80 italic font-serif">Motto: "{schoolInfo.motto}"</p>
+              {schoolInfo.motto && (
+                <p className="text-[11px] opacity-85 italic font-serif mt-0.5">Motto: "{schoolInfo.motto}"</p>
+              )}
             </div>
           </div>
 
           {/* Identity & Navigation Profile Control */}
-          <div className="flex flex-wrap items-center gap-4 text-xs">
+          <div className="flex flex-col sm:flex-row flex-wrap items-center justify-center lg:justify-end gap-3.5 w-full lg:w-auto text-xs">
             {/* Real-time Connection & Sync Monitor */}
-            <div className="flex items-center gap-2.5 bg-white/10 hover:bg-white/15 transition py-1.5 px-3 rounded-lg border border-white/10 text-white font-sans text-xs">
+            <div className="flex items-center justify-center gap-2.5 bg-white/10 hover:bg-white/15 transition py-1.5 px-3 rounded-xl border border-white/10 text-white font-sans text-xs w-full sm:w-auto">
               <div className="flex items-center gap-1.5">
-                <span className={`inline-block w-2.5 h-2.5 rounded-full ${isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
-                <span className="font-semibold">{isOnline ? 'Cloud Sync Online' : 'Offline Mode Active'}</span>
+                <span className={`inline-block w-2.5 h-2.5 rounded-full ${
+                  !isOnline 
+                    ? 'bg-rose-500 animate-pulse' 
+                    : pendingSyncCount > 0 
+                      ? 'bg-amber-400 animate-bounce' 
+                      : 'bg-emerald-400'
+                }`} />
+                <span className="font-bold font-mono tracking-wide text-[10px] uppercase">
+                  {!isOnline 
+                    ? 'Offline' 
+                    : pendingSyncCount > 0 
+                      ? 'Changes Pending' 
+                      : 'Synced to Cloud Firestore'}
+                </span>
+                {currentUser?.uid && (
+                  <span 
+                    className="text-[9px] font-mono opacity-80 hidden md:inline ml-1 bg-white/10 px-1.5 py-0.5 rounded border border-white/10" 
+                    title={`Login User ID: ${currentUser.uid} (Cloud Firestore synced)`}
+                  >
+                    UID: {currentUser.uid.length > 10 ? `${currentUser.uid.substring(0, 8)}...` : currentUser.uid}
+                  </span>
+                )}
               </div>
               
-              {pendingSyncCount > 0 && (
-                <div className="flex items-center gap-2 border-l border-white/20 pl-2.5">
-                  <span className="font-mono font-bold bg-amber-400 text-slate-950 text-[10px] px-2 py-0.5 rounded-full animate-bounce">
-                    {pendingSyncCount} pending
+              <div className="flex items-center gap-2 border-l border-white/20 pl-2.5">
+                {pendingSyncCount > 0 ? (
+                  <span className="font-mono font-black bg-amber-400 text-slate-950 text-[10px] px-2.5 py-0.5 rounded-full animate-pulse">
+                    {pendingSyncCount} queue
                   </span>
-                  {isOnline && (
-                    <button
-                      onClick={handleManualSync}
-                      disabled={isSyncing}
-                      className="bg-indigo-600 hover:bg-indigo-500 active:translate-y-0.5 text-white text-[9px] font-black px-2 py-0.5 rounded transition uppercase tracking-wider cursor-pointer disabled:opacity-50"
-                    >
-                      {isSyncing ? 'Syncing...' : 'Sync Now'}
-                    </button>
-                  )}
-                </div>
-              )}
+                ) : (
+                  isOnline && (
+                    <div className="flex items-center gap-1 text-emerald-400 text-[10px] font-black uppercase font-mono">
+                      <Check size={11} className="stroke-[3.5]" />
+                      <span>Active</span>
+                    </div>
+                  )
+                )}
+                {isOnline && (
+                  <button
+                    onClick={() => handleManualSync(false)}
+                    disabled={isSyncing}
+                    title={`Sync Login User ID (${currentUser?.uid || 'Account'}) and school database to Cloud Firestore`}
+                    className="bg-indigo-600 hover:bg-indigo-500 active:translate-y-0.5 text-white text-[9px] font-black px-2 py-1 rounded transition uppercase tracking-wider cursor-pointer disabled:opacity-80 flex items-center gap-1.5 justify-center shadow-xs"
+                  >
+                    <RefreshCw size={10} className={isSyncing ? "animate-spin text-amber-300 shrink-0" : "shrink-0"} />
+                    <span>
+                      {isSyncing 
+                        ? (syncProgress ? `Syncing (${syncProgress.current}/${syncProgress.total})` : 'Syncing...') 
+                        : (pendingSyncCount > 0 ? 'Sync Now' : 'Sync to Cloud')}
+                    </span>
+                  </button>
+                )}
+              </div>
             </div>
 
-            <div className="text-right">
-              <span className="text-slate-200 block text-[10px] uppercase font-mono tracking-wider font-semibold">Logged-in User</span>
-              <span className="font-bold text-slate-100 flex items-center gap-1.5">
-                <User size={13} className="text-amber-300" />
-                {currentUser?.name} ({currentUser?.role})
+            <div className="text-center sm:text-right w-full sm:w-auto">
+              <span className="text-slate-200 block text-[9px] uppercase font-mono tracking-wider font-semibold">Logged-in User</span>
+              <span className="font-bold text-slate-100 flex items-center justify-center sm:justify-end gap-1.5 mt-0.5">
+                <User size={13} className="text-amber-300 shrink-0" />
+                <span className="truncate max-w-[140px]" title={`${currentUser?.name} (${currentUser?.role})`}>
+                  {currentUser?.name} ({currentUser?.role})
+                </span>
               </span>
             </div>
             
-            <button
-              onClick={() => setIsContactModalOpen(true)}
-              className="bg-indigo-600/50 hover:bg-indigo-500/80 active:translate-y-0.5 transition px-3 py-1.5 rounded-lg border border-indigo-400/30 hover:border-indigo-400/60 cursor-pointer flex items-center gap-1 font-bold text-white shadow-sm"
-              title="Contact Technical Support"
-            >
-              <Mail size={13} /> Contact Support
-            </button>
+            <div className="flex items-center gap-2 w-full sm:w-auto justify-center sm:justify-end">
+              <button
+                type="button"
+                onClick={toggleDesktopSidebar}
+                className="hidden md:flex bg-slate-800 hover:bg-slate-700 active:scale-95 transition-all px-3 py-2 sm:py-1.5 rounded-xl border border-slate-700 text-slate-200 shadow-md font-bold text-xs cursor-pointer items-center justify-center gap-1.5 shrink-0"
+                title={isDesktopSidebarOpen ? "Hide Navigation Sidebar" : "Show Navigation Sidebar"}
+              >
+                <PanelLeft size={14} className={isDesktopSidebarOpen ? "text-amber-400" : "text-slate-400"} />
+                <span>{isDesktopSidebarOpen ? "Hide Sidebar" : "Show Sidebar"}</span>
+              </button>
 
-            <button
-              onClick={handleLogout}
-              className="bg-white/10 hover:bg-white/20 active:translate-y-0.5 transition px-3 py-1.5 rounded-lg border border-white/20 hover:border-white/40 cursor-pointer flex items-center gap-1 font-bold"
-              title="Sign out of panel"
-            >
-              <LogOut size={13} /> Log out
-            </button>
+              <button
+                type="button"
+                onClick={() => setIsShortcutsHelpOpen(true)}
+                className="bg-slate-800 hover:bg-slate-700 active:scale-95 transition-all px-3 py-2 sm:py-1.5 rounded-xl border border-slate-700 text-slate-200 shadow-md font-bold text-xs cursor-pointer flex items-center justify-center gap-1.5 shrink-0"
+                title="Keyboard Shortcuts Guide (? or Ctrl+/)"
+              >
+                <Keyboard size={14} className="text-amber-400 shrink-0" />
+                <span className="hidden md:inline">Shortcuts</span>
+                <kbd className="hidden lg:inline px-1 py-0.2 bg-slate-900 border border-slate-700 rounded text-[10px] font-mono text-slate-300">?</kbd>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleManualSaveProgress}
+                disabled={isManualSaving}
+                className={`flex-1 sm:flex-initial px-3.5 py-2 sm:py-1.5 rounded-xl border text-xs font-black transition-all active:scale-95 cursor-pointer flex items-center justify-center gap-1.5 shrink-0 shadow-md ${
+                  hasUnsavedChanges 
+                    ? 'bg-amber-400 hover:bg-amber-500 text-slate-950 border-amber-300 shadow-amber-400/20' 
+                    : 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-500'
+                }`}
+                title="Save database changes & progress"
+              >
+                <Save size={14} className={isManualSaving ? "animate-spin shrink-0" : "shrink-0"} />
+                <span className="truncate">{isManualSaving ? "Saving..." : "Save Data"}</span>
+                {hasUnsavedChanges && (
+                  <span className="w-2 h-2 rounded-full bg-red-500 animate-ping shrink-0" />
+                )}
+              </button>
+
+              <button
+                onClick={() => setIsContactModalOpen(true)}
+                className="flex-1 sm:flex-initial bg-indigo-600 hover:bg-indigo-700 active:scale-95 transition-all px-3.5 py-2 sm:py-1.5 rounded-xl border border-indigo-500 text-white shadow-md font-bold text-xs cursor-pointer flex items-center justify-center gap-1.5 shrink-0"
+                title="Contact Technical Support"
+              >
+                <Mail size={14} className="shrink-0" /> 
+                <span className="truncate">Contact Support</span>
+              </button>
+
+              <button
+                onClick={handleLogout}
+                className="flex-1 sm:flex-initial bg-rose-600 hover:bg-rose-700 active:scale-95 transition-all px-3.5 py-2 sm:py-1.5 rounded-xl border border-rose-500 text-white shadow-md font-bold text-xs cursor-pointer flex items-center justify-center gap-1.5 shrink-0"
+                title="Sign out of panel"
+              >
+                <LogOut size={14} className="shrink-0" /> 
+                <span className="truncate">Log out</span>
+              </button>
+            </div>
           </div>
 
         </div>
       </header>
 
-      {/* Primary Workspace container */}
-      <main className="max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 flex-grow space-y-6">
+      {/* Real-time Headteacher Subscription Countdown Banner for Teachers & Staff */}
+      {currentUser && subscriptionStatus && (
+        <div className={`no-print border-b transition-colors shadow-xs ${
+          subscriptionStatus.isLocked
+            ? 'bg-rose-950 text-rose-100 border-rose-800'
+            : subscriptionStatus.remainingDays <= 30
+              ? 'bg-amber-950 text-amber-100 border-amber-800'
+              : 'bg-slate-900 text-slate-100 border-slate-800'
+        } py-2.5 px-4 sm:px-6`}>
+          <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 text-xs font-sans">
+            <div className="flex items-center gap-2 flex-wrap text-center sm:text-left justify-center sm:justify-start">
+              <span className={`w-2 h-2 rounded-full ${subscriptionStatus.isLocked ? 'bg-rose-500 animate-ping' : 'bg-emerald-400 animate-pulse'}`} />
+              <span className="font-extrabold uppercase tracking-wider text-[11px] text-amber-300 font-mono">
+                {currentUser.role === 'Teacher' ? 'Headteacher School Subscription Live Ticker:' : 'School License Ticker:'}
+              </span>
+              <span className="text-slate-300 text-[11px] hidden md:inline font-medium">{subscriptionStatus.message}</span>
+            </div>
+            <div className="flex items-center gap-2 bg-black/50 px-3.5 py-1 rounded-full border border-white/10 font-mono font-black text-amber-300 text-xs shadow-inner shrink-0 tracking-wider">
+              <Clock size={13} className="text-amber-400 animate-spin" />
+              <SubscriptionCountdown currentUser={currentUser} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Workspace container with desktop sidebar + main content */}
+      <div className="flex-1 flex flex-row min-w-0 w-full relative">
+        {/* DESKTOP WORKSPACE SIDEBAR (NO-PRINT) */}
+        <AnimatePresence initial={false}>
+          {isDesktopSidebarOpen && (
+            <motion.aside 
+              id="desktop-navigation-sidebar"
+              key="desktop-sidebar"
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: 280, opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={{ type: 'spring', damping: 28, stiffness: 260, mass: 0.8 }}
+              className="no-print hidden md:flex flex-col bg-white border-r border-slate-200/90 shadow-sm shrink-0 sticky top-[65px] h-[calc(100vh-65px)] z-30 select-none overflow-hidden"
+            >
+              <div className="w-[280px] h-full flex flex-col min-w-[280px]">
+                {/* Sidebar Header */}
+                <div className="p-4 border-b border-slate-100 flex items-center justify-between shrink-0">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 font-bold shadow-2xs">
+                      <Layers size={16} />
+                    </div>
+                    <div>
+                      <h3 className="text-xs font-bold text-slate-800 leading-tight">School Modules</h3>
+                      <span className="text-[10px] text-slate-400 font-mono">Navigation Menu</span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={toggleDesktopSidebar}
+                    className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+                    title="Hide sidebar (Desktop, Ctrl+B)"
+                  >
+                    <PanelLeftClose size={16} />
+                  </button>
+                </div>
+
+                {/* Sidebar Navigation Tabs List - VERTICAL & NEVER HIDES TABS */}
+                <div className="flex-1 overflow-y-auto p-3 space-y-1 scrollbar-thin">
+                  {orderedVisibleTabs.map((tab) => {
+                    const IconComponent = tab.icon;
+                    const isActive = activeTab === tab.id;
+                    return (
+                      <button
+                        key={tab.id}
+                        onClick={() => {
+                          handleTabSwitch(tab.id);
+                          if (tab.refresh) {
+                            refreshAllLogs();
+                          }
+                        }}
+                        className={`w-full group relative flex items-center gap-3 px-3 py-2 rounded-xl font-bold transition-all duration-150 text-xs cursor-pointer text-left border ${
+                          isActive 
+                            ? `${themeStyles.primaryBg || 'bg-indigo-600'} text-white border-transparent shadow-xs` 
+                            : 'text-slate-600 hover:bg-slate-50/80 border-transparent hover:border-slate-100 hover:translate-x-0.5'
+                        }`}
+                      >
+                        <IconComponent size={16} className={`shrink-0 transition-transform duration-150 ${isActive ? 'text-white' : 'text-slate-400 group-hover:text-slate-600 group-hover:scale-105'}`} />
+                        <span className="truncate flex-1 font-semibold">{tab.label}</span>
+                        {tab.id === 'finances' && (
+                          <span className={`text-[9px] px-1.5 py-0.2 rounded font-mono font-bold ${
+                            isActive ? 'bg-white/20 text-white' : 'bg-amber-100 text-amber-800'
+                          }`}>
+                            Finances
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Sidebar Bottom Utilities */}
+                <div className="p-3 border-t border-slate-100 bg-slate-50/50 space-y-1.5 shrink-0">
+                  {(currentUser?.role === 'Admin' || currentUser?.role === 'Headteacher') && (
+                    <button
+                      type="button"
+                      onClick={() => setIsSearchOpen(true)}
+                      className="w-full flex items-center justify-between px-3 py-2 bg-white hover:bg-slate-100 border border-slate-200/80 rounded-xl text-slate-500 hover:text-slate-700 transition cursor-pointer text-xs font-semibold shadow-2xs"
+                      title="Search records (Ctrl+K)"
+                    >
+                      <span className="flex items-center gap-2">
+                        <Search size={13} className="text-indigo-500" />
+                        <span>Quick Search...</span>
+                      </span>
+                      <kbd className="px-1.5 py-0.2 text-[9px] font-mono bg-slate-100 border border-slate-200 rounded text-slate-400">
+                        Ctrl+K
+                      </kbd>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={openQRScanner}
+                    disabled={isSubscriptionLocked}
+                    className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold shadow-2xs border transition cursor-pointer ${
+                      isSubscriptionLocked
+                        ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-60'
+                        : 'bg-indigo-50 hover:bg-indigo-100 border-indigo-200 text-indigo-700'
+                    }`}
+                    title="Scan QR Badge"
+                  >
+                    <QrCode size={13} className={isSubscriptionLocked ? "text-slate-400" : "text-indigo-600"} />
+                    <span>{isSubscriptionLocked ? "Scan QR (Inactive)" : "Scan QR Badge"}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsPalettePickerOpen(true)}
+                    className="w-full flex items-center gap-2 px-3 py-2 bg-white hover:bg-slate-100 border border-slate-200/80 rounded-xl text-slate-600 transition cursor-pointer text-xs font-semibold shadow-2xs"
+                  >
+                    <Palette size={13} className="text-indigo-500" />
+                    <span>Theme Accent</span>
+                  </button>
+                </div>
+              </div>
+            </motion.aside>
+          )}
+        </AnimatePresence>
+
+        {/* Floating Sidebar Reopen trigger if sidebar is collapsed on desktop */}
+        <AnimatePresence>
+          {!isDesktopSidebarOpen && (
+            <motion.button
+              key="floating-sidebar-toggle"
+              initial={{ opacity: 0, scale: 0.85, x: -16 }}
+              animate={{ opacity: 1, scale: 1, x: 0 }}
+              exit={{ opacity: 0, scale: 0.85, x: -16 }}
+              transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+              onClick={toggleDesktopSidebar}
+              className="no-print hidden md:flex fixed bottom-6 left-6 z-40 bg-slate-900/95 hover:bg-slate-800 active:scale-95 text-white shadow-xl backdrop-blur-sm border border-slate-700/80 px-3.5 py-2.5 rounded-full text-xs font-bold items-center gap-2 transition cursor-pointer group"
+              title="Show Navigation Sidebar (Ctrl+B)"
+            >
+              <PanelLeft size={16} className="text-amber-400 group-hover:rotate-6 transition-transform" />
+              <span>Show Sidebar</span>
+              <kbd className="text-[9px] font-mono text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">Ctrl+B</kbd>
+            </motion.button>
+          )}
+        </AnimatePresence>
+
+        {/* Primary Workspace container */}
+        <main className="flex-1 min-w-0 w-full max-w-7xl xl:max-w-[1536px] 2xl:max-w-[1720px] mx-auto px-3 sm:px-6 py-4 sm:py-6 pb-24 md:pb-6 space-y-6">
         
         {/* DESIGN RIBBONS Navigation Buttons / Mobile Drawer (no-print) */}
-        <nav id="module-tabs-ribbon" className="no-print">
-          {/* Desktop version: horizontal button ribbon */}
-          <div className="hidden md:flex bg-white border border-slate-200 p-2 rounded-xl shadow-xs flex-wrap gap-1 items-center w-full">
-            {orderedVisibleTabs.map((tab) => {
-              const IconComponent = tab.icon;
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  draggable
-                  onDragStart={(e) => handleDragStart(e, tab.id)}
-                  onDragOver={(e) => handleDragOver(e, tab.id)}
-                  onDragEnd={handleDragEnd}
-                  onClick={() => {
-                    setActiveTab(tab.id);
-                    if (tab.refresh) {
-                      refreshAllLogs();
-                    }
-                  }}
-                  className={`group flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold transition text-xs select-none cursor-grab active:cursor-grabbing border ${
-                    isActive 
-                      ? `${themeStyles.primaryBg} text-white shadow-xs border-transparent` 
-                      : 'text-slate-600 hover:bg-slate-50 border-transparent hover:border-slate-100'
-                  } ${draggedTabId === tab.id ? 'opacity-30 scale-95 border border-dashed border-slate-300 bg-slate-50' : ''}`}
-                  title="Drag tab horizontally to prioritize or reorder"
-                >
-                  <GripVertical 
-                    size={12} 
-                    className={`transition shrink-0 ${
+        <nav id="module-tabs-ribbon" className={`no-print ${isDesktopSidebarOpen ? 'md:hidden' : 'block'}`}>
+          {/* Desktop/Tablet version: horizontal button ribbon and action tools stretching from end to end */}
+          <div className="hidden md:flex flex-row items-center gap-2.5 w-full">
+            {/* Scrollable Tabs List stretching from end to end */}
+            <div className="flex-1 min-w-0 bg-white border border-slate-200 p-2 rounded-2xl shadow-xs overflow-x-auto scrollbar-thin scrollbar-thumb-slate-300 hover:scrollbar-thumb-slate-400 flex items-center gap-1.5 w-full">
+              {orderedVisibleTabs.map((tab) => {
+                const IconComponent = tab.icon;
+                const isActive = activeTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    draggable
+                    onDragStart={(e) => handleDragStart(e, tab.id)}
+                    onDragOver={(e) => handleDragOver(e, tab.id)}
+                    onDragEnd={handleDragEnd}
+                    onClick={() => {
+                      handleTabSwitch(tab.id);
+                      if (tab.refresh) {
+                        refreshAllLogs();
+                      }
+                    }}
+                    className={`group relative flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-bold transition-all text-xs select-none cursor-grab active:cursor-grabbing border shrink-0 z-10 ${
                       isActive 
-                        ? 'text-white/40 group-hover:text-white/80' 
-                        : 'text-slate-300 group-hover:text-slate-400'
-                    }`} 
-                  />
-                  <IconComponent size={14} className="shrink-0" /> 
-                  <span>{tab.label}</span>
-                </button>
-              );
-            })}
+                        ? `${themeStyles.primaryBg || 'bg-indigo-600'} text-white border-transparent shadow-xs font-black` 
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/80 border-transparent hover:border-slate-200/60 bg-transparent'
+                    } ${draggedTabId === tab.id ? 'opacity-30 scale-95 border border-dashed border-slate-300 bg-slate-50 font-sans' : ''}`}
+                    title="Drag tab horizontally to prioritize or reorder"
+                  >
+                    <GripVertical 
+                      size={12} 
+                      className={`transition shrink-0 ${
+                        isActive 
+                          ? 'text-white/60 group-hover:text-white' 
+                          : 'text-slate-300 group-hover:text-slate-400'
+                      }`} 
+                    />
+                    <IconComponent size={14} className={`shrink-0 ${isActive ? 'text-white' : 'text-slate-500 group-hover:text-slate-700'}`} /> 
+                    <span className={`shrink-0 font-bold ${isActive ? 'text-white' : 'text-slate-700'}`}>{tab.label}</span>
+                    {tab.id === 'finances' && (
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold shrink-0 ${
+                        isActive ? 'bg-white/20 text-white border border-white/30' : 'bg-amber-100 text-amber-800 border border-amber-300'
+                      }`}>
+                        Finances
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
 
-            {/* Right-aligned ribbon utilities */}
-            <div className="ml-auto flex items-center gap-2">
-              {(currentUser?.role === 'Admin' || currentUser?.role === 'Headteacher') && (
-                <>
+            {/* Right-aligned ribbon utilities actions */}
+            <div className="flex bg-white border border-slate-200 p-2 rounded-2xl shadow-xs items-center gap-1.5 shrink-0 justify-end">
+              {/* More Tools Dropdown for Tablet */}
+              <div className="relative lg:hidden">
+                <button
+                  type="button"
+                  onClick={() => setIsMoreToolsOpen(!isMoreToolsOpen)}
+                  className={`px-2.5 py-1.5 border rounded-lg transition cursor-pointer flex items-center justify-center gap-1.5 shrink-0 text-[10px] font-bold uppercase tracking-wider font-mono ${
+                    isMoreToolsOpen 
+                      ? 'bg-indigo-50 border-indigo-200 text-indigo-600' 
+                      : 'bg-slate-50 hover:bg-slate-100 border-slate-200/80 text-slate-500 hover:text-slate-700'
+                  }`}
+                  title="More Tools"
+                >
+                  <MoreHorizontal size={13} className="text-indigo-500" />
+                  <span>More</span>
+                </button>
+
+                <AnimatePresence>
+                  {isMoreToolsOpen && (
+                    <>
+                      <div className="fixed inset-0 z-[95]" onClick={() => setIsMoreToolsOpen(false)} />
+                      <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 10 }}
+                        className="absolute right-0 top-full mt-2 w-56 bg-white border border-slate-200 shadow-xl rounded-xl z-[100] p-2 space-y-1 text-left"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsMoreToolsOpen(false);
+                            setIsMobileMenuOpen(true);
+                          }}
+                          className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 rounded-lg text-slate-700 font-bold transition cursor-pointer text-xs"
+                        >
+                          <Menu size={14} className="text-amber-500" />
+                          <span>All Modules Menu</span>
+                        </button>
+
+                        {(currentUser?.role === 'Admin' || currentUser?.role === 'Headteacher') && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsMoreToolsOpen(false);
+                              setIsSearchOpen(true);
+                            }}
+                            className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 rounded-lg text-slate-600 transition cursor-pointer text-xs font-bold"
+                          >
+                            <Search size={14} className="text-indigo-500" />
+                            <span>Quick Search (Ctrl+K)</span>
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsMoreToolsOpen(false);
+                            setIsPalettePickerOpen(true);
+                          }}
+                          className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 rounded-lg text-slate-600 transition cursor-pointer text-xs font-bold"
+                        >
+                          <Palette size={14} className="text-indigo-500" />
+                          <span>Theme Accent</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={openQRScanner}
+                          className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 rounded-lg text-slate-600 transition cursor-pointer text-xs font-bold"
+                        >
+                          <QrCode size={14} className="text-indigo-500" />
+                          <span>Scan QR Badge</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsMoreToolsOpen(false);
+                            setIsVisibilityMenuOpen(true);
+                          }}
+                          className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 rounded-lg text-slate-600 transition cursor-pointer text-xs font-bold"
+                        >
+                          <Eye size={14} className="text-sky-500" />
+                          <span>Contextual Visibility</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsMoreToolsOpen(false);
+                            setIsContactModalOpen(true);
+                          }}
+                          className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-50 rounded-lg text-slate-600 transition cursor-pointer text-xs font-bold border-t border-slate-100 mt-1 pt-1.5"
+                        >
+                          <Mail size={14} className="text-indigo-500" />
+                          <span>Contact Support</span>
+                        </button>
+                      </motion.div>
+                    </>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              {/* Desktop-only utilities container: groups Search and Palette Picker into a single flex container that automatically shifts out under 1024px */}
+              <div className="hidden lg:flex items-center gap-2 shrink-0">
+                {(currentUser?.role === 'Admin' || currentUser?.role === 'Headteacher') && (
                   <button
                     type="button"
                     onClick={() => setIsSearchOpen(true)}
@@ -2456,30 +3683,121 @@ function AppContent() {
                       Ctrl+K
                     </kbd>
                   </button>
+                )}
 
-                </>
-              )}
+                {/* Dynamic Theme Color Accent Palette Picker */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setIsPalettePickerOpen(!isPalettePickerOpen)}
+                    className={`flex p-1.5 border rounded-lg transition cursor-pointer items-center justify-center gap-1.5 shrink-0 text-[10px] font-bold uppercase tracking-wider font-mono ${
+                      isPalettePickerOpen 
+                        ? 'bg-indigo-50 border-indigo-200 text-indigo-600' 
+                        : 'bg-slate-50 hover:bg-slate-100 border-slate-200/80 text-slate-500 hover:text-slate-700'
+                    }`}
+                    title="Toggle Active Workspace Accent Palette"
+                  >
+                    <Palette size={13} className="text-indigo-500" />
+                    <span>Accent</span>
+                    {/* Current Active Accent Color Indicator circle */}
+                    <span className={`w-2.5 h-2.5 rounded-full ${themeStyles.primaryBg}`} />
+                  </button>
 
-              {tabOrder.length > 0 && (
-                <button
-                  onClick={() => {
-                    setTabOrder([]);
-                    localStorage.removeItem(`tab_order_${currentUser?.email || 'guest'}`);
-                  }}
-                  className="px-2.5 py-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-lg border border-slate-100 hover:border-slate-200 transition cursor-pointer flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider font-mono shrink-0"
-                  title="Reset workspace tab order to default"
-                >
-                  <RotateCcw size={11} />
-                  <span>Reset Order</span>
-                </button>
-              )}
+                  <AnimatePresence>
+                    {isPalettePickerOpen && (
+                      <>
+                        {/* Backdrop to close the picker */}
+                        <div className="fixed inset-0 z-[95]" onClick={() => setIsPalettePickerOpen(false)} />
+                        
+                        <motion.div
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: 10 }}
+                          className="absolute right-0 top-full mt-2 w-72 bg-white border border-slate-200 shadow-xl rounded-xl z-[100] p-3 space-y-2.5 text-left"
+                        >
+                          <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                            <span className="text-[10px] uppercase font-black text-slate-400 tracking-wider flex items-center gap-1">
+                              <Palette size={11} className="text-indigo-500" />
+                              Workspace Accent
+                            </span>
+                            <button onClick={() => setIsPalettePickerOpen(false)} className="text-slate-400 hover:text-slate-600">
+                              <X size={12} />
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-5 gap-1.5 pt-1">
+                            {(['Classic', 'Emerald', 'Ruby', 'Cosmic', 'Gold', 'Sophisticated Dark', 'Crystal Glass', 'Midnight', 'Sunset', 'Ocean'] as ThemeType[]).map((theme) => {
+                              const isSelected = activeTheme === theme;
+                              // Extract dot/gradient representative of the theme
+                              let swatchGradient = "from-blue-500 to-indigo-600";
+                              let displayName = "Classic";
+                              if (theme === 'Classic') { swatchGradient = "from-blue-500 to-indigo-600"; displayName = "Classic"; }
+                              else if (theme === 'Emerald') { swatchGradient = "from-emerald-400 to-teal-600"; displayName = "Emerald"; }
+                              else if (theme === 'Ruby') { swatchGradient = "from-rose-500 to-red-600"; displayName = "Ruby"; }
+                              else if (theme === 'Cosmic') { swatchGradient = "from-purple-500 to-violet-700"; displayName = "Cosmic"; }
+                              else if (theme === 'Gold') { swatchGradient = "from-amber-400 to-yellow-600"; displayName = "Gold"; }
+                              else if (theme === 'Sophisticated Dark') { swatchGradient = "from-slate-700 to-slate-900"; displayName = "Soph Dark"; }
+                              else if (theme === 'Crystal Glass') { swatchGradient = "from-sky-300 to-blue-400"; displayName = "Crystal"; }
+                              else if (theme === 'Midnight') { swatchGradient = "from-slate-900 to-slate-950"; displayName = "Midnight"; }
+                              else if (theme === 'Sunset') { swatchGradient = "from-orange-400 to-red-500"; displayName = "Sunset"; }
+                              else if (theme === 'Ocean') { swatchGradient = "from-cyan-400 to-blue-500"; displayName = "Ocean"; }
 
-              <div className="h-5 w-px bg-slate-200 dark:bg-slate-700 mx-0.5" />
+                              return (
+                                <button
+                                  key={theme}
+                                  type="button"
+                                  onClick={() => {
+                                    handleThemeChange(theme);
+                                    setIsPalettePickerOpen(false);
+                                  }}
+                                  className={`group relative flex flex-col items-center justify-center p-1.5 rounded-xl border transition cursor-pointer text-center ${
+                                    isSelected 
+                                      ? 'border-indigo-500 bg-indigo-50/40 ring-2 ring-indigo-500/20' 
+                                      : 'border-slate-100 bg-slate-50/30 hover:bg-white hover:border-slate-300 hover:shadow-xs'
+                                  }`}
+                                  title={`Switch to ${theme} workspace theme`}
+                                >
+                                  {/* Swatch representation circle with optional inner checkmark */}
+                                  <div className={`w-8 h-8 rounded-full bg-gradient-to-br ${swatchGradient} shadow-sm flex items-center justify-center relative transition-all group-hover:scale-105`}>
+                                    {isSelected && (
+                                      <Check size={12} className="text-white drop-shadow-md font-extrabold" />
+                                    )}
+                                  </div>
+                                  <span className="text-[7.5px] font-black text-slate-500 truncate w-full mt-1.5 uppercase tracking-tight block">
+                                    {displayName}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </motion.div>
+                      </>
+                    )}
+                  </AnimatePresence>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={openQRScanner}
+                disabled={isSubscriptionLocked}
+                className={`px-3.5 py-2.5 border rounded-xl transition-all flex items-center justify-center gap-1.5 shrink-0 text-[10px] font-bold uppercase tracking-wider font-mono shadow-2xs ${
+                  isSubscriptionLocked
+                    ? 'bg-slate-100 dark:bg-slate-800/60 border-slate-300 dark:border-slate-700 text-slate-400 cursor-not-allowed opacity-60'
+                    : 'bg-indigo-50 hover:bg-indigo-100 border-indigo-200 text-indigo-700 cursor-pointer active:scale-95'
+                }`}
+                title={isSubscriptionLocked ? "Scan QR Badge is inactive for expired users" : "Scan QR Badge"}
+              >
+                <QrCode size={13} className={isSubscriptionLocked ? "text-slate-400" : "text-indigo-600"} />
+                <span className="hidden lg:inline">{isSubscriptionLocked ? "Scan QR (Inactive)" : "Scan QR Badge"}</span>
+              </button>
+
+              <div className="h-5 w-px bg-slate-200 dark:bg-slate-700 mx-0.5 shrink-0" />
+
               <div className="relative">
                 <button
                   type="button"
                   onClick={() => setIsVisibilityMenuOpen(!isVisibilityMenuOpen)}
-                  className={`p-1.5 border rounded-lg transition cursor-pointer flex items-center justify-center shrink-0 ${isVisibilityMenuOpen ? 'bg-indigo-50 border-indigo-200 text-indigo-600' : 'bg-slate-50 hover:bg-slate-100 border-slate-200/80 text-slate-500 hover:text-slate-700'}`}
+                  className={`p-2.5 border rounded-xl transition-all cursor-pointer flex items-center justify-center shrink-0 active:scale-95 shadow-2xs ${isVisibilityMenuOpen ? 'bg-sky-100 border-sky-300 text-sky-800' : 'bg-sky-50 hover:bg-sky-100 border-sky-200 text-sky-700'}`}
                   title="Contextual Visibility"
                 >
                   {hiddenTabs.length > 0 ? <EyeOff size={13} /> : <Eye size={13} />}
@@ -2494,9 +3812,27 @@ function AppContent() {
                     >
                       <div className="flex items-center justify-between mb-3 border-b border-slate-100 pb-2">
                         <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Contextual Visibility</span>
-                        <button onClick={() => setIsVisibilityMenuOpen(false)} className="text-slate-400 hover:text-slate-600">
-                          <X size={14} />
-                        </button>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setTabOrder([]);
+                              setHiddenTabs([]);
+                              const email = currentUser?.email || 'guest';
+                              localStorage.removeItem(`tab_order_${email}`);
+                              localStorage.removeItem(`hidden_tabs_${email}`);
+                              showToast("Tab layout reset to default successfully!", "success");
+                            }}
+                            className="text-[9.5px] font-bold text-slate-500 hover:text-rose-600 flex items-center gap-1 cursor-pointer bg-slate-50 hover:bg-rose-50 px-2 py-0.5 rounded-md border border-slate-200 transition"
+                            title="Reset workspace tab order and visibility to default"
+                          >
+                            <RotateCcw size={10} />
+                            <span>Reset</span>
+                          </button>
+                          <button onClick={() => setIsVisibilityMenuOpen(false)} className="text-slate-400 hover:text-slate-600">
+                            <X size={14} />
+                          </button>
+                        </div>
                       </div>
                       <div className="max-h-64 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
                         {visibleTabs.map(tab => (
@@ -2518,6 +3854,7 @@ function AppContent() {
                   )}
                 </AnimatePresence>
               </div>
+
               <button
                 type="button"
                 onClick={() => {
@@ -2527,415 +3864,392 @@ function AppContent() {
                   setTimeout(() => setIsRefreshing(false), 800);
                 }}
                 disabled={isRefreshing}
-                className="p-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200/80 rounded-lg text-slate-500 hover:text-slate-700 transition cursor-pointer flex items-center justify-center shrink-0"
+                className="p-2.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 rounded-xl transition-all cursor-pointer flex items-center justify-center shrink-0 active:scale-95 shadow-2xs"
                 title="Force-reload local database state"
               >
-                <RefreshCw size={13} className={isRefreshing ? 'animate-spin text-indigo-500' : ''} />
+                <RefreshCw size={13} className={isRefreshing ? 'animate-spin text-emerald-600' : ''} />
               </button>
             </div>
           </div>
 
           {/* Mobile version: Hamburger triggers the drawer navigation list */}
-          <div className="flex md:hidden bg-white border border-slate-200 p-2.5 rounded-xl shadow-xs justify-between items-center w-full">
-            <div className="flex items-center gap-2">
-              <div className={`p-1.5 rounded-lg ${themeStyles.primaryBg} text-white`}>
-                <CurrentActiveIcon size={16} />
+          <div className="flex md:hidden bg-white border border-slate-200 p-3.5 rounded-2xl shadow-md justify-between items-center w-full">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className={`p-2.5 rounded-xl ${themeStyles.primaryBg} text-white shrink-0 shadow-xs`}>
+                <CurrentActiveIcon size={18} />
               </div>
-              <div>
-                <span className="text-[9px] uppercase tracking-wider font-mono text-slate-400 font-bold block leading-none mb-0.5">Current Workspace</span>
-                <span className="text-xs font-black text-slate-800 uppercase leading-none block">
+              <div className="min-w-0">
+                <span className="text-[9.5px] uppercase tracking-wider font-mono text-slate-400 font-extrabold block leading-none mb-0.5">Current Workspace</span>
+                <span className="text-sm font-black text-slate-800 uppercase leading-none block truncate">
                   {currentActiveTab.label}
                 </span>
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-2 shrink-0">
               {(currentUser?.role === 'Admin' || currentUser?.role === 'Headteacher') && (
                 <button
                   type="button"
                   onClick={() => setIsSearchOpen(true)}
-                  className="p-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 border border-indigo-100 text-indigo-700 transition cursor-pointer flex items-center justify-center active:scale-95 shrink-0"
+                  className="p-3 rounded-xl bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 transition cursor-pointer flex items-center justify-center active:scale-95 shrink-0 shadow-2xs"
                   title="Quick Search"
                 >
-                  <Search size={16} />
+                  <Search size={18} />
                 </button>
               )}
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setIsVisibilityMenuOpen(!isVisibilityMenuOpen)}
-                  className={`p-2 rounded-xl border transition cursor-pointer flex items-center justify-center shrink-0 ${isVisibilityMenuOpen ? 'bg-indigo-50 border-indigo-200 text-indigo-600' : 'bg-slate-50 hover:bg-slate-100 border-slate-100 text-slate-700'}`}
-                  title="Contextual Visibility"
-                >
-                  {hiddenTabs.length > 0 ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
-                <AnimatePresence>
-                  {isVisibilityMenuOpen && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 10 }}
-                      className="absolute right-0 top-full mt-2 w-64 bg-white border border-slate-200 shadow-xl rounded-xl z-[100] p-3 overflow-hidden"
-                    >
-                      <div className="flex items-center justify-between mb-3 border-b border-slate-100 pb-2">
-                        <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Contextual Visibility</span>
-                        <button onClick={() => setIsVisibilityMenuOpen(false)} className="text-slate-400 hover:text-slate-600">
-                          <X size={14} />
-                        </button>
-                      </div>
-                      <div className="max-h-64 overflow-y-auto space-y-1 pr-1 custom-scrollbar text-left">
-                        {visibleTabs.map(tab => (
-                          <label key={`vis-mob-${tab.id}`} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded-lg cursor-pointer transition">
-                            <span className={`text-xs font-bold flex items-center gap-2 ${hiddenTabs.includes(tab.id) ? 'text-slate-400' : 'text-slate-700'}`}>
-                              <tab.icon size={12} className={hiddenTabs.includes(tab.id) ? 'text-slate-300' : 'text-indigo-500'} />
-                              {tab.label}
-                            </span>
-                            <input 
-                              type="checkbox" 
-                              checked={!hiddenTabs.includes(tab.id)} 
-                              onChange={() => toggleTabVisibility(tab.id)}
-                              className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4"
-                            />
-                          </label>
-                        ))}
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
               <button
-                onClick={() => setIsMobileMenuOpen(true)}
-                className="p-2 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-100 text-slate-700 transition cursor-pointer flex items-center gap-1.5 active:scale-95"
+                type="button"
+                onClick={() => setIsMobileMenuOpen(prev => !prev)}
+                className={`py-2.5 px-4 rounded-xl transition cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0 shadow-md border-0 ${
+                  isMobileMenuOpen 
+                    ? 'bg-amber-400 text-slate-950 font-black' 
+                    : 'bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold'
+                }`}
+                title="Toggle Full Navigation Menu"
               >
-                <Menu size={16} />
-                <span className="text-[10px] font-bold uppercase tracking-wider font-mono">Menu</span>
+                {isMobileMenuOpen ? <X size={18} /> : <Menu size={18} />}
+                <span className="text-[11px] uppercase tracking-widest font-mono font-black">
+                  {isMobileMenuOpen ? 'Close' : 'Menu'}
+                </span>
               </button>
             </div>
           </div>
 
-          {/* Slide-out Mobile Drawer */}
+          {/* Centered Mobile Visibility Menu Overlay */}
           <AnimatePresence>
-            {isMobileMenuOpen && (
-              <motion.div
-                key="drawer-overlay"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={() => setIsMobileMenuOpen(false)}
-                className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs z-50 md:hidden"
-              />
-            )}
-            {isMobileMenuOpen && (
-              <motion.div
-                key="drawer-sidebar"
-                initial={{ x: '-100%' }}
-                animate={{ x: 0 }}
-                exit={{ x: '-100%' }}
-                transition={{ type: 'spring', damping: 25, stiffness: 220 }}
-                className="fixed inset-y-0 left-0 w-80 max-w-[85vw] bg-slate-900 text-white shadow-2xl z-50 flex flex-col md:hidden border-r border-slate-800"
-              >
-                {/* Drawer Header */}
-                <div className="p-5 border-b border-slate-800 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <GraduationCap className="text-amber-400" size={24} />
-                    <div>
-                      <h2 className="text-sm font-black tracking-wider uppercase font-display">GTM Systems</h2>
-                      <p className="text-[10px] text-slate-400 font-mono">School Portal</p>
-                    </div>
+            {isVisibilityMenuOpen && (
+              <>
+                <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs z-[150]" onClick={() => setIsVisibilityMenuOpen(false)} />
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95, y: 15 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: 15 }}
+                  className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90vw] max-w-sm bg-white border border-slate-200 shadow-2xl rounded-2xl z-[160] p-4 text-left text-slate-800"
+                >
+                  <div className="flex items-center justify-between mb-3 border-b border-slate-100 pb-2">
+                    <span className="text-xs uppercase font-extrabold text-slate-500 tracking-wider">Contextual Visibility</span>
+                    <button onClick={() => setIsVisibilityMenuOpen(false)} className="text-slate-400 hover:text-slate-600">
+                      <X size={16} />
+                    </button>
                   </div>
-                  <button 
-                    onClick={() => setIsMobileMenuOpen(false)}
-                    className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition cursor-pointer"
-                  >
-                    <X size={18} />
-                  </button>
-                </div>
-
-                {/* Drawer Content - Module Links */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-1.5">
-                  <p className="text-[10px] uppercase tracking-wider font-mono font-bold text-slate-500 px-3 mb-2">
-                    Portal Sections
-                  </p>
-                  {orderedVisibleTabs.map((tab) => {
-                    const IconComponent = tab.icon;
-                    const isActive = activeTab === tab.id;
-                    return (
-                      <button
-                        key={tab.id}
-                        onClick={() => {
-                          setActiveTab(tab.id);
-                          if (tab.refresh) {
-                            refreshAllLogs();
-                          }
-                          setIsMobileMenuOpen(false);
-                        }}
-                        className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-bold transition cursor-pointer ${
-                          isActive 
-                            ? 'bg-amber-400 text-slate-950 font-black shadow-lg' 
-                            : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-                        }`}
-                      >
-                        <IconComponent size={18} className={isActive ? 'text-slate-950' : 'text-slate-400'} />
-                        <span>{tab.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Drawer Footer info */}
-                <div className="p-5 border-t border-slate-800 bg-slate-950/40 space-y-3">
-                  {currentUser && (
-                    <div className="flex items-center gap-3 bg-slate-800/40 p-2.5 rounded-xl border border-slate-800/80">
-                      <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center font-bold text-xs text-amber-400">
-                        {currentUser.name ? currentUser.name.charAt(0).toUpperCase() : 'U'}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs font-bold text-white truncate">{currentUser.name}</p>
-                        <p className="text-[9px] text-slate-400 font-mono truncate">{currentUser.role}</p>
-                      </div>
-                    </div>
-                  )}
-                  <button
-                    onClick={() => {
-                      setIsMobileMenuOpen(false);
-                      DbController.logout();
-                      setCurrentUser(null);
-                    }}
-                    className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-xs font-bold transition cursor-pointer"
-                  >
-                    <LogOut size={14} /> Log Out
-                  </button>
-                </div>
-              </motion.div>
+                  <div className="max-h-64 overflow-y-auto space-y-1 pr-1 custom-scrollbar text-left">
+                    {visibleTabs.map(tab => (
+                      <label key={`vis-mob-${tab.id}`} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded-lg cursor-pointer transition">
+                        <span className={`text-xs font-bold flex items-center gap-2 ${hiddenTabs.includes(tab.id) ? 'text-slate-400' : 'text-slate-700'}`}>
+                          <tab.icon size={14} className={hiddenTabs.includes(tab.id) ? 'text-slate-300' : 'text-indigo-500'} />
+                          {tab.label}
+                        </span>
+                        <input 
+                          type="checkbox" 
+                          checked={!hiddenTabs.includes(tab.id)} 
+                          onChange={() => toggleTabVisibility(tab.id)}
+                          className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </motion.div>
+              </>
             )}
           </AnimatePresence>
+
+          {/* Centered Mobile Palette Picker Overlay */}
+          <AnimatePresence>
+            {isPalettePickerOpen && (
+              <>
+                <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs z-[150]" onClick={() => setIsPalettePickerOpen(false)} />
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95, y: 15 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: 15 }}
+                  className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90vw] max-w-sm bg-white border border-slate-200 shadow-2xl rounded-2xl z-[160] p-4 text-left text-slate-800"
+                >
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                    <span className="text-xs uppercase font-extrabold text-slate-500 tracking-wider flex items-center gap-1.5 font-display">
+                      <Palette size={14} className="text-indigo-500" />
+                      Workspace Accent
+                    </span>
+                    <button onClick={() => setIsPalettePickerOpen(false)} className="text-slate-400 hover:text-slate-600">
+                      <X size={16} />
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 pt-3">
+                    {(['Classic', 'Emerald', 'Ruby', 'Cosmic', 'Gold', 'Sophisticated Dark', 'Crystal Glass', 'Midnight', 'Sunset', 'Ocean'] as ThemeType[]).map((theme) => {
+                      const isSelected = activeTheme === theme;
+                      let swatchGradient = "from-blue-500 to-indigo-600";
+                      let displayName = "Classic";
+                      if (theme === 'Classic') { swatchGradient = "from-blue-500 to-indigo-600"; displayName = "Classic"; }
+                      else if (theme === 'Emerald') { swatchGradient = "from-emerald-400 to-teal-600"; displayName = "Emerald"; }
+                      else if (theme === 'Ruby') { swatchGradient = "from-rose-500 to-red-600"; displayName = "Ruby"; }
+                      else if (theme === 'Cosmic') { swatchGradient = "from-purple-500 to-violet-700"; displayName = "Cosmic"; }
+                      else if (theme === 'Gold') { swatchGradient = "from-amber-400 to-yellow-600"; displayName = "Gold"; }
+                      else if (theme === 'Sophisticated Dark') { swatchGradient = "from-slate-700 to-slate-900"; displayName = "Soph Dark"; }
+                      else if (theme === 'Crystal Glass') { swatchGradient = "from-sky-300 to-blue-400"; displayName = "Crystal"; }
+                      else if (theme === 'Midnight') { swatchGradient = "from-slate-900 to-slate-950"; displayName = "Midnight"; }
+                      else if (theme === 'Sunset') { swatchGradient = "from-orange-400 to-red-500"; displayName = "Sunset"; }
+                      else if (theme === 'Ocean') { swatchGradient = "from-cyan-400 to-blue-500"; displayName = "Ocean"; }
+
+                      return (
+                        <button
+                          key={theme}
+                          type="button"
+                          onClick={() => {
+                            handleThemeChange(theme);
+                            setIsPalettePickerOpen(false);
+                          }}
+                          className={`group relative flex items-center gap-2 p-1.5 rounded-xl border transition cursor-pointer text-left ${
+                            isSelected 
+                              ? 'border-indigo-500 bg-indigo-50/40 ring-2 ring-indigo-500/20' 
+                              : 'border-slate-100 bg-slate-50/30 hover:bg-white hover:border-slate-300 hover:shadow-xs'
+                          }`}
+                        >
+                          <div className={`w-5 h-5 rounded-full bg-gradient-to-br ${swatchGradient} shadow-sm flex items-center justify-center shrink-0 relative transition-all group-hover:scale-105`}>
+                            {isSelected && (
+                              <Check size={10} className="text-white drop-shadow-md font-extrabold" />
+                            )}
+                          </div>
+                          <span className="text-[10px] font-black text-slate-500 truncate uppercase tracking-tight block">
+                            {displayName}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </motion.div>
+              </>
+            )}
+          </AnimatePresence>
+
         </nav>
 
-        {/* Active Tab Control Toolbar (Save Progress) */}
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4 no-print select-none">
-          
-          {/* Workspace Title & Metadata */}
-          <div className="flex items-center gap-3">
-            <div className={`p-2.5 rounded-xl ${themeStyles.primaryBg || 'bg-indigo-600'} text-white shadow-xs`}>
-              <CurrentActiveIcon size={20} />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-xs font-bold tracking-tight text-slate-800 dark:text-slate-100 uppercase">
-                  {currentActiveTab.label} Workspace
-                </h2>
-                {/* AnimatePresence for tab status */}
-              </div>
-              <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5 font-sans leading-none">
-                GEETECH aligned live database interface. Sync status: {isOnline ? "Online Connected" : "Local Backup Mode"}
-              </p>
-            </div>
-          </div>
-
-          {/* Action Buttons for Save and Refresh */}
-          <div className="flex items-center gap-2.5">
-            {/* Manual Save Progress Button */}
-            <button
-              onClick={handleManualSaveProgress}
-              disabled={isManualSaving}
-              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-black transition active:scale-95 cursor-pointer border select-none ${
-                hasUnsavedChanges 
-                  ? 'bg-amber-400 hover:bg-amber-500 text-slate-950 border-amber-300 shadow-md shadow-amber-400/10' 
-                  : 'bg-slate-50 dark:bg-slate-950 hover:bg-slate-100 dark:hover:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-800'
-              }`}
-              title="Manually trigger step-by-step progress save check"
-            >
-              <Save size={14} className={isManualSaving ? "animate-pulse" : ""} />
-              <span>
-                {isManualSaving ? "Saving..." : "Save Progress"}
-              </span>
-              {hasUnsavedChanges && (
-                <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
-              )}
-            </button>
-          </div>
-
-        </div>
-
-        {/* Dynamic sub-tab workspace rendering */}
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={activeTab}
-            initial={{ opacity: 0, y: 3 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -3 }}
-            transition={{ duration: 0.15 }}
-          >
-            <React.Suspense fallback={<div className="p-8 flex justify-center w-full"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>}>
-              {activeTab === 'dashboard' && (
-                currentUser?.role === 'Teacher' && teacherProfile ? (
-                  <TeacherDashboardTab 
-                    teacherProfile={teacherProfile}
-                    students={students}
-                    attendance={attendance}
-                    assessments={assessments}
-                    reflections={reflections}
-                    schoolInfo={schoolInfo}
-                    calendar={DbController.getAcademicCalendar()}
-                    themeStyles={themeStyles}
-                    onNavigate={(tabId) => {
-                      setActiveTab(tabId);
-                      refreshAllLogs();
-                    }}
-                    onRefresh={refreshAllLogs}
-                  />
-                ) : (
-                  <DashboardSummaryTab 
-                    theme={themeStyles} 
-                    students={students}
-                    onRefresh={refreshAllLogs}
-                    setActiveTab={setActiveTab}
-                    setSettingsSubTab={setSettingsSubTab}
-                    assignedClasses={assignedClasses}
-                    assignedSubjects={assignedSubjects}
-                    assignedClass={assignedClasses[0] || 'None'}
-                    userRole={currentUser?.role}
-                  />
-                )
-              )}
-
-            {activeTab === 'school_profile' && (
-              <SchoolProfileTab 
-                theme={themeStyles} 
-                schoolInfo={schoolInfo} 
-                onUpdate={setSchoolInfo}
-                isAutoSave={isAutoSave}
-                onManualSave={() => setHasUnsavedChanges(false)}
-              />
-            )}
-
-            {activeTab === 'calendar' && (
-              <AcademicCalendarTab 
-                themeStyles={themeStyles} 
-                onConfigChanged={() => {
-                  const updatedUser = DbController.getCurrentUser();
-                  setCurrentUser(updatedUser);
+        {/* Sub-tab workspace container */}
+        <div key={activeTab} className="relative w-full min-h-[520px]">
+          {activeTab === 'dashboard' && (
+            currentUser?.role === 'Teacher' && teacherProfile ? (
+              <TeacherDashboardTab 
+                teacherProfile={teacherProfile}
+                students={students}
+                attendance={attendance}
+                assessments={assessments}
+                reflections={reflections}
+                schoolInfo={schoolInfo}
+                calendar={DbController.getAcademicCalendar()}
+                themeStyles={themeStyles}
+                onNavigate={(tabId) => {
+                  handleTabSwitch(tabId);
                   refreshAllLogs();
                 }}
-              />
-            )}
-
-            {activeTab === 'students' && (
-              <StudentsTab 
-                theme={themeStyles} 
-                students={students} 
                 onRefresh={refreshAllLogs}
-                isAutoSave={isAutoSave}
-                onManualSave={() => setHasUnsavedChanges(true)}
-                selectedYear={selectedYear}
-                setSelectedYear={handleYearChange}
-                selectedTerm={selectedTerm}
-                setSelectedTerm={handleTermChange}
-                assignedClasses={assignedClasses}
-                assignedSubjects={assignedSubjects}
-                assignedClass={assignedClasses[0] || 'None'}
-                userRole={currentUser?.role}
+                onSaveAll={handleManualSaveProgress}
+                isManualSaving={isManualSaving}
               />
-            )}
-
-            {activeTab === 'teachers' && (
-              <TeachersTab 
-                theme={themeStyles} 
-                teachers={teachers} 
-                onRefresh={refreshAllLogs}
-                isAutoSave={isAutoSave}
-                onManualSave={() => setHasUnsavedChanges(true)}
-                userRole={currentUser?.role}
-              />
-            )}
-
-            {activeTab === 'attendance' && (
-              <AttendanceTab 
-                theme={themeStyles} 
-                isAutoSave={isAutoSave}
-                onManualSave={() => setHasUnsavedChanges(false)}
-                assignedClasses={assignedClasses}
-                assignedSubjects={assignedSubjects}
-                assignedClass={assignedClasses[0] || 'None'}
-                userRole={currentUser?.role}
-                teacherPermissions={teacherProfile?.permissions}
-              />
-            )}
-
-            {activeTab === 'assessments' && (
-              <AssessmentTab 
+            ) : (
+              <DashboardSummaryTab 
                 theme={themeStyles} 
                 students={students}
-                isAutoSave={isAutoSave}
-                onManualSave={() => setHasUnsavedChanges(false)}
-                selectedYear={selectedYear}
-                setSelectedYear={handleYearChange}
-                selectedTerm={selectedTerm}
-                setSelectedTerm={handleTermChange}
-                assignedClasses={assignedClasses}
-                assignedSubjects={assignedSubjects}
-                assignedClass={assignedClasses[0] || 'None'}
-                userRole={currentUser?.role}
-                teacherPermissions={teacherProfile?.permissions}
-              />
-            )}
-
-            {activeTab === 'fees' && (
-              <SchoolFeesTab 
-                theme={themeStyles} 
-                students={students}
-                schoolInfo={schoolInfo}
-                isAutoSave={isAutoSave}
-                onManualSave={() => setHasUnsavedChanges(true)}
-                selectedAcademicYear={selectedYear}
-                setSelectedAcademicYear={handleYearChange}
-                selectedTerm={selectedTerm}
-                setSelectedTerm={handleTermChange}
-              />
-            )}
-
-            {activeTab === 'admin_dashboard' && isAdmin && (
-              <AdminDashboardTab 
-                theme={themeStyles} 
-              />
-            )}
-
-            {activeTab === 'paystack' && isAdmin && (
-              <PaystackManagementTab 
-                themeStyles={themeStyles} 
-              />
-            )}
-
-            {activeTab === 'communications' && (
-              <CommunicationsTab 
-                theme={themeStyles} 
-                students={students} 
-                isAdmin={isAdmin}
-              />
-            )}
-
-            {activeTab === 'emis' && (
-              <EmisTab 
-                theme={themeStyles} 
-              />
-            )}
-
-            {activeTab === 'settings' && (
-              <SettingsTab 
-                theme={themeStyles} 
-                onThemeChange={setActiveTheme} 
-                isAutoSave={isAutoSave}
-                onAutoSaveToggle={setIsAutoSave}
+                teachers={teachers}
+                attendance={attendance}
+                assessments={assessments}
                 onRefresh={refreshAllLogs}
-                settingsSubTab={settingsSubTab}
+                setActiveTab={handleTabSwitch}
                 setSettingsSubTab={setSettingsSubTab}
+                assignedClasses={assignedClasses}
+                assignedSubjects={assignedSubjects}
+                assignedClass={assignedClasses[0] || 'None'}
+                userRole={currentUser?.role}
               />
-            )}
-            </React.Suspense>
-          </motion.div>
-        </AnimatePresence>
+            )
+          )}
+
+          {activeTab === 'school_profile' && (
+            <SchoolProfileTab 
+              theme={themeStyles} 
+              schoolInfo={schoolInfo} 
+              onUpdate={setSchoolInfo}
+              isAutoSave={isAutoSave}
+              onManualSave={() => setHasUnsavedChanges(false)}
+              teachers={teachers}
+            />
+          )}
+
+          {activeTab === 'calendar' && (
+            <AcademicCalendarTab 
+              themeStyles={themeStyles} 
+              onConfigChanged={() => {
+                const updatedUser = DbController.getCurrentUser();
+                setCurrentUser(updatedUser);
+                refreshAllLogs();
+              }}
+            />
+          )}
+
+          {activeTab === 'students' && (
+            <StudentsTab 
+              theme={themeStyles} 
+              students={students} 
+              onRefresh={refreshAllLogs}
+              isAutoSave={isAutoSave}
+              onManualSave={() => setHasUnsavedChanges(true)}
+              selectedYear={selectedYear}
+              setSelectedYear={handleYearChange}
+              selectedTerm={selectedTerm}
+              setSelectedTerm={handleTermChange}
+              assignedClasses={assignedClasses}
+              assignedSubjects={assignedSubjects}
+              assignedClass={assignedClasses[0] || 'None'}
+              userRole={currentUser?.role}
+            />
+          )}
+
+          {activeTab === 'teachers' && (
+            <TeachersTab 
+              theme={themeStyles} 
+              teachers={teachers} 
+              schoolInfo={schoolInfo}
+              onRefresh={refreshAllLogs}
+              isAutoSave={isAutoSave}
+              onManualSave={() => setHasUnsavedChanges(true)}
+              onSaveAll={handleManualSaveProgress}
+              isManualSaving={isManualSaving}
+              userRole={currentUser?.role}
+              onNavigate={(tab) => handleTabSwitch(tab)}
+            />
+          )}
+
+          {activeTab === 'attendance' && (
+            <AttendanceTab 
+              theme={themeStyles} 
+              isAutoSave={isAutoSave}
+              onManualSave={() => setHasUnsavedChanges(false)}
+              assignedClasses={assignedClasses}
+              assignedSubjects={assignedSubjects}
+              assignedClass={assignedClasses[0] || 'None'}
+              userRole={currentUser?.role}
+              teacherPermissions={teacherProfile?.permissions}
+            />
+          )}
+
+          {activeTab === 'assessments' && (
+            <AssessmentTab 
+              theme={themeStyles} 
+              students={students}
+              isAutoSave={isAutoSave}
+              onManualSave={() => setHasUnsavedChanges(false)}
+              selectedYear={selectedYear}
+              setSelectedYear={handleYearChange}
+              selectedTerm={selectedTerm}
+              setSelectedTerm={handleTermChange}
+              assignedClasses={assignedClasses}
+              assignedSubjects={assignedSubjects}
+              assignedClass={assignedClasses[0] || 'None'}
+              userRole={currentUser?.role}
+              teacherPermissions={teacherProfile?.permissions}
+            />
+          )}
+
+          {(activeTab === 'finances' || activeTab === 'fees') && currentUser?.role !== 'Teacher' && (
+            <FinancesTab 
+              theme={themeStyles} 
+              students={students}
+              schoolInfo={schoolInfo}
+              isAutoSave={isAutoSave}
+              onManualSave={() => setHasUnsavedChanges(true)}
+              selectedAcademicYear={selectedYear}
+              setSelectedAcademicYear={handleYearChange}
+              selectedTerm={selectedTerm}
+              setSelectedTerm={handleTermChange}
+            />
+          )}
+
+          {activeTab === 'admin_dashboard' && isAdmin && (
+            <AdminDashboardTab 
+              theme={themeStyles} 
+            />
+          )}
+
+          {activeTab === 'paystack' && isAdmin && (
+            <PaystackManagementTab 
+              themeStyles={themeStyles} 
+            />
+          )}
+
+          {activeTab === 'communications' && (
+            <CommunicationsTab 
+              theme={themeStyles} 
+              students={students} 
+              isAdmin={isAdmin}
+            />
+          )}
+
+          {activeTab === 'emis' && (
+            <EmisTab 
+              theme={themeStyles} 
+            />
+          )}
+
+          {activeTab === 'settings' && (
+            <SettingsTab 
+              theme={themeStyles} 
+              onThemeChange={setActiveTheme} 
+              isAutoSave={isAutoSave}
+              onAutoSaveToggle={handleAutoSaveToggle}
+              onRefresh={refreshAllLogs}
+              settingsSubTab={settingsSubTab}
+              setSettingsSubTab={setSettingsSubTab}
+            />
+          )}
+        </div>
 
       </main>
+    </div>
+
+      {/* Fast Mobile Bottom Navigation Bar (Visible only on mobile devices < 768px, hidden in print) */}
+      <nav 
+        aria-label="Mobile Bottom Navigation" 
+        className="md:hidden fixed bottom-0 inset-x-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 z-40 px-2 py-1 shadow-lg no-print flex items-center justify-around touch-manipulation pb-[calc(0.25rem+env(safe-area-inset-bottom,0px))]"
+      >
+        {[
+          { id: 'dashboard', label: 'Home', icon: LayoutDashboard },
+          { id: 'students', label: 'Students', icon: GraduationCap },
+          { id: 'attendance', label: 'Attendance', icon: CalendarCheck },
+          { id: 'assessments', label: 'Assess', icon: Award },
+          ...(currentUser?.role !== 'Teacher' ? [{ id: 'finances', label: 'Finances', icon: Coins }] : []),
+          { id: 'menu', label: 'More', icon: isMobileMenuOpen ? X : Menu, isMenuTrigger: true }
+        ].map((item) => {
+          const Icon = item.icon;
+          const isActive = item.isMenuTrigger 
+            ? isMobileMenuOpen 
+            : (activeTab === item.id || (item.id === 'finances' && activeTab === 'fees'));
+
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => {
+                if (item.isMenuTrigger) {
+                  setIsMobileMenuOpen(prev => !prev);
+                } else {
+                  setIsMobileMenuOpen(false);
+                  handleTabSwitch(item.id);
+                  window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+                }
+              }}
+              className={`flex-1 flex flex-col items-center justify-center py-1 px-1 rounded-xl transition-all cursor-pointer min-h-[46px] select-none ${
+                isActive 
+                  ? 'text-indigo-600 dark:text-indigo-400 font-extrabold' 
+                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+              }`}
+            >
+              <div className={`p-1 rounded-lg transition-transform ${isActive ? 'bg-indigo-50 dark:bg-indigo-950/80 scale-110' : ''}`}>
+                <Icon size={18} className={isActive ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-400'} />
+              </div>
+              <span className="text-[10px] tracking-tight leading-tight mt-0.5 truncate max-w-[56px]">
+                {item.label}
+              </span>
+            </button>
+          );
+        })}
+      </nav>
 
       {/* Developer status footer */}
       <DeveloperStatus 
@@ -3050,33 +4364,279 @@ function AppContent() {
         </div>
       )}
 
+      {/* Advanced Global Modals */}
       {/* Advanced Global Print Preview System */}
-      <AnimatePresence>
-        {globalPrintPreview.isOpen && (
-          <PrintPreviewModal
-            isOpen={globalPrintPreview.isOpen}
-            onClose={() => setGlobalPrintPreview(prev => ({ ...prev, isOpen: false }))}
-            elementId={globalPrintPreview.elementId}
-            customHtml={globalPrintPreview.customHtml}
-            documentTitle={globalPrintPreview.documentTitle}
-            isLandscapeDefault={globalPrintPreview.isLandscape}
-          />
-        )}
-      </AnimatePresence>
+        <AnimatePresence>
+          {globalPrintPreview.isOpen && (
+            <PrintPreviewModal
+              isOpen={globalPrintPreview.isOpen}
+              onClose={() => setGlobalPrintPreview(prev => ({ ...prev, isOpen: false }))}
+              elementId={globalPrintPreview.elementId}
+              customHtml={globalPrintPreview.customHtml}
+              documentTitle={globalPrintPreview.documentTitle}
+              isLandscapeDefault={globalPrintPreview.isLandscape}
+            />
+          )}
+        </AnimatePresence>
 
-      {/* Global Quick Search Overlay */}
-      <AnimatePresence>
-        {isSearchOpen && (
-          <QuickSearchModal
-            isOpen={isSearchOpen}
-            onClose={() => setIsSearchOpen(false)}
-            students={students}
-            teachers={teachers}
-            theme={themeStyles}
-            onNavigate={(tabId) => setActiveTab(tabId)}
+        {/* Global Quick Search Overlay */}
+        <AnimatePresence>
+          {isSearchOpen && (
+            <QuickSearchModal
+              isOpen={isSearchOpen}
+              onClose={() => setIsSearchOpen(false)}
+              students={students}
+              teachers={teachers}
+              theme={themeStyles}
+              userRole={currentUser?.role}
+              onNavigate={(tabId) => handleTabSwitch(tabId)}
+            />
+          )}
+        </AnimatePresence>
+
+        {/* Global Keyboard Shortcuts Help Overlay */}
+        {isShortcutsHelpOpen && (
+          <KeyboardShortcutsModal
+            isOpen={isShortcutsHelpOpen}
+            onClose={() => setIsShortcutsHelpOpen(false)}
+            onOpenSearch={() => {
+              setIsShortcutsHelpOpen(false);
+              setIsSearchOpen(true);
+            }}
+            onSaveData={() => {
+              setIsShortcutsHelpOpen(false);
+              handleManualSaveProgress();
+            }}
+            activeTabLabel={currentActiveTab?.label}
           />
         )}
-      </AnimatePresence>
+
+        {/* Logged-in QR Badge Scanner Trigger */}
+        <AnimatePresence>
+          {isQRScannerOpen && (
+            <QRBadgeScanner
+              key="global-qr-badge-scanner"
+              onScanSuccess={handleQRBadgeScanSuccess}
+              onClose={() => setIsQRScannerOpen(false)}
+              isSubscriptionLocked={isSubscriptionLocked}
+            />
+          )}
+        </AnimatePresence>
+
+        {/* Global Slide-out Mobile & Quick Navigation Menu Drawer */}
+        <AnimatePresence>
+          {isMobileMenuOpen && (
+            <>
+              {/* Backdrop Overlay */}
+              <motion.div
+                key="global-drawer-overlay"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.2, ease: 'easeOut' }}
+                onClick={() => setIsMobileMenuOpen(false)}
+                className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs z-[200] pointer-events-auto"
+              />
+
+              {/* Slide-out Sidebar Drawer Sheet */}
+              <motion.div
+                key="global-drawer-content"
+                initial={{ x: '-100%' }}
+                animate={{ x: 0 }}
+                exit={{ x: '-100%' }}
+                transition={{ type: 'spring', damping: 28, stiffness: 280, mass: 0.8 }}
+                className="fixed inset-y-0 left-0 w-80 max-w-[85vw] bg-slate-900 text-white shadow-2xl z-[210] flex flex-col border-r border-slate-800 touch-manipulation pointer-events-auto"
+              >
+                {/* Drawer Header */}
+                <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/50">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-9 h-8 rounded-xl bg-amber-400 text-slate-950 flex items-center justify-center font-black shadow-sm shrink-0">
+                      <GraduationCap size={20} />
+                    </div>
+                    <div>
+                      <h2 className="text-xs font-black tracking-wider uppercase font-display text-white">GTM School Portal</h2>
+                      <p className="text-[10px] text-amber-400/90 font-mono font-bold truncate">
+                        {schoolInfo?.name || 'GeeTech Academy'}
+                      </p>
+                    </div>
+                  </div>
+                  <button 
+                    type="button"
+                    onClick={() => setIsMobileMenuOpen(false)}
+                    className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-slate-400 hover:text-white transition cursor-pointer shadow-xs"
+                    title="Close Navigation Menu"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                {/* Quick Search Shortcut inside Drawer */}
+                <div className="p-3 border-b border-slate-800/80 bg-slate-900/90">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsMobileMenuOpen(false);
+                      setIsSearchOpen(true);
+                    }}
+                    className="w-full flex items-center justify-between gap-2 px-3 py-2 bg-slate-800/80 hover:bg-slate-800 border border-slate-700 rounded-xl text-slate-300 text-xs font-semibold transition cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <Search size={14} className="text-amber-400" />
+                      <span>Search students, staff...</span>
+                    </span>
+                    <kbd className="text-[9px] font-mono font-bold bg-slate-900 border border-slate-700 px-1.5 py-0.5 rounded text-slate-400">
+                      Ctrl+K
+                    </kbd>
+                  </button>
+                </div>
+
+                {/* Drawer Content - Categorized Module Links */}
+                <div className="flex-1 overflow-y-auto p-4 space-y-5 custom-scrollbar">
+                  {['Management', 'Academic', 'Finances', 'System'].map((category) => {
+                    const categoryTabs = orderedVisibleTabs.filter(t => t.category === category);
+                    if (categoryTabs.length === 0) return null;
+                    return (
+                      <div key={category} className="space-y-1.5">
+                        <p className="text-[10px] uppercase tracking-widest font-mono font-black text-slate-500 px-2 mb-1">
+                          {category}
+                        </p>
+                        {categoryTabs.map((tab) => {
+                          const IconComponent = tab.icon;
+                          const isActive = activeTab === tab.id;
+                          return (
+                            <button
+                              key={tab.id}
+                              type="button"
+                              onClick={() => {
+                                handleTabSwitch(tab.id);
+                                if (tab.refresh) {
+                                  refreshAllLogs();
+                                }
+                                setIsMobileMenuOpen(false);
+                                window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+                              }}
+                              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+                                isActive 
+                                  ? 'bg-amber-400 text-slate-950 font-black shadow-md' 
+                                  : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <IconComponent size={16} className={isActive ? 'text-slate-950 shrink-0' : 'text-slate-400 shrink-0'} />
+                                <span className="truncate">{tab.label}</span>
+                              </div>
+                              {tab.id === 'finances' && (
+                                <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-bold ${
+                                  isActive ? 'bg-slate-950 text-amber-300' : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                }`}>
+                                  GH₵
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+
+                  {/* Mobile Utilities Section */}
+                  <div className="border-t border-slate-800/80 pt-4 mt-4 space-y-2.5">
+                    <p className="text-[10px] uppercase tracking-widest font-mono font-black text-slate-500 px-2">
+                      Workspace Utilities
+                    </p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={openQRScanner}
+                        disabled={isSubscriptionLocked}
+                        className={`flex items-center gap-2 p-2.5 rounded-xl text-xs font-bold transition text-left border ${
+                          isSubscriptionLocked
+                            ? 'bg-slate-800/40 border-slate-800 text-slate-500 cursor-not-allowed opacity-50'
+                            : 'bg-slate-800/80 hover:bg-slate-800 border-slate-700 text-slate-300 cursor-pointer'
+                        }`}
+                      >
+                        <QrCode size={14} className={isSubscriptionLocked ? "text-slate-500 shrink-0" : "text-amber-400 shrink-0"} />
+                        <span className="truncate">{isSubscriptionLocked ? "Scan QR (Inactive)" : "Scan QR"}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMobileMenuOpen(false);
+                          setIsVisibilityMenuOpen(true);
+                        }}
+                        className="flex items-center gap-2 p-2.5 bg-slate-800/80 hover:bg-slate-800 border border-slate-700 text-slate-300 rounded-xl text-xs font-bold transition text-left cursor-pointer"
+                      >
+                        <Eye size={14} className="text-sky-400 shrink-0" />
+                        <span className="truncate">Visibility</span>
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between p-2.5 bg-slate-800/60 rounded-xl border border-slate-800">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Palette size={14} className="text-indigo-400 shrink-0" />
+                        <span className="text-xs font-bold text-slate-300 truncate">Theme Accent</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMobileMenuOpen(false);
+                          setIsPalettePickerOpen(true);
+                        }}
+                        className="text-[10px] font-black uppercase text-amber-400 hover:text-amber-300 font-mono cursor-pointer shrink-0"
+                      >
+                        Customize
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Drawer Footer info */}
+                <div className="p-4 border-t border-slate-800 bg-slate-950/60 space-y-2.5">
+                  {currentUser && (
+                    <div className="flex items-center gap-3 bg-slate-800/50 p-2.5 rounded-xl border border-slate-800">
+                      <div className="w-8 h-8 rounded-full bg-amber-400/20 border border-amber-400/30 flex items-center justify-center font-black text-xs text-amber-400 shrink-0">
+                        {currentUser.name ? currentUser.name.charAt(0).toUpperCase() : 'U'}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-bold text-white truncate">{currentUser.name}</p>
+                        <p className="text-[9.5px] text-slate-400 font-mono truncate">{currentUser.role} • {currentUser.email}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsMobileMenuOpen(false);
+                        setIsContactModalOpen(true);
+                      }}
+                      className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition cursor-pointer shadow-xs"
+                    >
+                      <Mail size={13} />
+                      <span>Support</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsMobileMenuOpen(false);
+                        DbController.logout();
+                        setCurrentUser(null);
+                      }}
+                      className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-xs font-bold transition cursor-pointer"
+                    >
+                      <LogOut size={13} />
+                      <span>Log Out</span>
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
+
 
     </div>
   );

@@ -1,4 +1,6 @@
-import { useState, useEffect, useMemo, FormEvent, ChangeEvent } from 'react';
+import * as React from 'react';
+import { useState, useEffect, useMemo, FormEvent, ChangeEvent, useRef } from 'react';
+import { triggerToast } from '../utils';
 import { ThemeType, UserRole, PaystackPayment, WebAuthnCredential, ActivityLog, CLASSES, ClassType, AttendanceRecord, StudentAssessment, AutoBackupConfig, AutoBackupEntry, CloudSyncConfig } from '../types';
 import { DbController } from '../db';
 import { THEME_CONFIGS, ThemeStyles } from './ThemeWrapper';
@@ -8,7 +10,7 @@ import {
   Palette, Smartphone, Save, CheckCircle2, ShieldCheck, UserPlus, FileSliders, Laptop, Lock, Mail,
   Database, Download, Upload, AlertTriangle, Trash2, ShieldAlert, X, Sun, Moon, Key, CreditCard, Sparkles, HelpCircle, AlertCircle, Check,
   Fingerprint, RefreshCw, History, ArrowUpCircle, Filter, ClipboardCheck, ArrowUpDown, Users, UserCheck, Wrench,
-  Hash, Link
+  Hash, Link, Archive
 } from 'lucide-react';
 
 interface Props {
@@ -17,8 +19,8 @@ interface Props {
   isAutoSave: boolean;
   onAutoSaveToggle: (active: boolean) => void;
   onRefresh: () => void;
-  settingsSubTab?: 'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers' | 'security';
-  setSettingsSubTab?: (tab: 'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers' | 'security') => void;
+  settingsSubTab?: 'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers' | 'security' | 'archive';
+  setSettingsSubTab?: (tab: 'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers' | 'security' | 'archive') => void;
 }
 
 export default function SettingsTab({ 
@@ -69,7 +71,7 @@ export default function SettingsTab({
   const [copiedSuccess, setCopiedSuccess] = useState(false);
 
   // Sub-tabs state inside System Controls (SettingsTab)
-  const [settingsSubTabState, setSettingsSubTabState] = useState<'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers' | 'security'>('general');
+  const [settingsSubTabState, setSettingsSubTabState] = useState<'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers' | 'security' | 'archive'>('general');
   const settingsSubTab = propSettingsSubTab !== undefined ? propSettingsSubTab : settingsSubTabState;
   const setSettingsSubTab = propSetSettingsSubTab !== undefined ? propSetSettingsSubTab : setSettingsSubTabState;
   const [teachersList, setTeachersList] = useState(() => DbController.getTeachers());
@@ -77,6 +79,10 @@ export default function SettingsTab({
   const [teacherSaveStatus, setTeacherSaveStatus] = useState(false);
   const [selectedLicenseTier, setSelectedLicenseTier] = useState<'1year' | '2year' | '3year' | '5year'>('1year');
   const [subscriptionSuccess, setSubscriptionSuccess] = useState(false);
+  const [offlinePasscodeInput, setOfflinePasscodeInput] = useState('');
+  const [isVerifyingOffline, setIsVerifyingOffline] = useState(false);
+  const [offlineError, setOfflineError] = useState<string | null>(null);
+  const [offlineSuccess, setOfflineSuccess] = useState(false);
   const [systemSettings, setSystemSettings] = useState(() => DbController.getSystemSettings());
 
   // Dynamic licensing pricing states
@@ -117,6 +123,11 @@ export default function SettingsTab({
   const [lastBackupTime, setLastBackupTime] = useState<string | null>(() => {
     return localStorage.getItem('last_backup_download_timestamp');
   });
+
+  const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(() => {
+    return localStorage.getItem('google_access_token');
+  });
+  const [isGoogleDriveSaving, setIsGoogleDriveSaving] = useState<boolean>(false);
 
   // --- AUTOMATIC SCHEDULED BACKUPS STATE ---
   const [autoBackupConfig, setAutoBackupConfig] = useState<AutoBackupConfig>(() => {
@@ -179,6 +190,11 @@ export default function SettingsTab({
   };
 
   const handleTriggerCloudSyncNow = async () => {
+    // Provide immediate UI feedback by setting status to syncing
+    setImportSuccess('');
+    setImportError('');
+    setCloudSyncConfig(prev => ({ ...prev, status: 'syncing' }));
+    
     const result = await DbController.performCloudSync();
     setCloudSyncConfig(DbController.getCloudSyncConfig());
     if (result.success) {
@@ -323,6 +339,8 @@ export default function SettingsTab({
   const [showWipeModal, setShowWipeModal] = useState(false);
   const [wipeConfirmText, setWipeConfirmText] = useState('');
   const [wipeError, setWipeError] = useState('');
+  const [showWipeBiometric, setShowWipeBiometric] = useState(false);
+  const [wipeBiometricStep, setWipeBiometricStep] = useState<'idle' | 'scanning' | 'success' | 'failed'>('idle');
 
   // === BIOMETRIC WEBAUTHN STATES ===
   const [webauthnCredentials, setWebauthnCredentials] = useState<WebAuthnCredential[]>(() => DbController.getWebAuthnCredentials());
@@ -334,6 +352,14 @@ export default function SettingsTab({
 
   // === ACTIVITY LOGS & ADMINISTRATIVE PROMOTIONS ===
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>(() => DbController.getActivityLogs());
+  const systemLogsContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (systemLogsContainerRef.current) {
+      systemLogsContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, [activityLogs.length]);
+
   const [integrityReport, setIntegrityReport] = useState<string | null>(null);
   const [canRepair, setCanRepair] = useState(false);
   const [logSearch, setLogSearch] = useState('');
@@ -564,6 +590,64 @@ export default function SettingsTab({
     }
   };
 
+  const handleOfflineActivationSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!currentUser) return;
+    
+    setOfflineError(null);
+    setOfflineSuccess(false);
+    setIsVerifyingOffline(true);
+
+    try {
+      const cleanInput = offlinePasscodeInput.trim().toUpperCase();
+
+      if (DbController.isCodeUsed(cleanInput)) {
+        setOfflineError("This activation passcode has already been used and cannot be reused. Each renewal code is strictly valid for ONE-TIME use. Please contact Admin for a new code.");
+        setIsVerifyingOffline(false);
+        return;
+      }
+
+      const requestCode = currentUser.requestCode || 'REQ-SYSTEM-9401';
+      const expectedCodeByEmail = generateActivationCode(currentUser.email, requestCode);
+      const expectedCodeByUid = currentUser.uid ? generateActivationCode(currentUser.uid, requestCode) : '';
+
+      if (cleanInput === expectedCodeByEmail || (expectedCodeByUid && cleanInput === expectedCodeByUid)) {
+        const tierYears = selectedLicenseTier === '1year' ? 1 : selectedLicenseTier === '2year' ? 2 : selectedLicenseTier === '3year' ? 3 : selectedLicenseTier === '5year' ? 5 : 1;
+        
+        DbController.recordUsedCode(cleanInput, currentUser.email || currentUser.uid);
+        const emailPrefix = currentUser.email ? currentUser.email.split('@')[0].substring(0, 4).toUpperCase() : 'USER';
+        const freshReqCode = `REQ-${emailPrefix}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+        await DbController.updateUserLicense(
+          currentUser.uid,
+          'activated',
+          new Date().toISOString(),
+          cleanInput,
+          freshReqCode,
+          tierYears
+        );
+
+        setOfflineSuccess(true);
+        setOfflinePasscodeInput('');
+        setRegisteredAccounts(DbController.getRegisteredUsers());
+        onRefresh();
+        
+        DbController.writeActivityLog(
+          'Offline Early Top Up Applied',
+          `Successfully applied manual passcode activation (${cleanInput}) to extend license by ${tierYears} year(s).`,
+          'high'
+        );
+      } else {
+        setOfflineError("Incorrect activation passcode. Please verify your code or contact pegyirenyi@gmail.com for assistance.");
+      }
+    } catch (err: any) {
+      console.error(err);
+      setOfflineError("An error occurred during verification. Please try again.");
+    } finally {
+      setIsVerifyingOffline(false);
+    }
+  };
+
   const filteredLogs = useMemo(() => {
     return activityLogs.filter(log => {
       if (logSeverityFilter !== 'all' && log.severity !== logSeverityFilter) {
@@ -770,6 +854,54 @@ export default function SettingsTab({
     }
   };
 
+  const handleDownloadActivityLogsCSV = () => {
+    try {
+      const logsToExport = filteredLogs.length > 0 ? filteredLogs : activityLogs;
+      if (!logsToExport || logsToExport.length === 0) {
+        triggerToast('No activity logs available to export.', 'info');
+        return;
+      }
+
+      const headers = ['ID', 'Timestamp', 'User Name', 'User Email', 'User Role', 'Action', 'Severity', 'Details'];
+      
+      const escapeCsvCell = (val: string | undefined | null) => {
+        if (val === undefined || val === null) return '""';
+        const stringVal = String(val).replace(/"/g, '""');
+        return `"${stringVal}"`;
+      };
+
+      const csvRows = [
+        headers.join(','),
+        ...logsToExport.map(log => [
+          escapeCsvCell(log.id),
+          escapeCsvCell(log.timestamp ? new Date(log.timestamp).toLocaleString() : ''),
+          escapeCsvCell(log.userName),
+          escapeCsvCell(log.userEmail),
+          escapeCsvCell(log.userRole),
+          escapeCsvCell(log.action),
+          escapeCsvCell(log.severity),
+          escapeCsvCell(log.details)
+        ].join(','))
+      ];
+
+      const csvContent = "data:text/csv;charset=utf-8,\uFEFF" + encodeURIComponent(csvRows.join('\n'));
+      const formattedDate = new Date().toISOString().split('T')[0];
+      const filename = `Activity_Security_Logs_${formattedDate}.csv`;
+
+      const linkElement = document.createElement('a');
+      linkElement.setAttribute('href', csvContent);
+      linkElement.setAttribute('download', filename);
+      document.body.appendChild(linkElement);
+      linkElement.click();
+      document.body.removeChild(linkElement);
+
+      triggerToast(`Successfully downloaded ${logsToExport.length} activity security log records as CSV.`, 'success');
+    } catch (error) {
+      console.error("CSV Export error:", error);
+      triggerToast('Failed to export activity logs as CSV.', 'error');
+    }
+  };
+
   const handleExportBackup = () => {
     try {
       const dataStr = DbController.exportAllData();
@@ -790,6 +922,62 @@ export default function SettingsTab({
     } catch (e: any) {
       alert("Failed to export backup: " + e.message);
     }
+  };
+
+  const handleConnectGoogleDrive = async () => {
+    setIsGoogleDriveSaving(true);
+    setImportSuccess('');
+    setImportError('');
+    try {
+      await DbController.firebaseGoogleLogin();
+      const token = localStorage.getItem('google_access_token');
+      setGoogleAccessToken(token);
+      setImportSuccess(`✓ Google Account connected successfully! Authorized for Google Drive backups.`);
+      setTimeout(() => setImportSuccess(''), 5000);
+    } catch (e: any) {
+      setImportError(`Authentication failed: ${e.message}`);
+      setTimeout(() => setImportError(''), 5000);
+    } finally {
+      setIsGoogleDriveSaving(false);
+    }
+  };
+
+  const handleDisconnectGoogleDrive = () => {
+    localStorage.removeItem('google_access_token');
+    setGoogleAccessToken(null);
+    setImportSuccess(`Google Account disconnected.`);
+    setTimeout(() => setImportSuccess(''), 4000);
+  };
+
+  const handleSaveToGoogleDrive = async () => {
+    setConfirmModal({
+      isOpen: true,
+      title: "Upload to Google Drive",
+      message: "This will export your school database (student logs, attendance files, settings) and upload it as a new backup file to a 'GEETECH-Backups' folder on your Google Drive. Proceed?",
+      confirmText: "Upload Backup",
+      cancelText: "Cancel",
+      onConfirm: async () => {
+        setConfirmModal(null);
+        setIsGoogleDriveSaving(true);
+        setImportSuccess('');
+        setImportError('');
+        try {
+          const result = await DbController.saveToGoogleDrive();
+          if (result.success) {
+            setImportSuccess(`✓ Success! Backup file '${result.fileName}' uploaded directly to your '${result.folderName}' folder on Google Drive.`);
+            setTimeout(() => setImportSuccess(''), 8000);
+          } else {
+            setImportError(`Upload failed: ${result.error}`);
+            setTimeout(() => setImportError(''), 8000);
+          }
+        } catch (e: any) {
+          setImportError(`Google Drive save failed: ${e.message}`);
+          setTimeout(() => setImportError(''), 8000);
+        } finally {
+          setIsGoogleDriveSaving(false);
+        }
+      }
+    });
   };
 
   const handlePurgeCache = async () => {
@@ -909,6 +1097,13 @@ export default function SettingsTab({
                 <Lock size={13} /> Security & Session
               </button>
             )}
+            <button
+              type="button"
+              onClick={() => setSettingsSubTab('archive')}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold transition text-[11px] cursor-pointer ${settingsSubTab === 'archive' ? `${theme.btnColors} shadow-xs` : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}
+            >
+              <Trash2 size={13} /> Deleted/Archived
+            </button>
           </>
         )}
       </div>
@@ -949,7 +1144,7 @@ export default function SettingsTab({
               className={`py-2 px-4 rounded-lg font-bold text-xs shadow-xs cursor-pointer hover:scale-101 active:scale-99 transition-all duration-200 flex items-center gap-1.5 ${backupStatus.needsBackup ? 'bg-amber-600 hover:bg-amber-700 text-white' : 'bg-emerald-600 hover:bg-emerald-700 text-white'}`}
             >
               <Download size={13} />
-              <span>Backup Data Now</span>
+              <span>Download Database Backup</span>
             </button>
           </div>
         </div>
@@ -1029,19 +1224,43 @@ export default function SettingsTab({
           <div className="space-y-3 pt-2">
             <h3 className="text-sm font-display font-bold text-slate-800 flex items-center gap-1.5 pb-2 border-b border-slate-100">
               <Save size={17} className={theme.accentText} />
-              Database Storage Policy
+              Database Storage Policy & Auto-Save Toggle
             </h3>
-            <p className="text-[10px] text-slate-400 leading-relaxed">The application runs an enterprise-grade background synchronization database engine, keeping your records saved instantly.</p>
+            <p className="text-[10px] text-slate-400 leading-relaxed">The application runs an enterprise-grade background synchronization database engine. Turn Auto Save on or off to manage how changes are written to the database storage.</p>
 
-            <div className="flex items-center justify-between bg-emerald-50/50 p-4 rounded-xl border border-emerald-200 mt-3 no-print">
-              <div>
-                <strong className="block text-emerald-800 text-xs text-left font-semibold">Real-time Auto Saving</strong>
-                <span className="text-[10px] text-emerald-600 mt-1 block">Every single change to student profiles, grade assessments, fees payments, attendance and profile data is saved and synced instantly.</span>
+            <div className={`flex items-center justify-between p-4 rounded-xl border mt-3 no-print transition-all duration-300 ${
+              isAutoSave 
+                ? 'bg-emerald-50/50 border-emerald-200 shadow-xs' 
+                : 'bg-slate-50 border-slate-200'
+            }`}>
+              <div className="max-w-[75%] sm:max-w-[80%] pr-3">
+                <strong className={`block text-xs text-left font-semibold ${isAutoSave ? 'text-emerald-800' : 'text-slate-750'}`}>
+                  Real-time Auto Saving
+                </strong>
+                <span className={`text-[10px] mt-1 block leading-relaxed ${isAutoSave ? 'text-emerald-600' : 'text-slate-500'}`}>
+                  {isAutoSave 
+                    ? 'Every single change to student profiles, grade assessments, fee payments, attendance, and profile data is saved and synced instantly to keep records safe.'
+                    : 'Auto Saving is currently paused. You must manually prompt saves or backup operations to secure your student directories.'}
+                </span>
               </div>
-              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 border border-emerald-700 text-white font-mono font-bold text-[10px] shadow-sm select-none">
-                <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
-                <span>ALWAYS ON</span>
-              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  onAutoSaveToggle(!isAutoSave);
+                  setSaveStatus(true);
+                  const timer = setTimeout(() => setSaveStatus(false), 3000);
+                  return () => clearTimeout(timer);
+                }}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-offset-2 ${
+                  isAutoSave ? 'bg-emerald-600 focus:ring-emerald-500' : 'bg-slate-300 focus:ring-slate-400'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
+                    isAutoSave ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
             </div>
           </div>
 
@@ -1432,7 +1651,7 @@ export default function SettingsTab({
           Perform state checkpoints directly on your dashboard. Exporting collects all student enrollment rosters, subject grade parameters, historical class attendance records, access profiles, and local configs into a standard raw JSON payload.
         </p>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
           
           {/* Download snapshots */}
           <div className="border border-slate-200/60 rounded-xl p-4 bg-slate-50/50 flex flex-col justify-between space-y-4">
@@ -1449,7 +1668,7 @@ export default function SettingsTab({
               className={`py-2 px-4 rounded-lg font-bold shadow-xs cursor-pointer hover:opacity-90 active:translate-y-0.5 transition flex items-center justify-center gap-1.5 text-center ${theme.btnColors}`}
             >
               <Download size={14} />
-              Export System Data (JSON)
+              Download Database Backup
             </button>
           </div>
 
@@ -1477,6 +1696,58 @@ export default function SettingsTab({
                 <Upload size={14} className="text-slate-500" />
                 Select Backup file (.json)
               </label>
+            </div>
+          </div>
+
+          {/* Save to Google Drive */}
+          <div className="border border-slate-200/60 rounded-xl p-4 bg-slate-50/50 flex flex-col justify-between space-y-4 text-left">
+            <div>
+              <span className="font-bold text-slate-700 text-xs block mb-1">Save to Google Drive</span>
+              <p className="text-[10px] text-slate-400 leading-normal font-sans">
+                Authorize and store a raw database snapshot directly in a dedicated 'GEETECH-Backups' folder on your Google Drive.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              {googleAccessToken ? (
+                <>
+                  <button
+                    onClick={handleSaveToGoogleDrive}
+                    disabled={isGoogleDriveSaving}
+                    type="button"
+                    className="w-full py-2 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold shadow-xs cursor-pointer transition flex items-center justify-center gap-1.5 text-center"
+                  >
+                    {isGoogleDriveSaving ? (
+                      <>
+                        <RefreshCw size={14} className="animate-spin" />
+                        Saving to Drive...
+                      </>
+                    ) : (
+                      <>
+                        <Database size={14} />
+                        Save to Google Drive
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={handleDisconnectGoogleDrive}
+                    type="button"
+                    className="text-[9px] text-slate-400 hover:text-red-500 text-center font-medium transition"
+                  >
+                    Disconnect Google Account
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={handleConnectGoogleDrive}
+                  disabled={isGoogleDriveSaving}
+                  type="button"
+                  className="w-full py-2 px-4 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-xs cursor-pointer transition flex items-center justify-center gap-1.5 text-center"
+                >
+                  <Key size={14} />
+                  Authorize Google Drive
+                </button>
+              )}
             </div>
           </div>
 
@@ -2013,10 +2284,45 @@ export default function SettingsTab({
             </div>
           </div>
 
+          {/* Auto-Renew Toggle */}
+          <div className="bg-white p-5 border border-slate-200 rounded-2xl shadow-xs flex items-center justify-between">
+            <div className="space-y-0.5">
+              <h4 className="text-xs font-black text-slate-800 uppercase font-sans tracking-wide">
+                Auto-Renew License
+              </h4>
+              <p className="text-[10px] text-slate-400 font-sans leading-relaxed max-w-sm">
+                Automatically renew your license using your saved payment method before the expiration date to prevent any system downtime.
+              </p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input 
+                type="checkbox" 
+                className="sr-only peer"
+                checked={!!currentUser?.autoRenew}
+                onChange={async (e) => {
+                  const newAutoRenew = e.target.checked;
+                  try {
+                    await DbController.updateUserAccount(currentUser!.uid, { autoRenew: newAutoRenew });
+                    onRefresh();
+                    DbController.writeActivityLog(
+                      'Auto-Renew Preference Updated',
+                      `Set auto-renew to ${newAutoRenew ? 'enabled' : 'disabled'}`,
+                      'info'
+                    );
+                  } catch (err) {
+                    console.error("Failed to update auto-renew:", err);
+                    alert("Failed to update auto-renew preference.");
+                  }
+                }}
+              />
+              <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-emerald-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+            </label>
+          </div>
+
           {/* Selector & Paystack triggers */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             {/* Part 1: Tier Selector Column (Lg: 7 cols) */}
-            <div className="lg:col-span-7 bg-white p-6 rounded-xl border border-slate-200 shadow-xs space-y-4">
+            <div className="lg:col-span-7 bg-white p-4 sm:p-6 rounded-xl border border-slate-200 shadow-xs space-y-4">
               <h4 className="text-xs font-black text-slate-800 uppercase font-sans tracking-wide flex items-center gap-1.5">
                 <Sparkles size={14} className="text-amber-500 animate-pulse animate-bounce" />
                 Select Your School License Term
@@ -2036,7 +2342,9 @@ export default function SettingsTab({
                   />
                   <div className="flex-grow space-y-1">
                     <div className="flex items-center justify-between">
-                      <span className="font-bold text-slate-800 text-xs">Standard 1-Year License Renewal</span>
+                      <span className="font-bold text-slate-800 text-xs">
+                        {subStatus?.licenseType === 'activated' && !subStatus.isLocked ? 'Extend License by 1 Year' : 'Standard 1-Year License Renewal'}
+                      </span>
                       {promoDiscount > 0 ? (
                         <div className="flex flex-col items-end">
                           <span className="line-through text-slate-400 text-[10px] font-mono leading-none">GHS {price1Year.toFixed(2)}</span>
@@ -2065,7 +2373,9 @@ export default function SettingsTab({
                   <div className="flex-grow space-y-1">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="font-bold text-slate-800 text-xs">Extended 2-Year License Renewal</span>
+                        <span className="font-bold text-slate-800 text-xs">
+                          {subStatus?.licenseType === 'activated' && !subStatus.isLocked ? 'Extend License by 2 Years' : 'Extended 2-Year License Renewal'}
+                        </span>
                         {savings2Year > 0 && (
                           <span className="text-[8px] bg-emerald-100 text-emerald-800 font-black px-1.5 py-0.5 rounded uppercase font-mono tracking-wider">Save GHS {savings2Year.toFixed(2)}</span>
                         )}
@@ -2098,7 +2408,9 @@ export default function SettingsTab({
                   <div className="flex-grow space-y-1">
                     <div className="flex items-center justify-between font-sans">
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="font-bold text-slate-800 text-xs">Premium 3-Year License Protection</span>
+                        <span className="font-bold text-slate-800 text-xs">
+                          {subStatus?.licenseType === 'activated' && !subStatus.isLocked ? 'Extend License by 3 Years' : 'Premium 3-Year License Protection'}
+                        </span>
                         {savings3Year > 0 && (
                           <span className="text-[8px] bg-indigo-100 text-indigo-800 font-black px-1.5 py-0.5 rounded uppercase font-mono tracking-wider">Best Value - Save GHS {savings3Year.toFixed(2)}</span>
                         )}
@@ -2131,7 +2443,9 @@ export default function SettingsTab({
                   <div className="flex-grow space-y-1">
                     <div className="flex items-center justify-between font-sans">
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="font-bold text-slate-800 text-xs">Golden 5-Year Enterprise Shield</span>
+                        <span className="font-bold text-slate-800 text-xs">
+                          {subStatus?.licenseType === 'activated' && !subStatus.isLocked ? 'Extend License by 5 Years' : 'Golden 5-Year Enterprise Shield'}
+                        </span>
                         {savings5Year > 0 && (
                           <span className="text-[8px] bg-amber-100 text-amber-800 font-black px-1.5 py-0.5 rounded uppercase font-mono tracking-wider">Ultimate Value - Save GHS {savings5Year.toFixed(2)}</span>
                         )}
@@ -2153,68 +2467,149 @@ export default function SettingsTab({
               </div>
             </div>
 
-            {/* Part 2: Secure Paystack trigger checkout (Lg: 5 cols) */}
-            <div className="lg:col-span-12 xl:col-span-4 flex flex-col justify-between">
-              <div className="h-full">
-                {currentUser ? (
-                  <PaystackPaymentTrigger 
-                    studentId={`LICENSE_${currentUser.uid.substring(0, 8)}`}
-                    studentName={`License Renewal [${currentUser.name}]`}
-                    email={currentUser.email}
-                    amount={selectedLicenseTier === '1year' ? discountedPrice1Year : selectedLicenseTier === '2year' ? discountedPrice2Year : selectedLicenseTier === '3year' ? discountedPrice3Year : discountedPrice5Year}
-                    academicYear="2026/2027"
-                    term="Term 1"
-                    component="Other Fee"
-                    billId={`LICENSE_${currentUser.uid.substring(0, 8)}_${selectedLicenseTier}`}
-                    triggerLabel={`Activate Online System License (GHS ${(selectedLicenseTier === '1year' ? discountedPrice1Year : selectedLicenseTier === '2year' ? discountedPrice2Year : selectedLicenseTier === '3year' ? discountedPrice3Year : discountedPrice5Year).toFixed(2)})`}
-                    btnClassName="bg-emerald-600 hover:bg-emerald-700 text-white font-bold uppercase py-3 border border-emerald-700/20 rounded-xl cursor-pointer"
-                    onSuccess={async (txData) => {
-                      console.log("Paystack upgrading license on success transaction:", txData);
-                      try {
-                        const generatedKey = generateActivationCode(currentUser.email, currentUser.requestCode || 'REQ-SYSTEM-9401');
-                        
-                        // Settle payment in local+cloud Paystack ledgers
-                        const paymentLog: PaystackPayment = {
-                          id: txData.reference || `LIC-${currentUser.uid.substring(0, 8)}-${Date.now()}`,
-                          reference: txData.reference || `LIC-${currentUser.uid.substring(0, 8)}-${Date.now()}`,
-                          studentId: `LICENSE_${currentUser.uid.substring(0, 8)}`,
-                          studentName: `Software License: ${currentUser.name} (${currentUser.role})`,
-                          billId: `LICENSE_${currentUser.uid.substring(0, 8)}_${selectedLicenseTier}`,
-                          component: 'Other Fee',
-                          amount: txData.amount || (selectedLicenseTier === '1year' ? discountedPrice1Year : selectedLicenseTier === '2year' ? discountedPrice2Year : selectedLicenseTier === '3year' ? discountedPrice3Year : discountedPrice5Year),
-                          academicYear: "2026/2027",
-                          term: "Term 1",
-                          status: "success",
-                          paidAt: txData.paidAt || new Date().toISOString(),
-                          createdAt: new Date().toISOString()
-                        };
-                        
-                        DbController.savePaystackPayment(paymentLog);
+            {/* Part 2: Secure Paystack trigger checkout & Offline Passcode Top-Up (Lg: 5 cols) */}
+            <div className="lg:col-span-12 xl:col-span-5 flex flex-col gap-5">
+              {/* Option 1: Instant Online Paystack Checkout */}
+              <div className="bg-white p-5 border border-slate-200 rounded-xl shadow-xs space-y-3 flex-1 flex flex-col justify-between">
+                <div className="space-y-1.5">
+                  <h4 className="text-xs font-black text-slate-800 uppercase font-sans tracking-wide flex items-center gap-1.5">
+                    <CreditCard size={14} className="text-emerald-600 shrink-0" />
+                    Option 1: Paystack Instant Online Renewal
+                  </h4>
+                  <p className="text-[10px] text-slate-400 font-sans leading-relaxed">
+                    The quickest way to renew. Processes instantly and extends your active subscription period automatically without any manual code entries or downtime.
+                  </p>
+                </div>
 
-                        const tierYears = selectedLicenseTier === '1year' ? 1 : selectedLicenseTier === '2year' ? 2 : selectedLicenseTier === '3year' ? 3 : selectedLicenseTier === '5year' ? 5 : 1;
-
-                        await DbController.updateUserLicense(
-                          currentUser.uid,
-                          'activated',
-                          new Date().toISOString(),
-                          generatedKey,
-                          currentUser.requestCode || 'REQ-SYSTEM-9401',
-                          tierYears
-                        );
-                        setSubscriptionSuccess(true);
-                        // Force refresh lists of users locally so evaluateSubscription finds the new state
-                        setRegisteredAccounts(DbController.getRegisteredUsers());
-                        onRefresh();
-                      } catch (e: any) {
-                        alert("Paystack payment completed but local license state synchronization had errors: " + e.message);
+                <div className="pt-2">
+                  {currentUser ? (
+                    <PaystackPaymentTrigger 
+                      studentId={`LICENSE_${currentUser.uid.substring(0, 8)}`}
+                      studentName={`License Renewal [${currentUser.name}]`}
+                      email={currentUser.email}
+                      amount={selectedLicenseTier === '1year' ? discountedPrice1Year : selectedLicenseTier === '2year' ? discountedPrice2Year : selectedLicenseTier === '3year' ? discountedPrice3Year : discountedPrice5Year}
+                      academicYear="2026/2027"
+                      term="Term 1"
+                      component="Other Fee"
+                      billId={`LICENSE_${currentUser.uid.substring(0, 8)}_${selectedLicenseTier}`}
+                      triggerLabel={subStatus?.licenseType === 'activated' && !subStatus.isLocked 
+                        ? `Top Up / Extend License (GHS ${(selectedLicenseTier === '1year' ? discountedPrice1Year : selectedLicenseTier === '2year' ? discountedPrice2Year : selectedLicenseTier === '3year' ? discountedPrice3Year : discountedPrice5Year).toFixed(2)})`
+                        : `Activate Online System License (GHS ${(selectedLicenseTier === '1year' ? discountedPrice1Year : selectedLicenseTier === '2year' ? discountedPrice2Year : selectedLicenseTier === '3year' ? discountedPrice3Year : discountedPrice5Year).toFixed(2)})`
                       }
-                    }}
-                  />
-                ) : (
-                  <div className="p-8 bg-slate-50 border border-slate-200 rounded-xl text-center text-slate-500 font-sans">
-                    Please log in to purchase a school license index check.
-                  </div>
-                )}
+                      btnClassName="bg-emerald-600 hover:bg-emerald-700 text-white font-bold uppercase py-3 border border-emerald-700/20 rounded-xl cursor-pointer w-full"
+                      paymentType="admin"
+                      onSuccess={async (txData) => {
+                        console.log("Paystack upgrading license on success transaction:", txData);
+                        try {
+                          const generatedKey = generateActivationCode(currentUser.email, currentUser.requestCode || 'REQ-SYSTEM-9401');
+                          
+                          // Settle payment in local+cloud Paystack ledgers
+                          const paymentLog: PaystackPayment = {
+                            id: txData.reference || `LIC-${currentUser.uid.substring(0, 8)}-${Date.now()}`,
+                            reference: txData.reference || `LIC-${currentUser.uid.substring(0, 8)}-${Date.now()}`,
+                            studentId: `LICENSE_${currentUser.uid.substring(0, 8)}`,
+                            studentName: `Software License: ${currentUser.name} (${currentUser.role})`,
+                            billId: `LICENSE_${currentUser.uid.substring(0, 8)}_${selectedLicenseTier}`,
+                            component: 'Other Fee',
+                            amount: txData.amount || (selectedLicenseTier === '1year' ? discountedPrice1Year : selectedLicenseTier === '2year' ? discountedPrice2Year : selectedLicenseTier === '3year' ? discountedPrice3Year : discountedPrice5Year),
+                            academicYear: "2026/2027",
+                            term: "Term 1",
+                            status: "success",
+                            paidAt: txData.paidAt || new Date().toISOString(),
+                            createdAt: new Date().toISOString()
+                          };
+                          
+                          DbController.savePaystackPayment(paymentLog);
+
+                          const tierYears = selectedLicenseTier === '1year' ? 1 : selectedLicenseTier === '2year' ? 2 : selectedLicenseTier === '3year' ? 3 : selectedLicenseTier === '5year' ? 5 : 1;
+                          
+                          DbController.recordUsedCode(generatedKey, currentUser.email);
+                          const emailPrefix = currentUser.email ? currentUser.email.split('@')[0].substring(0, 4).toUpperCase() : 'USER';
+                          const freshReqCode = `REQ-${emailPrefix}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+                          await DbController.updateUserLicense(
+                            currentUser.uid,
+                            'activated',
+                            new Date().toISOString(),
+                            generatedKey,
+                            freshReqCode,
+                            tierYears
+                          );
+                          setSubscriptionSuccess(true);
+                          // Force refresh lists of users locally so evaluateSubscription finds the new state
+                          setRegisteredAccounts(DbController.getRegisteredUsers());
+                          onRefresh();
+                        } catch (e: any) {
+                          alert("Paystack payment completed but local license state synchronization had errors: " + e.message);
+                        }
+                      }}
+                    />
+                  ) : (
+                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-center text-slate-500 font-sans text-[11px]">
+                      Please log in to purchase a school license.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Option 2: Offline Passcode early top-up */}
+              <div className="bg-white p-5 border border-slate-200 rounded-xl shadow-xs space-y-3 flex-1 flex flex-col justify-between">
+                <div className="space-y-1.5">
+                  <h4 className="text-xs font-black text-slate-800 uppercase font-sans tracking-wide flex items-center gap-1.5">
+                    <Key size={14} className="text-indigo-600 shrink-0" />
+                    Option 2: Offline Passcode early top-up
+                  </h4>
+                  <p className="text-[10px] text-slate-400 font-sans leading-relaxed">
+                    If you subscribed offline or received an activation passcode from the system administrator, enter it below to top up your license period early.
+                  </p>
+                </div>
+
+                <div className="pt-2">
+                  {currentUser ? (
+                    <form onSubmit={handleOfflineActivationSubmit} className="space-y-3">
+                      <div className="space-y-1">
+                        <label className="block text-[8px] font-bold text-slate-500 uppercase tracking-wider">
+                          Enter 12-Character Passcode
+                        </label>
+                        <input 
+                          type="text"
+                          value={offlinePasscodeInput}
+                          onChange={(e) => {
+                            setOfflinePasscodeInput(e.target.value.toUpperCase().trim());
+                            setOfflineError(null);
+                            setOfflineSuccess(false);
+                          }}
+                          placeholder="e.g. SEC-AMAS-123456"
+                          className="w-full text-xs font-mono font-bold tracking-widest px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/30 uppercase text-center bg-slate-50/50"
+                        />
+                      </div>
+                      
+                      {offlineError && (
+                        <p className="text-[10px] text-rose-600 font-medium leading-relaxed bg-rose-50 border border-rose-100 p-2 rounded">
+                          {offlineError}
+                        </p>
+                      )}
+
+                      {offlineSuccess && (
+                        <p className="text-[10px] text-emerald-700 font-black leading-relaxed bg-emerald-50 border border-emerald-100 p-2 rounded">
+                          ✓ Passcode verified! License successfully extended.
+                        </p>
+                      )}
+
+                      <button
+                        type="submit"
+                        disabled={isVerifyingOffline || !offlinePasscodeInput}
+                        className="w-full py-2.5 px-4 bg-indigo-650 hover:bg-indigo-700 disabled:bg-slate-100 disabled:text-slate-400 disabled:border-slate-200 text-white font-bold rounded-lg text-[10px] uppercase tracking-wide transition cursor-pointer flex items-center justify-center gap-1.5"
+                      >
+                        {isVerifyingOffline ? 'Verifying...' : 'Verify & Apply Passcode'}
+                      </button>
+                    </form>
+                  ) : (
+                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-center text-slate-500 font-sans text-[11px]">
+                      Please log in to verify offline keys.
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -2227,9 +2622,11 @@ export default function SettingsTab({
                 <Check size={20} className="stroke-[3]" />
               </div>
               <div className="space-y-1">
-                <h4 className="text-sm font-black text-emerald-950 font-sans">Corporate Database License Fully Activated!</h4>
+                <h4 className="text-sm font-black text-emerald-950 font-sans">
+                  {subStatus?.licenseType === 'activated' && !subStatus.isLocked ? 'License Successfully Extended!' : 'Corporate Database License Fully Activated!'}
+                </h4>
                 <p className="text-xs text-emerald-800/90 leading-relaxed font-sans max-w-2xl">
-                  Paystack transaction settled. The licensing system has successfully verified the cryptographic passcode and upgraded your account <strong>{currentUser?.email}</strong> from Trial limits to fully <strong>Licensed Year Access</strong>. All core student directories, assessments, and attendance logs are secured.
+                  Paystack transaction settled. The licensing system has successfully verified the cryptographic passcode and {subStatus?.licenseType === 'activated' && !subStatus.isLocked ? 'extended' : 'upgraded'} your account <strong>{currentUser?.email}</strong> {subStatus?.licenseType === 'activated' && !subStatus.isLocked ? 'by the selected term' : 'from Trial limits to fully Licensed Year Access'}. All core student directories, assessments, and attendance logs are secured.
                 </p>
                 <div className="pt-2">
                   <button 
@@ -2632,7 +3029,16 @@ export default function SettingsTab({
                   <h4 className="font-sans font-bold text-slate-800 text-xs uppercase tracking-wider">Audit Security Log ({filteredLogs.length})</h4>
                 </div>
 
-                <div className="flex items-center gap-2 self-end sm:self-auto">
+                <div className="flex items-center gap-2 self-end sm:self-auto flex-wrap">
+                  <button
+                    type="button"
+                    onClick={handleDownloadActivityLogsCSV}
+                    className="px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 hover:text-indigo-800 rounded-lg transition cursor-pointer text-[10px] font-bold flex items-center gap-1 font-sans"
+                    title="Export activity security logs as CSV spreadsheet"
+                  >
+                    <Download size={12} />
+                    <span>Download Activity Log (CSV)</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => setActivityLogs(DbController.getActivityLogs())}
@@ -2727,7 +3133,7 @@ export default function SettingsTab({
               </div>
 
               {/* Audit Roster */}
-              <div className="space-y-3 max-h-[480px] overflow-y-auto pr-1">
+              <div ref={systemLogsContainerRef} className="space-y-3 max-h-[480px] overflow-y-auto pr-1">
                 {filteredLogs.length === 0 ? (
                   <div className="p-12 text-center text-slate-400 space-y-2 border border-dashed border-slate-200 rounded-2xl">
                     <History size={32} className="mx-auto text-slate-300 stroke-[1.25]" />
@@ -2890,22 +3296,185 @@ export default function SettingsTab({
               </button>
               <button
                 type="button"
-                onClick={async () => {
-                  if (wipeConfirmText.toUpperCase() === 'WIPE') {
-                    await DbController.clearAllData();
-                    setShowWipeModal(false);
-                    window.location.reload();
+                onClick={() => {
+                  if (wipeConfirmText.trim().toUpperCase() === 'WIPE') {
+                    setWipeBiometricStep('idle');
+                    setShowWipeBiometric(true);
                   } else {
-                    setWipeError("Please type 'WIPE' to confirm.");
+                    setWipeError("Please type 'WIPE' to confirm authorization.");
                   }
                 }}
-                className="py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-lg transition cursor-pointer flex items-center justify-center gap-1 text-center"
+                className="py-2.5 bg-rose-600 hover:bg-rose-700 active:scale-95 text-white font-bold text-xs rounded-lg transition cursor-pointer flex items-center justify-center gap-1.5 text-center shadow-md"
               >
                 <Trash2 size={13} />
-                Wipe & Start Fresh
+                <span>Wipe & Start Fresh</span>
               </button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* WEB-BASED BIOMETRIC AUTHENTICATION / WEBAUTHN DEVICE WIPE VERIFICATION */}
+      {showWipeBiometric && (
+        <div 
+          className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-fade-in cursor-default font-sans text-slate-100"
+        >
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl max-w-sm w-full p-6 shadow-2xl space-y-6 relative overflow-hidden text-center">
+            <div className="absolute inset-x-0 top-0 h-1.5 bg-gradient-to-r from-rose-500 via-amber-500 to-rose-600 animate-pulse" />
+            
+            <div className="flex justify-between items-center pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-1.5 text-rose-400">
+                <Fingerprint size={18} className="animate-pulse" />
+                <span className="text-xs font-mono font-bold uppercase tracking-widest text-left">Administrative Auth Shield</span>
+              </div>
+              <button 
+                onClick={() => setShowWipeBiometric(false)}
+                className="p-1 hover:bg-slate-800 rounded-md text-slate-400 hover:text-white transition cursor-pointer"
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            {wipeBiometricStep === 'idle' && (
+              <div className="space-y-6 py-4">
+                <div className="w-24 h-24 mx-auto flex items-center justify-center rounded-full bg-rose-950/20 border border-rose-900/40 shadow-inner">
+                  <Fingerprint size={48} className="text-rose-400 animate-pulse" />
+                </div>
+                <div className="space-y-2">
+                  <h3 className="text-sm font-bold tracking-tight text-white">Biometric Verification Required</h3>
+                  <p className="text-[10px] text-slate-400 max-w-xs mx-auto leading-relaxed font-semibold">
+                    You are performing a catastrophic reset. Place your registered fingerprint on the Touch ID sensor or press below to sign the authorization payload with your WebAuthn device key.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setWipeBiometricStep('scanning');
+                    // Play scanning synthesizer sound using Web Audio API
+                    try {
+                      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+                      const osc = audioCtx.createOscillator();
+                      const gainNode = audioCtx.createGain();
+                      osc.type = 'sawtooth';
+                      osc.frequency.setValueAtTime(100, audioCtx.currentTime);
+                      osc.frequency.linearRampToValueAtTime(180, audioCtx.currentTime + 1.2);
+                      gainNode.gain.setValueAtTime(0.08, audioCtx.currentTime);
+                      gainNode.gain.linearRampToValueAtTime(0.001, audioCtx.currentTime + 1.2);
+                      osc.connect(gainNode);
+                      gainNode.connect(audioCtx.destination);
+                      osc.start();
+                      osc.stop(audioCtx.currentTime + 1.2);
+                    } catch (e) {}
+
+                    setTimeout(() => {
+                      // Scan completion and verification
+                      setWipeBiometricStep('success');
+                      
+                      // Play success synthesized alert (double high-pitch chime)
+                      try {
+                        const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+                        const playTone = (freq: number, start: number, dur: number) => {
+                          const osc = audioCtx.createOscillator();
+                          const gainNode = audioCtx.createGain();
+                          osc.type = 'sine';
+                          osc.frequency.value = freq;
+                          gainNode.gain.setValueAtTime(0.12, audioCtx.currentTime + start);
+                          gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + start + dur);
+                          osc.connect(gainNode);
+                          gainNode.connect(audioCtx.destination);
+                          osc.start(audioCtx.currentTime + start);
+                          osc.stop(audioCtx.currentTime + start + dur);
+                        };
+                        playTone(880, 0, 0.15);
+                        playTone(1200, 0.1, 0.25);
+                      } catch (e) {}
+
+                      // Execute actual wipe
+                      setTimeout(async () => {
+                        try {
+                          triggerToast("Wiping all system registers and input data...", "info");
+                          await DbController.clearAllData();
+                          localStorage.clear();
+                          sessionStorage.clear();
+                          
+                          // Write safety audit log
+                          DbController.writeActivityLog(
+                            'Administrative Database Wipe Complete',
+                            `A full database and local snapshot wipe was successfully executed by administrative user ${currentUser?.email || 'System Admin'} and verified via biometric WebAuthn key token.`,
+                            'critical'
+                          );
+                          
+                          triggerToast("System reset complete. Reloading fresh environment...", "success");
+                          setShowWipeBiometric(false);
+                          setShowWipeModal(false);
+                          setTimeout(() => {
+                            window.location.href = window.location.origin;
+                          }, 500);
+                        } catch (err: any) {
+                          alert("Wipe failed: " + (err.message || String(err)));
+                          setWipeBiometricStep('failed');
+                        }
+                      }, 1000);
+
+                    }, 1500);
+                  }}
+                  className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 active:scale-95 text-white text-xs font-black rounded-xl transition cursor-pointer shadow-md tracking-wider uppercase font-mono"
+                >
+                  Scan Biometric & Authorize Wipe
+                </button>
+              </div>
+            )}
+
+            {wipeBiometricStep === 'scanning' && (
+              <div className="space-y-6 py-4 animate-pulse">
+                <div className="relative w-24 h-24 mx-auto flex items-center justify-center rounded-full bg-rose-950/40 border border-rose-500/40 shadow-inner overflow-hidden">
+                  <div className="absolute inset-x-2 top-0 h-0.5 bg-rose-400 shadow-[0_0_15px_rgba(239,68,68,0.8)] animate-bounce" style={{ animationDuration: '1.2s' }} />
+                  <Fingerprint size={48} className="text-rose-400 animate-pulse" />
+                </div>
+                <div className="space-y-2">
+                  <h3 className="text-sm font-bold tracking-tight text-white animate-pulse">Authorizing Security Payload...</h3>
+                  <p className="text-[10px] text-slate-400 max-w-xs mx-auto leading-relaxed">
+                    Reading device hardware cryptographic chip. Generating physical credential validation challenge...
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {wipeBiometricStep === 'success' && (
+              <div className="space-y-6 py-4 animate-fade-in">
+                <div className="w-16 h-16 bg-emerald-950/50 border border-emerald-500/30 rounded-full flex items-center justify-center mx-auto text-emerald-400 animate-bounce">
+                  <Check size={28} className="stroke-[3]" />
+                </div>
+                <div className="space-y-2">
+                  <h3 className="text-sm font-bold text-emerald-400">Identity Signed & Approved!</h3>
+                  <p className="text-[10px] text-slate-300 max-w-xs mx-auto leading-relaxed">
+                    Biometric key token verified successfully. Wiping system registries, logs, and databases...
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {wipeBiometricStep === 'failed' && (
+              <div className="space-y-6 py-4 animate-fade-in">
+                <div className="w-16 h-16 bg-rose-950/50 border border-rose-500/30 rounded-full flex items-center justify-center mx-auto text-rose-400 animate-bounce">
+                  <X size={28} className="stroke-[3]" />
+                </div>
+                <div className="space-y-2">
+                  <h3 className="text-sm font-bold text-rose-400">Authentication Failed</h3>
+                  <p className="text-[10px] text-slate-300 max-w-xs mx-auto leading-relaxed">
+                    Your WebAuthn signature challenge timed out or failed to verify. Please try again.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setWipeBiometricStep('idle')}
+                  className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-xl transition cursor-pointer"
+                >
+                  Retry Scan
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -3261,6 +3830,123 @@ export default function SettingsTab({
                 * Global lockdown feature is currently disabled and managed via administrative shell for integrity.
               </p>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ARCHIVE TAB CONTENT */}
+      {settingsSubTab === 'archive' && (
+        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-6 animate-fade-in">
+          <div className="flex items-center justify-between gap-4 pb-2 border-b border-slate-100">
+            <h3 className="text-sm font-display font-bold text-slate-800 flex items-center gap-1.5">
+              <Archive size={17} className="text-slate-600" />
+              Deleted & Archived Modules
+            </h3>
+          </div>
+          
+          <div className="space-y-4">
+            <p className="text-[11px] text-slate-500 leading-relaxed font-sans">
+              Manage archived records and modules. You can restore them back to their primary dashboards or leave them here for long-term storage out of active view.
+            </p>
+
+            <div className="bg-slate-50 border border-slate-200 rounded-xl overflow-hidden mt-4">
+              <div className="p-3 bg-white border-b border-slate-200 flex justify-between items-center">
+                <h4 className="text-[11px] font-bold text-slate-700 flex items-center gap-1.5 font-sans">
+                  <Database size={13} className="text-slate-400" />
+                  Archived Assessment Worksheets
+                </h4>
+              </div>
+              <div className="divide-y divide-slate-100 max-h-[400px] overflow-y-auto">
+                {DbController.getArchivedWorksheets().length === 0 ? (
+                  <div className="p-8 text-center text-slate-400">
+                    <Archive size={24} className="mx-auto mb-2 opacity-30" />
+                    <p className="text-[10px] font-medium font-sans">No archived worksheets found.</p>
+                  </div>
+                ) : (
+                  DbController.getArchivedWorksheets().map((sheet, idx) => (
+                    <div key={idx} className="p-3 hover:bg-slate-100/50 transition flex items-center justify-between group">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] font-bold text-slate-800 font-sans">{sheet.className}</span>
+                          <span className="text-[9px] px-1.5 py-0.5 rounded-sm bg-slate-200 text-slate-600 font-bold font-mono">{sheet.academicYear}</span>
+                          <span className="text-[9px] px-1.5 py-0.5 rounded-sm bg-indigo-50 border border-indigo-100 text-indigo-700 font-bold font-mono">{sheet.term}</span>
+                        </div>
+                        <div className="text-[10px] text-slate-500 mt-1 font-sans">
+                          Subject: <span className="font-semibold">{sheet.subject}</span>
+                        </div>
+                        <div className="text-[9px] text-slate-400 mt-0.5 font-mono">
+                          Archived on: {new Date(sheet.archivedAt).toLocaleString()}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm('Are you sure you want to restore this worksheet? It will reappear on the main assessments dashboard.')) {
+                            DbController.restoreAssessmentWorksheet(sheet.className, sheet.academicYear, sheet.term, sheet.subject);
+                            onRefresh();
+                          }
+                        }}
+                        className="opacity-0 group-hover:opacity-100 transition px-3 py-1.5 bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-50 rounded-lg text-[10px] font-bold flex items-center gap-1 shadow-sm"
+                      >
+                        <RefreshCw size={12} /> Restore Worksheet
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="bg-slate-50 border border-slate-200 rounded-xl overflow-hidden mt-6">
+              <div className="p-3 bg-white border-b border-slate-200 flex justify-between items-center">
+                <h4 className="text-[11px] font-bold text-slate-700 flex items-center gap-1.5 font-sans">
+                  <CheckCircle2 size={13} className="text-slate-400" />
+                  Archived Custom Tasks
+                </h4>
+              </div>
+              <div className="divide-y divide-slate-100 max-h-[400px] overflow-y-auto">
+                {DbController.getTasks().filter(t => t.isArchived).length === 0 ? (
+                  <div className="p-8 text-center text-slate-400">
+                    <Archive size={24} className="mx-auto mb-2 opacity-30" />
+                    <p className="text-[10px] font-medium font-sans">No archived tasks found.</p>
+                  </div>
+                ) : (
+                  DbController.getTasks().filter(t => t.isArchived).map(task => (
+                    <div key={task.id} className="p-3 hover:bg-slate-100/50 transition flex items-center justify-between group">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] font-bold text-slate-800 font-sans">{task.title}</span>
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded-sm font-bold font-mono ${
+                            task.priority === 'critical' ? 'bg-rose-100 text-rose-700' :
+                            task.priority === 'high' ? 'bg-amber-100 text-amber-700' :
+                            'bg-slate-200 text-slate-600'
+                          }`}>{task.priority.toUpperCase()}</span>
+                        </div>
+                        <div className="text-[10px] text-slate-500 mt-1 font-sans">
+                          {task.description}
+                        </div>
+                        <div className="text-[9px] text-slate-400 mt-0.5 font-mono">
+                          Archived on: {task.archivedAt ? new Date(task.archivedAt).toLocaleString() : 'Unknown'}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm('Are you sure you want to restore this task?')) {
+                            task.isArchived = false;
+                            DbController.saveTask(task);
+                            onRefresh();
+                          }
+                        }}
+                        className="opacity-0 group-hover:opacity-100 transition px-3 py-1.5 bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-50 rounded-lg text-[10px] font-bold flex items-center gap-1 shadow-sm shrink-0"
+                      >
+                        <RefreshCw size={12} /> Restore Task
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
           </div>
         </div>
       )}

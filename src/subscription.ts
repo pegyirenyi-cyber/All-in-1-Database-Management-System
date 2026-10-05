@@ -1,12 +1,17 @@
 import { UserAccount } from './types';
-import { getStorageItem } from './db';
+import { DbController } from './db';
 
 export interface SubscriptionStatus {
   isLocked: boolean;
   isTrial: boolean;
   registeredOnDate: Date;
+  lastActivatedOnDate: Date | null;
   expiryDate: Date;
   remainingDays: number;
+  remainingHours: number;
+  remainingMinutes: number;
+  remainingSeconds: number;
+  countdownString: string;
   message: string;
   requestCode: string;
   licenseType: 'trial' | 'activated' | 'unlimited';
@@ -14,24 +19,28 @@ export interface SubscriptionStatus {
 
 /**
  * Deterministically generates a secure activation/renewal passcode based on
- * the user's email, their unique request code, and an offline salt.
+ * the user's email or login user ID, their unique request code, and an offline salt.
  * Ensures the admin (pegyirenyi@gmail.com) can generate keys offline
  * and the user's client can securely verify them without requiring database lookups.
  */
-export function generateActivationCode(email: string, requestCode: string): string {
-  const cleanEmail = email.toLowerCase().trim();
+export function generateActivationCode(identifier: string, requestCode: string, uid?: string): string {
+  const cleanId = (identifier || uid || '').toLowerCase().trim();
   const cleanRequest = requestCode.toUpperCase().trim();
   
   let hash = 0;
-  const combined = `${cleanEmail}:${cleanRequest}:GEETECH-SALT-2026`;
+  const combined = `${cleanId}:${cleanRequest}:GEETECH-SALT-2026`;
   for (let i = 0; i < combined.length; i++) {
     hash = (hash << 5) - hash + combined.charCodeAt(i);
     hash |= 0; // Convert to 32bit integer
   }
   const absHash = Math.abs(hash);
   const numPart = (absHash % 900000) + 100000; // Force exactly 6 digits
-  const charPart = cleanEmail.substring(0, 3).toUpperCase().split('').reverse().join('');
+  const charPart = cleanId.replace(/[^a-zA-Z0-9]/g, '').substring(0, 3).toUpperCase().split('').reverse().join('').padEnd(3, 'X');
   return `SEC-${charPart}-${numPart}`;
+}
+
+export function generateActivationCodeForUid(uid: string, requestCode: string): string {
+  return generateActivationCode(uid, requestCode);
 }
 
 /**
@@ -42,100 +51,167 @@ export function getOrCreateRequestCode(user: UserAccount): string {
   if (user.requestCode) return user.requestCode;
   // Generate random digits
   const randomDigits = Math.floor(1000 + Math.random() * 9000); // 4 digits
-  const emailPrefix = user.email.split('@')[0].substring(0, 4).toUpperCase();
+  const emailPrefix = user.email ? user.email.split('@')[0].substring(0, 4).toUpperCase() : 'USER';
   return `REQ-${emailPrefix}-${randomDigits}`;
 }
 
 /**
  * Evaluates the subscription status for any user account.
- * Peggy is free and exempt forever.
+ * Peggy is free and exempt forever as System Admin.
+ * All other non-admin users are suspended/expired unless they hold an active non-expired license.
  */
 export function evaluateSubscription(user: UserAccount | null): SubscriptionStatus | null {
   if (!user) return null;
   
-  const email = user.email.toLowerCase().trim();
+  const email = user.email ? user.email.toLowerCase().trim() : '';
   
   // Rule: pegyirenyi@gmail.com is exempt from subscription limits
   if (email === 'pegyirenyi@gmail.com') {
     return {
       isLocked: false,
       isTrial: false,
-      registeredOnDate: new Date(user.createdAt),
+      registeredOnDate: new Date(user.createdAt || Date.now()),
+      lastActivatedOnDate: new Date(user.lastActivatedOn || user.createdAt || Date.now()),
       expiryDate: new Date('2036-12-31T23:59:59Z'), // Long future date
       remainingDays: 3650,
+      remainingHours: 87600,
+      remainingMinutes: 5256000,
+      remainingSeconds: 315360000,
+      countdownString: 'Lifetime Access',
       message: 'System Master Admin Access Granted.',
       requestCode: 'SYSTEM-BYPASS',
       licenseType: 'activated'
     };
   }
 
-  // Handle default fields if undefined on the user record
-  const licenseType = user.licenseType || 'trial';
-  const registeredOn = user.registeredOn || user.createdAt || new Date().toISOString();
-  const lastActivatedOn = user.lastActivatedOn || null;
-  const requestCode = user.requestCode || `REQ-${email.split('@')[0].substring(0, 4).toUpperCase()}-9401`;
-  
-  const regDate = new Date(registeredOn);
-  let expDate: Date;
+  // If user is a Teacher / Staff user, inherit the subscription status from their registered Headteacher / School Admin
+  // unless the teacher account already has its own direct active license or active trial
+  let evalUser = user;
+  let isInheritedFromHeadteacher = false;
+  let headteacherName = '';
 
-  // -------------------------------------------------------------
-  // ACADEMIC CALENDAR DRIVEN SUBSCRIPTION EXPIRY LOGIC
-  // -------------------------------------------------------------
-  let calendarConfig: any = null;
-  try {
-    calendarConfig = getStorageItem('sms_academic_calendar', null);
-  } catch (e) {
-    console.error("Error reading academic calendar for subscription evaluation:", e);
+  const userHasDirectActiveLicense = user.licenseType === 'activated' || user.licenseType === 'unlimited';
+  const userHasDirectValidTrial = user.licenseType === 'trial' && user.trialEndDate && new Date(user.trialEndDate).getTime() > Date.now();
+
+  if (user.role === 'Teacher' && !userHasDirectActiveLicense && !userHasDirectValidTrial) {
+    try {
+      const allUsers = DbController.getRegisteredUsers();
+      const schoolId = user.schoolId;
+      
+      // Find matching Headteacher / School Admin for this school or generally
+      const headteacher = allUsers.find(u => 
+        (u.role === 'Headteacher' || u.role === 'Admin') &&
+        (schoolId ? u.schoolId === schoolId : true) &&
+        u.email?.toLowerCase().trim() !== 'pegyirenyi@gmail.com'
+      ) || allUsers.find(u => 
+        (u.role === 'Headteacher' || u.role === 'Admin') &&
+        u.email?.toLowerCase().trim() !== 'pegyirenyi@gmail.com'
+      );
+
+      if (headteacher) {
+        evalUser = headteacher;
+        isInheritedFromHeadteacher = true;
+        headteacherName = headteacher.name || headteacher.email;
+      }
+    } catch (e) {
+      console.warn("Could not retrieve Headteacher subscription profile for teacher:", e);
+    }
   }
 
-  // Robust defaults matching DEFAULT_CALENDAR
-  const activeYear = calendarConfig?.activeAcademicYear || '2026/2027';
-  const activeTerm = calendarConfig?.activeTerm || 'Term 1';
-  const yearConfig = calendarConfig?.years?.[activeYear] || {
-    startDate: '2026-09-01',
-    endDate: '2027-07-31',
-    terms: {
-      'Term 1': { startDate: '2026-09-01', endDate: '2026-12-18' },
-      'Term 2': { startDate: '2027-01-07', endDate: '2027-04-09' },
-      'Term 3': { startDate: '2027-05-03', endDate: '2027-07-30' }
-    }
-  };
+  // Handle default fields tied to the target login user record
+  const licenseType = evalUser.licenseType || 'trial';
+  const registeredOn = evalUser.registeredOn || evalUser.createdAt || new Date().toISOString();
+  const lastActivatedOn = evalUser.lastActivatedOn || null;
+  const requestCode = user.requestCode || getOrCreateRequestCode(user);
+  
+  const regDate = new Date(registeredOn);
+  const lastActivatedDate = lastActivatedOn ? new Date(lastActivatedOn) : null;
+  let expDate: Date;
 
-  if (licenseType === 'trial') {
-    // Trial expires exactly 14 days after registration
-    expDate = new Date(regDate.getTime() + 14 * 24 * 60 * 60 * 1000);
+  if (licenseType === 'unlimited') {
+    expDate = evalUser.isSuspended ? new Date('2026-01-01T00:00:00.000Z') : new Date('2036-12-31T23:59:59Z');
+  } else if (licenseType === 'trial') {
+    if (evalUser.trialEndDate) {
+      expDate = new Date(evalUser.trialEndDate);
+    } else {
+      // Direct trial period linked to this login user ID (14 days from registration or now)
+      const trialDays = evalUser.email?.toLowerCase().trim() === 'wilkinsonannan@gmail.com' 
+        ? 21 
+        : evalUser.email?.toLowerCase().trim() === 'sammyotoo06@gmail.com' 
+        ? 15 
+        : 14;
+      const trialMs = trialDays * 24 * 60 * 60 * 1000;
+      expDate = new Date(regDate.getTime() + trialMs);
+    }
   } else {
     // Licensed access expires based on the subscription period (number of years) from lastActivatedOn
-    const activationDate = lastActivatedOn ? new Date(lastActivatedOn) : regDate;
-    const periodYears = user.licensePeriod || 1;
+    const activationDate = (lastActivatedDate && !isNaN(lastActivatedDate.getTime())) ? lastActivatedDate : (isNaN(regDate.getTime()) ? new Date() : regDate);
+    const periodYears = evalUser.licensePeriod || 1;
     expDate = new Date(activationDate.getTime());
     expDate.setFullYear(expDate.getFullYear() + periodYears);
   }
 
+  if (isNaN(expDate.getTime())) {
+    expDate = new Date('2026-01-01T00:00:00.000Z');
+  }
+
   const now = new Date();
   const diffMs = expDate.getTime() - now.getTime();
-  const remainingDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-  const isExpired = now.getTime() >= expDate.getTime();
-  const isLocked = isExpired;
+  const totalSec = Math.max(0, Math.floor(diffMs / 1000));
+  const remainingDays = Math.floor(totalSec / (3600 * 24));
+  const remainingHours = Math.floor((totalSec % (3600 * 24)) / 3600);
+  const remainingMinutes = Math.floor((totalSec % 3600) / 60);
+  const remainingSeconds = totalSec % 60;
 
-  // Build helpful display status statements
+  const isExpired = licenseType === 'unlimited' ? !!evalUser.isSuspended : now.getTime() >= expDate.getTime();
+  const isLocked = isExpired || !!evalUser.isSuspended;
+
+  let countdownString = '';
+  if (isLocked) {
+    countdownString = evalUser.isSuspended ? 'Suspended' : 'Expired / Locked';
+  } else if (licenseType === 'unlimited') {
+    countdownString = 'Lifetime Access';
+  } else {
+    countdownString = `${remainingDays}d ${remainingHours}h ${remainingMinutes}m ${remainingSeconds}s`;
+  }
+
+  // Build helpful display status statements linked to this user's subscription
   let message = '';
   if (isLocked) {
-    message = licenseType === 'trial'
-      ? `Your 14-day trial limit has expired. All features are currently disabled. Please subscribe for 1 year, 2 years, 3 years, or 5 years to unlock.`
-      : `Your ${user.licensePeriod || 1}-year school database license has expired. Please purchase a renewal to regain full access.`;
+    if (isInheritedFromHeadteacher) {
+      message = evalUser.isSuspended
+        ? `School account access has been suspended by Headteacher/Admin (${headteacherName}). Please contact your Headteacher to reactivate.`
+        : `Your school's subscription (Headteacher: ${headteacherName}) has expired. Please notify your Headteacher to top up/renew the school license.`;
+    } else {
+      message = evalUser.isSuspended
+        ? `Account access (User ID: ${evalUser.uid}) has been suspended/expired by Admin. Please contact Admin at pegyirenyi@gmail.com or 0544052717 to request license activation.`
+        : licenseType === 'trial'
+          ? `Your free trial period for User ID (${evalUser.uid}) has expired. All features are currently disabled. Please subscribe for 1 year, 2 years, 3 years, or 5 years to unlock.`
+          : `Your ${evalUser.licensePeriod || 1}-year school database license for User ID (${evalUser.uid}) has expired. Please purchase a single-use renewal passcode to regain full access.`;
+    }
   } else {
-    message = licenseType === 'trial'
-      ? `System Trial is Active. You have ${remainingDays} days left out of your 14-day trial limit.`
-      : `Licensed School Account. Your license is healthy with ${remainingDays} days remaining on your ${user.licensePeriod || 1}-year license subscription.`;
+    if (isInheritedFromHeadteacher) {
+      message = `Licensed School Account (Headteacher: ${headteacherName}). Real-time school license active with ${countdownString} remaining on your ${evalUser.licensePeriod || 1}-year subscription.`;
+    } else {
+      message = licenseType === 'unlimited'
+        ? `Unlimited Lifetime License active for User ID: ${evalUser.uid}.`
+        : licenseType === 'trial'
+          ? `Free Trial active for user (${evalUser.name || evalUser.email || evalUser.uid}). Real-time trial active with ${countdownString} remaining.`
+          : `Licensed Account (${evalUser.uid}). Your license is healthy with ${countdownString} remaining on your ${evalUser.licensePeriod || 1}-year license subscription.`;
+    }
   }
 
   return {
     isLocked,
     isTrial: licenseType === 'trial',
     registeredOnDate: regDate,
+    lastActivatedOnDate: lastActivatedDate,
     expiryDate: expDate,
     remainingDays,
+    remainingHours,
+    remainingMinutes,
+    remainingSeconds,
+    countdownString,
     message,
     requestCode,
     licenseType
@@ -148,7 +224,6 @@ export function evaluateSubscription(user: UserAccount | null): SubscriptionStat
 export function getContactAdminLinks(email: string, requestCode: string) {
   const adminEmail = 'pegyirenyi@gmail.com';
   const phone = '0544052717'; // Admin Phone in GH (Country code +233 or local 0544052717)
-  const strongSuggestedKey = generateActivationCode(email, requestCode);
 
   const subject = encodeURIComponent('GEETECH School DB License Activation Request');
   const body = encodeURIComponent(
@@ -156,7 +231,6 @@ export function getContactAdminLinks(email: string, requestCode: string) {
     `My Registered User Email: ${email}\n` +
     `My System Request Code: ${requestCode}\n` +
     `Please generate the activation code for me so we can complete our license payment.\n\n` +
-    `Suggested Key: ${strongSuggestedKey}\n\n` +
     `Thank you!`
   );
 
@@ -170,7 +244,6 @@ export function getContactAdminLinks(email: string, requestCode: string) {
     mailtoUrl,
     whatsappUrl,
     phone,
-    adminEmail,
-    strongSuggestedKey
+    adminEmail
   };
 }

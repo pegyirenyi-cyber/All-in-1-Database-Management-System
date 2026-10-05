@@ -22,6 +22,11 @@ const auth = getAuth(app);
 
 const provider = new GoogleAuthProvider();
 provider.addScope('https://www.googleapis.com/auth/drive.file');
+provider.addScope('https://www.googleapis.com/auth/gmail.send');
+provider.addScope('https://www.googleapis.com/auth/gmail.readonly');
+provider.addScope('https://www.googleapis.com/auth/gmail.compose');
+provider.addScope('https://www.googleapis.com/auth/gmail.modify');
+provider.addScope('https://mail.google.com/');
 
 let isSigningIn = false;
 let cachedAccessToken: string | null = (typeof window !== 'undefined') ? localStorage.getItem('google_drive_access_token') : null;
@@ -180,3 +185,158 @@ export const uploadPdfToDrive = async (filename: string, pdfBlob: Blob): Promise
 
   return fileId;
 };
+
+/**
+ * Send an email via Gmail API
+ */
+export const sendGmailMessage = async (
+  to: string,
+  subject: string,
+  bodyHtml: string
+): Promise<{ id: string } | null> => {
+  const token = getGoogleAccessToken();
+  if (!token) {
+    throw new Error('User is not authenticated with Gmail.');
+  }
+
+  // Create the email content
+  const utf8Subject = `=?utf-8?B?${btoa(unescape(encodeURIComponent(subject)))}?=`;
+  const emailParts = [
+    `To: ${to}`,
+    'Content-Type: text/html; charset=utf-8',
+    'MIME-Version: 1.0',
+    `Subject: ${utf8Subject}`,
+    '',
+    bodyHtml
+  ];
+  const email = emailParts.join('\r\n');
+
+  // Base64url encode the email
+  const base64Safe = (str: string) => {
+    return btoa(unescape(encodeURIComponent(str)))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+  };
+
+  const raw = base64Safe(email);
+
+  const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      raw: raw
+    }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error('Failed to send email:', errText);
+    throw new Error(`Gmail Send Error: ${response.statusText} (${errText})`);
+  }
+
+  return await response.json();
+};
+
+let pickerApiLoaded = false;
+
+export const loadPickerApi = (): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    if (pickerApiLoaded) {
+      resolve();
+      return;
+    }
+
+    if (!(window as any).gapi) {
+      const script = document.createElement('script');
+      script.src = 'https://apis.google.com/js/api.js';
+      script.async = true;
+      script.defer = true;
+      script.onload = () => {
+        (window as any).gapi.load('picker', {
+          callback: () => {
+            pickerApiLoaded = true;
+            resolve();
+          },
+          onerror: () => {
+            reject(new Error('Failed to load Google Picker extension.'));
+          }
+        });
+      };
+      script.onerror = () => {
+        reject(new Error('Failed to load gapi script.'));
+      };
+      document.body.appendChild(script);
+    } else {
+      (window as any).gapi.load('picker', {
+        callback: () => {
+          pickerApiLoaded = true;
+          resolve();
+        },
+        onerror: () => {
+          reject(new Error('Failed to load Google Picker extension.'));
+        }
+      });
+    }
+  });
+};
+
+export interface PickerFile {
+  id: string;
+  name: string;
+  mimeType: string;
+  url: string;
+  sizeBytes?: number;
+  lastModified?: number;
+}
+
+export const showGooglePicker = async (
+  onPicked: (file: PickerFile) => void,
+  onCancel?: () => void
+): Promise<void> => {
+  const token = getGoogleAccessToken();
+  if (!token) {
+    throw new Error('User is not authenticated with Google Drive/Picker.');
+  }
+
+  await loadPickerApi();
+
+  const pickerOrigin =
+    window.location.ancestorOrigins && window.location.ancestorOrigins.length > 0
+      ? window.location.ancestorOrigins[window.location.ancestorOrigins.length - 1]
+      : window.location.origin;
+
+  const google = (window as any).google;
+  if (!google || !google.picker) {
+    throw new Error('Google Picker API is not fully loaded.');
+  }
+
+  const pickerCallback = (data: any) => {
+    if (data.action === google.picker.Action.PICKED) {
+      const doc = data.docs[0];
+      onPicked({
+        id: doc.id,
+        name: doc.name,
+        mimeType: doc.mimeType,
+        url: doc.url,
+        sizeBytes: doc.sizeBytes,
+        lastModified: doc.lastEditedUtc
+      });
+    } else if (data.action === google.picker.Action.CANCEL) {
+      if (onCancel) onCancel();
+    }
+  };
+
+  const picker = new google.picker.PickerBuilder()
+    .addView(google.picker.ViewId.DOCS)
+    .setOAuthToken(token)
+    .setCallback(pickerCallback)
+    .setOrigin(pickerOrigin)
+    .build();
+
+  picker.setVisible(true);
+};
+

@@ -1,19 +1,23 @@
 import React, { useState, useRef, ChangeEvent, FormEvent, useMemo, useEffect } from 'react';
-import { Teacher, TeacherRank, TEACHER_RANKS, CLASSES, ClassType, SUBJECTS, SubjectType, DutyAssignment, DutyType } from '../types';
+import { Teacher, TeacherRank, TEACHER_RANKS, CLASSES, ClassType, SUBJECTS, SubjectType, DutyAssignment, DutyType, SchoolInfo } from '../types';
 import { DbController } from '../db';
+import { formatIdentifiableFilename } from '../utils';
 import { compressImage, getWatermarkHtml, triggerToast } from '../utils';
 import { ThemeStyles } from './ThemeWrapper';
 import { 
   Plus, Search, Edit2, Trash2, Printer, Upload, X, Check, Save, UserCheck, User, Briefcase, Award, GraduationCap, Calendar, FileDown, ShieldAlert, RotateCcw, Eraser, Eye, FileSpreadsheet,
-  ChevronLeft, ChevronRight, Camera, Sparkles, Info, LayoutDashboard, BarChart2, AlertCircle, Users, ClipboardList, BookOpen, QrCode, IdCard
+  ChevronLeft, ChevronRight, ChevronDown, Camera, Sparkles, Info, LayoutDashboard, BarChart2, AlertCircle, Users, ClipboardList, BookOpen, QrCode, IdCard, CalendarRange, Mic,
+  Cake, Gift, Landmark, ShieldCheck
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import CameraCapture from './CameraCapture';
+import BatchTeacherCameraCaptureModal from './BatchTeacherCameraCaptureModal';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 import DutyRoster from './DutyRoster';
 import StaffHandbook from './StaffHandbook';
-import { motion, AnimatePresence } from 'motion/react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Legend } from 'recharts';
+import LeaveTracker from './LeaveTracker';
+import { motion, AnimatePresence } from 'framer-motion';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Legend, LineChart, Line, AreaChart, Area } from 'recharts';
 
 const GHANA_CREST_SVG_SIMPLE = `
 <svg viewBox="0 0 100 100" width="100%" height="100%" style="width: 250px; height: 250px; color: #000;">
@@ -36,10 +40,14 @@ const GHANA_CREST_SVG_SIMPLE = `
 interface Props {
   theme: ThemeStyles;
   teachers: Teacher[];
+  schoolInfo?: SchoolInfo;
   onRefresh: () => void;
   isAutoSave: boolean;
   onManualSave: () => void;
+  onSaveAll?: () => Promise<void>;
+  isManualSaving?: boolean;
   userRole?: string;
+  onNavigate?: (tab: string) => void;
 }
 
 const INITIAL_FORM: Partial<Teacher> = {
@@ -56,6 +64,7 @@ const INITIAL_FORM: Partial<Teacher> = {
   dateOfFirstAppointment: '',
   dateOfPostingToCurrentStation: '',
   staffId: '',
+  tinNumber: '',
   ntcNumber: '',
   ssnitNumber: '',
   district: '',
@@ -69,21 +78,157 @@ const INITIAL_FORM: Partial<Teacher> = {
   assignedSubjects: []
 };
 
-export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, onManualSave, userRole }: Props) {
+export default function TeachersTab({ theme, teachers, schoolInfo: propSchoolInfo, onRefresh, isAutoSave, onManualSave, onSaveAll, isManualSaving, userRole, onNavigate }: Props) {
+  const [schoolInfo, setSchoolInfo] = useState<SchoolInfo>(() => propSchoolInfo || DbController.getSchoolInfo());
+
+  useEffect(() => {
+    if (propSchoolInfo) {
+      setSchoolInfo(propSchoolInfo);
+    }
+  }, [propSchoolInfo]);
+
+  useEffect(() => {
+    const handleSchoolSync = () => {
+      setSchoolInfo(DbController.getSchoolInfo());
+    };
+    window.addEventListener('school-system-sync', handleSchoolSync);
+    window.addEventListener('school-updated', handleSchoolSync);
+    return () => {
+      window.removeEventListener('school-system-sync', handleSchoolSync);
+      window.removeEventListener('school-updated', handleSchoolSync);
+    };
+  }, []);
+
   const [searchTerm, setSearchTerm] = useState('');
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
+
+  // Success feedback states
+  const [showSaveSuccess, setShowSaveSuccess] = useState(false);
+  const [showJsonSuccess, setShowJsonSuccess] = useState(false);
+  const prevIsSaving = useRef(isManualSaving);
+
+  // Monitor save progress for success feedback
+  useEffect(() => {
+    if (prevIsSaving.current && !isManualSaving) {
+      // Transitioned from saving to idle
+      setShowSaveSuccess(true);
+      const timer = setTimeout(() => setShowSaveSuccess(false), 2500);
+      return () => clearTimeout(timer);
+    }
+    prevIsSaving.current = isManualSaving;
+  }, [isManualSaving]);
+
+  useEffect(() => {
+    return () => {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {
+          // ignore
+        }
+      }
+    };
+  }, []);
+
+  const startListening = () => {
+    const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionAPI) {
+      triggerToast('Speech recognition not supported in this browser.', 'info');
+      return;
+    }
+
+    try {
+      const rec = new SpeechRecognitionAPI();
+      rec.continuous = false;
+      rec.interimResults = false;
+      rec.lang = 'en-US';
+
+      rec.onstart = () => {
+        setIsListening(true);
+        triggerToast('Listening... Speak now', 'info');
+      };
+
+      rec.onresult = (event: any) => {
+        const text = event.results[0][0].transcript;
+        if (text) {
+          const cleanedText = text.trim().replace(/\.$/, '');
+          setSearchTerm(cleanedText);
+          triggerToast(`Dictated: "${cleanedText}"`, 'success');
+        }
+      };
+
+      rec.onerror = (event: any) => {
+        console.error("Speech recognition error", event.error);
+        setIsListening(false);
+        if (event.error === 'not-allowed') {
+          triggerToast('Microphone access denied. Please allow microphone permissions.', 'error');
+        } else {
+          triggerToast(`Voice search error: ${event.error}`, 'error');
+        }
+      };
+
+      rec.onend = () => {
+        setIsListening(false);
+      };
+
+      recognitionRef.current = rec;
+      rec.start();
+    } catch (err) {
+      console.error("Failed to start speech recognition", err);
+      setIsListening(false);
+    }
+  };
+
+  const stopListening = () => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {
+        // ignore
+      }
+    }
+    setIsListening(false);
+  };
+
+  const toggleListening = () => {
+    if (isListening) {
+      stopListening();
+    } else {
+      startListening();
+    }
+  };
   
+  // Sort order state (defaults to name A-Z)
+  const [teacherSortBy, setTeacherSortBy] = useState<'name-asc' | 'name-desc' | 'id-asc'>('name-asc');
+
   // Pagination states
   const [teacherPage, setTeacherPage] = useState(1);
   const [teacherPageSize, setTeacherPageSize] = useState(12);
+  const [directoryView, setDirectoryView] = useState<'grid' | 'table'>('table');
+  const [showAnalyticsHub, setShowAnalyticsHub] = useState(false);
+  const [showBulkQrModal, setShowBulkQrModal] = useState(false);
+  const [selectedBulkTeachers, setSelectedBulkTeachers] = useState<string[]>([]);
+  const [bulkQrCols, setBulkQrCols] = useState<2 | 3 | 4>(3);
+  const [bulkQrFormat, setBulkQrFormat] = useState<'id_card' | 'qr_only'>('qr_only');
+
+  // Bulk selection states
+  const [selectedTeacherIds, setSelectedTeacherIds] = useState<string[]>([]);
+
+  // Reset bulk selection on filter change
+  useEffect(() => {
+    setSelectedTeacherIds([]);
+  }, [searchTerm, teacherPage, teacherPageSize, teacherSortBy]);
 
   // Reset page when search or filters change
   useEffect(() => {
     setTeacherPage(1);
-  }, [searchTerm]);
+  }, [searchTerm, teacherSortBy]);
   
   // Registration Dialog and Form controllers
   const [isEditing, setIsEditing] = useState(false);
   const [formState, setFormState] = useState<Partial<Teacher>>({ ...INITIAL_FORM });
+  const [formIdMode, setFormIdMode] = useState<'staffId' | 'tinNumber'>('staffId');
 
   // Custom Confirmation Dialog State
   const [confirmModal, setConfirmModal] = useState<{
@@ -103,8 +248,9 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
   }, [userRole]);
 
   const isAdmin = useMemo(() => {
-    const activeRole = userRole || DbController.getCurrentUser()?.role;
-    return activeRole === 'Admin';
+    const user = DbController.getCurrentUser();
+    const activeRole = userRole || user?.role;
+    return activeRole === 'Admin' || user?.email?.toLowerCase().trim() === 'pegyirenyi@gmail.com';
   }, [userRole]);
 
   // Check if target edited teacher is NOT a Class Teacher (role is Headteacher or Admin)
@@ -122,10 +268,174 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
     return targetUser ? targetUser.role : 'Teacher';
   }, [formState?.email]);
   const [showFormModal, setShowFormModal] = useState(false);
+  const [showImageLinkModal, setShowImageLinkModal] = useState(false);
+  const [tempImageUrl, setTempImageUrl] = useState('');
   const [selectedIdCardTeacher, setSelectedIdCardTeacher] = useState<Teacher | null>(null);
+  const [selectedIdCardFormat, setSelectedIdCardFormat] = useState<'id_card' | 'qr_only'>('id_card');
+
+  const renderTeacherIdCardContent = (teacher: Teacher, keyPrefix: string) => {
+    return (
+      <div 
+        key={`${keyPrefix}-${teacher.id}`}
+        className="id-card-print-item relative flex flex-col justify-between p-4"
+      >
+        {/* Card Header Wave / Banner */}
+        <div className="bg-teal-900 text-white p-3 pt-4 text-center relative overflow-hidden flex flex-col items-center justify-center min-h-[75px] rounded-t-xl -m-4 mb-4">
+          <div className="absolute inset-0 bg-gradient-to-tr from-teal-950 to-teal-800 opacity-90"></div>
+          
+          <div className="relative z-10 flex items-center gap-2 max-w-[90%] justify-center">
+            {schoolInfo.logoUrl ? (
+              <img 
+                src={schoolInfo.logoUrl} 
+                alt="School Logo" 
+                className="w-7 h-7 object-contain rounded-full bg-white p-0.5"
+                referrerPolicy="no-referrer"
+              />
+            ) : (
+              <div className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center text-[10px] font-bold text-white">SCH</div>
+            )}
+            
+            <div className="text-left flex-1 min-w-0">
+              <h4 className="text-[9px] font-black uppercase tracking-wide truncate leading-tight">
+                {schoolInfo.name}
+              </h4>
+              <p className="text-[6.5px] italic font-mono text-teal-200 truncate leading-none mt-0.5">
+                "{schoolInfo.motto}"
+              </p>
+            </div>
+          </div>
+          
+          {/* ID Card label tab */}
+          <div className="absolute bottom-0 right-0 left-0 bg-amber-500 text-[6.5px] font-extrabold uppercase tracking-widest py-0.5 text-center text-slate-950 z-10">
+            Teacher Credential Badge
+          </div>
+        </div>
+
+        {/* Card Body - Photo & Credentials & QR */}
+        <div className="flex-1 flex flex-col items-center justify-between relative z-10 py-1 bg-radial from-white to-slate-50/50">
+          {/* Watermark Logo/Badge */}
+          {schoolInfo.logoUrl && (
+            <img 
+              src={schoolInfo.logoUrl} 
+              alt="Watermark" 
+              className="absolute inset-0 m-auto w-32 h-32 object-contain opacity-[0.03] pointer-events-none select-none"
+              referrerPolicy="no-referrer"
+            />
+          )}
+
+          {/* Teacher Details & Photo */}
+          <div className="flex flex-col items-center space-y-2">
+            <div className="relative">
+              <div className="w-20 h-20 rounded-full border-2 border-teal-900 overflow-hidden bg-slate-100 flex items-center justify-center shadow-md">
+                {teacher.photoUrl ? (
+                  <img 
+                    src={teacher.photoUrl} 
+                    alt={`${teacher.firstName} Photo`} 
+                    className="w-full h-full object-cover"
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
+                  <User size={36} className="text-slate-400" />
+                )}
+              </div>
+            </div>
+
+            <div className="text-center animate-none">
+              <h3 className="text-sm font-bold text-slate-900 uppercase tracking-tight">
+                {teacher.firstName} {teacher.lastName}
+              </h3>
+              <p className="text-[9px] font-extrabold text-teal-800 uppercase tracking-widest mt-0.5">
+                {teacher.rank}
+              </p>
+            </div>
+          </div>
+
+          {/* QR Code and Credentials block */}
+          <div className="flex flex-col items-center space-y-2 w-full mt-1 pb-1">
+            {/* Embedded QR Code */}
+            <div className="bg-white p-1.5 rounded-xl border border-slate-200/80 shadow-xs">
+              <QRCodeSVG 
+                value={JSON.stringify({
+                  staffId: teacher.staffId,
+                  email: teacher.email,
+                  schoolId: teacher.schoolId || schoolInfo.schoolId || "school_default",
+                  signature: DbController.generateBadgeSignature(
+                    teacher.staffId || '',
+                    teacher.email || '',
+                    teacher.schoolId || schoolInfo.schoolId || "school_default"
+                  )
+                })}
+                size={100}
+                level="M"
+                includeMargin={false}
+                className="animate-none"
+              />
+            </div>
+            <p className="text-[7px] font-mono font-bold uppercase tracking-widest text-slate-400">
+              Scan QR Badge to Sign In
+            </p>
+          </div>
+        </div>
+
+        {/* Card Footer / School info */}
+        <div className="border-t border-slate-100 pt-2 text-center text-[7px] font-mono text-slate-400 space-y-0.5 shrink-0">
+          <div className="font-bold text-slate-600">STAFF ID: {teacher.staffId || "N/A"}</div>
+          <div>REGISTERED: {teacher.dateOfFirstAppointment || "N/A"}</div>
+          <div className="text-[6.5px] text-teal-800 font-bold uppercase tracking-wider">Ghana Education Service</div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderTeacherQrOnlyContent = (teacher: Teacher, keyPrefix: string) => {
+    return (
+      <div 
+        key={`${keyPrefix}-qr-${teacher.id}`}
+        className="qr-print-item flex flex-col items-center justify-center p-6 border border-slate-100 rounded-2xl bg-white shadow-sm"
+      >
+        <div className="text-center mb-4">
+          <h4 className="text-[10px] font-black text-slate-800 uppercase tracking-wider truncate max-w-[150px]">
+            {teacher.firstName} {teacher.lastName}
+          </h4>
+          <p className="text-[8px] font-mono font-bold text-slate-400 mt-0.5">
+            STAFF ID: {teacher.staffId || "N/A"}
+          </p>
+        </div>
+
+        <div className="bg-white p-3 rounded-2xl border-2 border-slate-100 shadow-sm mb-4">
+          <QRCodeSVG 
+            value={JSON.stringify({
+              staffId: teacher.staffId,
+              email: teacher.email,
+              schoolId: teacher.schoolId || schoolInfo.schoolId || "school_default",
+              signature: DbController.generateBadgeSignature(
+                teacher.staffId || '',
+                teacher.email || '',
+                teacher.schoolId || schoolInfo.schoolId || "school_default"
+              )
+            })}
+            size={140}
+            level="H"
+            includeMargin={true}
+          />
+        </div>
+
+        <div className="text-center">
+          <p className="text-[7px] font-black text-indigo-600 uppercase tracking-widest">
+            Faculty Access Pass
+          </p>
+          <div className="flex items-center gap-1 justify-center mt-1">
+            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
+            <span className="text-[6px] font-bold text-slate-400 uppercase tracking-tighter">Verified Identity</span>
+          </div>
+        </div>
+      </div>
+    );
+  };
   const [teacherToDelete, setTeacherToDelete] = useState<string | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const [isBatchCameraOpen, setIsBatchCameraOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Enrollment confirmation & toast notice states
@@ -162,6 +472,34 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
         isUnderloaded: totalLoad < 2
       };
     }).sort((a, b) => b.totalLoad - a.totalLoad);
+  }, [teachers]);
+
+  const performanceData = useMemo(() => {
+    // This is a simulated join between teachers and assessments
+    // In a real app, this would be a backend query
+    const allAssessments = DbController.getAssessments();
+    
+    return teachers.map(t => {
+      // Find assessments for classes and subjects assigned to this teacher
+      const teacherAssessments = allAssessments.filter(a => 
+        (t.assignedSubjects || []).includes(a.subject as any) && 
+        (t.assignedClasses || []).includes(a.class as any)
+      );
+
+      const scores = teacherAssessments.map(a => a.totalScore || 0);
+      const avgScore = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : 0;
+      
+      return {
+        teacherId: t.id,
+        name: `${t.firstName} ${t.lastName.charAt(0)}.`,
+        fullName: `${t.firstName} ${t.lastName}`,
+        avgScore: Number(avgScore.toFixed(1)),
+        assessmentCount: scores.length,
+        rank: t.rank,
+        isHighPerformer: avgScore > 75,
+        isLowPerformer: avgScore > 0 && avgScore < 45
+      };
+    }).filter(t => t.assessmentCount > 0).sort((a, b) => b.avgScore - a.avgScore);
   }, [teachers]);
 
   const classCoverage = useMemo(() => {
@@ -461,7 +799,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.setAttribute("href", url);
-    link.setAttribute("download", "teacher_bulk_import_template.csv");
+    link.setAttribute("download", "Staff_Bulk_Import_Template.csv");
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -491,16 +829,32 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
     }
   };
 
-  // Filter teachers dynamically with high-performance memoization
+  // Filter & auto-sort teachers dynamically with default alphabetical sorting
   const filteredTeachers = useMemo(() => {
     const term = searchTerm?.toLowerCase() || '';
-    return teachers.filter(tea => {
+    const filtered = teachers.filter(tea => {
       if (!tea) return false;
       const fullName = `${tea.firstName || ''} ${tea.middleName || ''} ${tea.lastName || ''}`.toLowerCase();
       const matchesSearch = fullName.includes(term) || (tea.staffId?.toLowerCase() || '').includes(term);
       return matchesSearch;
     });
-  }, [teachers, searchTerm]);
+
+    // Default alphabetical sorting by name (A-Z)
+    return filtered.sort((a, b) => {
+      if (teacherSortBy === 'name-desc') {
+        const nameA = `${a.firstName || ''} ${a.middleName || ''} ${a.lastName || ''}`.trim().toLowerCase();
+        const nameB = `${b.firstName || ''} ${b.middleName || ''} ${b.lastName || ''}`.trim().toLowerCase();
+        return nameB.localeCompare(nameA);
+      }
+      if (teacherSortBy === 'id-asc') {
+        return (a.staffId || a.id || '').localeCompare(b.staffId || b.id || '');
+      }
+      // Default: 'name-asc' (Name A-Z)
+      const nameA = `${a.firstName || ''} ${a.middleName || ''} ${a.lastName || ''}`.trim().toLowerCase();
+      const nameB = `${b.firstName || ''} ${b.middleName || ''} ${b.lastName || ''}`.trim().toLowerCase();
+      return nameA.localeCompare(nameB);
+    });
+  }, [teachers, searchTerm, teacherSortBy]);
 
   // Paginated teachers slice for desktop UI performance with high-performance memoization
   const totalTeachersCount = filteredTeachers.length;
@@ -511,12 +865,60 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
     return filteredTeachers.slice((activeTeacherPage - 1) * teacherPageSize, activeTeacherPage * teacherPageSize);
   }, [filteredTeachers, activeTeacherPage, teacherPageSize]);
 
+  const isAllSelected = paginatedTeachers.length > 0 && paginatedTeachers.every(t => selectedTeacherIds.includes(t.id));
+  const toggleSelectAll = () => {
+    if (isAllSelected) {
+      setSelectedTeacherIds(prev => prev.filter(id => !paginatedTeachers.some(t => t.id === id)));
+    } else {
+      setSelectedTeacherIds(prev => {
+        const union = new Set([...prev, ...paginatedTeachers.map(t => t.id)]);
+        return Array.from(union);
+      });
+    }
+  };
+
+  const handlePrintBulkQrCodes = () => {
+    if (selectedBulkTeachers.length === 0) {
+      alert("Please select at least one teacher to generate QR codes.");
+      return;
+    }
+    const printArea = document.getElementById('bulk-teacher-qr-print-area');
+    if (!printArea) return;
+    
+    try {
+      window.print();
+    } catch (e) {
+      console.warn("Direct print restricted inside sandbox iframe:", e);
+      triggerToast("Your browser is blocking printing from within the iframe. Please click 'Open in a new tab' at the top right of your workspace to print.", 'error');
+    }
+  };
+
+  const handleBulkDeleteTeachers = () => {
+    if (selectedTeacherIds.length === 0) return;
+    
+    setConfirmModal({
+      isOpen: true,
+      title: "CRITICAL: Bulk Delete Selected Teachers?",
+      message: `Are you absolutely sure you want to delete the ${selectedTeacherIds.length} selected teacher profiles? This is a system-wide deletion that is completely irreversible.`,
+      confirmText: `Delete ${selectedTeacherIds.length} Record${selectedTeacherIds.length > 1 ? 's' : ''}`,
+      danger: true,
+      onConfirm: () => {
+        selectedTeacherIds.forEach(id => {
+          DbController.deleteTeacher(id);
+        });
+        setSelectedTeacherIds([]);
+        onRefresh();
+        triggerToast(`Successfully bulk-deleted ${selectedTeacherIds.length} teacher records.`, "success");
+      }
+    });
+  };
+
   const handleExportCSV = () => {
     const headers = [
       'Teacher ID', 'First Name', 'Middle Name', 'Last Name', 'Gender', 'Date of Birth',
       'Place of Birth', 'Subjects/Class Taught', 'Professional Qualifications',
       'Highest Academic Qualifications', 'Rank', 'Date of First Appointment',
-      'Date of Posting to Current Station', 'Staff ID', 'NTC Number', 'SSNIT Number',
+      'Date of Posting to Current Station', 'Staff ID', 'TIN Number', 'NTC Number', 'SSNIT Number',
       'District', 'Circuit', 'Created At'
     ];
     
@@ -538,6 +940,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
         t.dateOfFirstAppointment,
         t.dateOfPostingToCurrentStation,
         t.staffId,
+        t.tinNumber || '',
         t.ntcNumber,
         t.ssnitNumber,
         t.district,
@@ -554,10 +957,39 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.setAttribute("href", url);
-    link.setAttribute("download", `teacher_database_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute("download", `Staff_Database_${new Date().toISOString().split('T')[0]}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportJSON = () => {
+    try {
+      const dataStr = DbController.exportAllData();
+      const blob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const formatedDate = new Date().toISOString().split('T')[0];
+      const exportFileDefaultName = formatIdentifiableFilename({
+        docType: 'School System Backup',
+        date: formatedDate,
+        extension: 'json'
+      });
+      
+      const linkElement = document.createElement('a');
+      linkElement.href = url;
+      linkElement.download = exportFileDefaultName;
+      document.body.appendChild(linkElement);
+      linkElement.click();
+      document.body.removeChild(linkElement);
+      URL.revokeObjectURL(url);
+      
+      setShowJsonSuccess(true);
+      setTimeout(() => setShowJsonSuccess(false), 2500);
+      triggerToast("Full database JSON snapshot exported successfully.", "success");
+    } catch (e: any) {
+      triggerToast("Failed to export JSON: " + e.message, "error");
+    }
   };
 
   const handleOpenAdd = () => {
@@ -687,10 +1119,8 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
   };
 
   const handleUrlImage = () => {
-    const url = prompt("Enter online profile image URL:");
-    if (url) {
-      setFormState(prev => ({ ...prev, photoUrl: url }));
-    }
+    setTempImageUrl(formState.photoUrl || '');
+    setShowImageLinkModal(true);
   };
 
   const suggestedClasses = useMemo(() => {
@@ -827,6 +1257,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
       dateOfFirstAppointment: formState.dateOfFirstAppointment || '',
       dateOfPostingToCurrentStation: formState.dateOfPostingToCurrentStation || '',
       staffId: formState.staffId,
+      tinNumber: formState.tinNumber || '',
       ntcNumber: formState.ntcNumber || '',
       ssnitNumber: formState.ssnitNumber || '',
       schoolId: formState.schoolId || '',
@@ -884,7 +1315,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
     }
   };
 
-  const [teachersSubTab, setTeachersSubTab] = useState<'directory' | 'analytics' | 'duty-roster' | 'handbook'>('directory');
+  const [teachersSubTab, setTeachersSubTab] = useState<'directory' | 'analytics' | 'duty-roster' | 'handbook' | 'leave-requests'>('directory');
   const [handbookVersion, setHandbookVersion] = useState(0);
 
   const unreadCount = useMemo(() => {
@@ -916,107 +1347,359 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
 
   return (
     <div className="space-y-6 fade-in pb-12">
-      
-      {/* Sub-tab Navigation */}
-      <div className="flex flex-wrap items-center gap-y-2 gap-x-4 sm:gap-x-6 border-b border-slate-200 no-print">
-        <button
-          onClick={() => setTeachersSubTab('directory')}
-          className={`pb-3 text-[11px] font-bold uppercase tracking-widest border-b-2 transition cursor-pointer ${teachersSubTab === 'directory' ? 'border-slate-800 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
-        >
-          <div className="flex items-center gap-2">
-            <Users size={14} />
-            Staff Directory
+      {/* Strict Access Guard for Teachers */}
+      {userRole === 'Teacher' && !isAdmin && !isHeadteacherLoggedIn && (
+        <div className="flex flex-col items-center justify-center p-12 bg-white rounded-3xl border border-slate-200 shadow-sm text-center space-y-4">
+          <div className="w-16 h-16 bg-rose-50 text-rose-500 rounded-full flex items-center justify-center">
+            <ShieldAlert size={32} />
           </div>
-        </button>
-        <button
-          onClick={() => setTeachersSubTab('analytics')}
-          className={`pb-3 text-[11px] font-bold uppercase tracking-widest border-b-2 transition cursor-pointer ${teachersSubTab === 'analytics' ? 'border-slate-800 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
-        >
-          <div className="flex items-center gap-2">
-            <BarChart2 size={14} />
-            Faculty Workload Analytics
-          </div>
-        </button>
-        <button
-          onClick={() => setTeachersSubTab('duty-roster')}
-          className={`pb-3 text-[11px] font-bold uppercase tracking-widest border-b-2 transition cursor-pointer ${teachersSubTab === 'duty-roster' ? 'border-slate-800 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
-        >
-          <div className="flex items-center gap-2">
-            <ClipboardList size={14} />
+          <h3 className="text-xl font-black text-slate-800 uppercase tracking-tight font-sans">Access Restricted</h3>
+          <p className="text-sm text-slate-500 max-w-md font-sans">
+            Standard teacher accounts are not permitted to access the central faculty directory or view other teacher profiles for privacy and data protection reasons.
+          </p>
+          <p className="text-[10px] text-slate-400 font-mono">Your profile details are managed exclusively by the School Administration.</p>
+        </div>
+      )}
+
+      {/* Main Content (Only visible to Authorized Roles) */}
+      {(isAdmin || isHeadteacherLoggedIn) && (
+        <>
+          {/* Modernized Sub-tab Navigation */}
+      <div className="bg-white px-2 py-1.5 rounded-2xl border border-slate-200 shadow-sm no-print flex flex-wrap items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center gap-1">
+          <button
+            onClick={() => setTeachersSubTab('directory')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+              teachersSubTab === 'directory' 
+                ? 'bg-slate-900 text-white shadow-md' 
+                : 'text-slate-500 hover:bg-slate-100 hover:text-slate-900'
+            }`}
+          >
+            <Users size={15} />
+            Registry
+          </button>
+          <button
+            onClick={() => setTeachersSubTab('analytics')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+              teachersSubTab === 'analytics' 
+                ? 'bg-slate-900 text-white shadow-md' 
+                : 'text-slate-500 hover:bg-slate-100 hover:text-slate-900'
+            }`}
+          >
+            <BarChart2 size={15} />
+            Performance & Insights
+          </button>
+        </div>
+
+        <div className="h-6 w-px bg-slate-200 hidden md:block" />
+
+        <div className="flex flex-wrap items-center gap-1">
+          <button
+            onClick={() => setTeachersSubTab('duty-roster')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+              teachersSubTab === 'duty-roster' 
+                ? 'bg-indigo-600 text-white shadow-md' 
+                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
+            }`}
+          >
+            <ClipboardList size={15} />
             Duty Roster
-          </div>
-        </button>
-        <button
-          onClick={() => setTeachersSubTab('handbook')}
-          className={`pb-3 text-[11px] font-bold uppercase tracking-widest border-b-2 transition cursor-pointer ${teachersSubTab === 'handbook' ? 'border-slate-800 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
-        >
-          <div className="flex items-center gap-2 relative">
-            <BookOpen size={14} />
-            Staff Handbook
-            {unreadCount > 0 && (
-              <span className="inline-flex items-center justify-center px-1.5 py-0.5 ml-0.5 text-[9px] font-extrabold leading-none text-white bg-rose-500 rounded-full animate-pulse" id="handbook-unread-badge">
-                {unreadCount}
-              </span>
-            )}
-          </div>
-        </button>
+          </button>
+          <button
+            onClick={() => setTeachersSubTab('leave-requests')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+              teachersSubTab === 'leave-requests' 
+                ? 'bg-indigo-600 text-white shadow-md' 
+                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
+            }`}
+          >
+            <CalendarRange size={15} />
+            Leave Tracker
+          </button>
+          <button
+            onClick={() => setTeachersSubTab('handbook')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+              teachersSubTab === 'handbook' 
+                ? 'bg-indigo-600 text-white shadow-md' 
+                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
+            }`}
+          >
+            <div className="flex items-center gap-2 relative">
+              <BookOpen size={15} />
+              Staff Handbook
+              {unreadCount > 0 && (
+                <span className="flex items-center justify-center w-4 h-4 text-[9px] font-extrabold text-white bg-rose-500 rounded-full animate-pulse shadow-sm">
+                  {unreadCount}
+                </span>
+              )}
+            </div>
+          </button>
+        </div>
       </div>
 
       {teachersSubTab === 'directory' && (
         <>
       {/* Summary Dashboard Ribbons */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 no-print">
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
-          <div className="w-10 h-10 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center flex-shrink-0">
-            <UserCheck size={20} />
+      <div className="flex flex-col lg:flex-row gap-6 no-print">
+        <div className="flex-1 grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs flex flex-col justify-between h-28 relative overflow-hidden group hover:border-indigo-300 transition-colors">
+            <div className="absolute top-0 right-0 p-2 opacity-5 group-hover:opacity-10 transition-opacity">
+              <UserCheck size={48} />
+            </div>
+            <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Faculty</div>
+            <div className="text-3xl font-black text-slate-900 leading-none">{teachers.length}</div>
+            <div className="text-[9px] text-slate-500 font-medium">Registered staff accounts</div>
           </div>
-          <div>
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Faculty</div>
-            <div className="text-xl font-black text-slate-900">{teachers.length}</div>
+
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs flex flex-col justify-between h-28 relative overflow-hidden group hover:border-emerald-300 transition-colors">
+            <div className="absolute top-0 right-0 p-2 opacity-5 group-hover:opacity-10 transition-opacity">
+              <LayoutDashboard size={48} />
+            </div>
+            <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Class Leads</div>
+            <div className="text-3xl font-black text-emerald-600 leading-none">{staffStats.classTeachers}</div>
+            <div className="text-[9px] text-slate-500 font-medium">Active class supervisors</div>
+          </div>
+
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs flex flex-col justify-between h-28 relative overflow-hidden group hover:border-amber-300 transition-colors">
+            <div className="absolute top-0 right-0 p-2 opacity-5 group-hover:opacity-10 transition-opacity">
+              <BarChart2 size={48} />
+            </div>
+            <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Avg Load</div>
+            <div className="text-3xl font-black text-amber-600 leading-none">{staffStats.avgLoad}</div>
+            <div className="text-[9px] text-slate-500 font-medium">Weighted teaching units</div>
+          </div>
+
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs flex flex-col justify-between h-28 relative overflow-hidden group hover:border-indigo-300 transition-colors">
+             <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Gender Split</div>
+             <div className="flex-1 flex flex-col justify-center gap-2">
+                <div className="flex items-center justify-between text-[11px] font-bold">
+                  <span className="text-indigo-600">{staffStats.male}M</span>
+                  <span className="text-rose-500">{staffStats.female}F</span>
+                </div>
+                <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden flex">
+                  <div 
+                    className="h-full bg-indigo-500" 
+                    style={{ width: `${(staffStats.male / (teachers.length || 1)) * 100}%` }} 
+                  />
+                  <div 
+                    className="h-full bg-rose-400" 
+                    style={{ width: `${(staffStats.female / (teachers.length || 1)) * 100}%` }} 
+                  />
+                </div>
+             </div>
           </div>
         </div>
 
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
-          <div className="w-10 h-10 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center flex-shrink-0">
-            <LayoutDashboard size={20} />
+        {/* Top Performers Quick Insight */}
+        {performanceData.length > 0 && (
+          <div className="lg:w-80 bg-slate-900 text-white p-5 rounded-2xl shadow-lg border border-slate-800 flex flex-col justify-between">
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-[10px] font-black text-indigo-300 uppercase tracking-widest">Elite Educators</div>
+              <Sparkles size={14} className="text-amber-400" />
+            </div>
+            <div className="space-y-3">
+              {performanceData.slice(0, 3).map((p, idx) => (
+                <div key={p.teacherId} className="flex items-center justify-between group">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center text-[10px] font-bold text-indigo-200">
+                      #{idx + 1}
+                    </div>
+                    <div className="truncate text-[12px] font-bold text-slate-200 group-hover:text-white transition-colors">{p.fullName}</div>
+                  </div>
+                  <div className="text-[11px] font-black text-emerald-400 font-mono">{p.avgScore}%</div>
+                </div>
+              ))}
+            </div>
+            <button 
+              onClick={() => setTeachersSubTab('analytics')}
+              className="mt-4 w-full py-1.5 bg-white/5 hover:bg-white/10 rounded-lg text-[9px] font-bold uppercase tracking-widest transition-colors border border-white/10"
+            >
+              View Full Insights
+            </button>
           </div>
-          <div>
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Class Supervisors</div>
-            <div className="text-xl font-black text-slate-900">{staffStats.classTeachers}</div>
-          </div>
-        </div>
+        )}
+      </div>
 
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
-          <div className="w-10 h-10 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center flex-shrink-0">
-            <BarChart2 size={20} />
-          </div>
-          <div>
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Avg Workload</div>
-            <div className="text-xl font-black text-slate-900">{staffStats.avgLoad}</div>
-          </div>
-        </div>
-
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center gap-4">
-          <div className="w-10 h-10 rounded-lg bg-slate-50 text-slate-600 flex items-center justify-center flex-shrink-0">
-            <Users size={20} />
-          </div>
-          <div className="flex-1">
-            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Gender Split</div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-bold text-slate-700">{staffStats.male}M</span>
-              <div className="h-1 flex-1 bg-slate-100 rounded-full overflow-hidden">
-                <div 
-                  className="h-full bg-indigo-500" 
-                  style={{ width: `${(staffStats.male / (teachers.length || 1)) * 100}%` }} 
-                />
-              </div>
-              <span className="text-sm font-bold text-slate-700">{staffStats.female}F</span>
+      {/* Collapsible Faculty Insights & Performance Hub */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden no-print">
+        <button
+          type="button"
+          onClick={() => setShowAnalyticsHub(!showAnalyticsHub)}
+          className="w-full px-5 py-4 flex items-center justify-between hover:bg-slate-50/80 transition-all cursor-pointer border-none bg-transparent"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+              <BarChart2 size={18} />
+            </div>
+            <div className="text-left">
+              <h4 className="text-xs font-black text-slate-900 tracking-tight flex items-center gap-2">
+                Faculty Insights & Performance Hub
+                <span className="text-[9px] bg-indigo-100 text-indigo-800 px-1.5 py-0.5 rounded-full font-bold">Analytics</span>
+              </h4>
+              <p className="text-[10px] text-slate-500 font-medium mt-0.5">Interactive performance tracking, class supervision coverage, and teaching load heatmaps</p>
             </div>
           </div>
-        </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] text-indigo-600 font-black tracking-wider uppercase">
+              {showAnalyticsHub ? 'Minimize Hub' : 'Expand Hub'}
+            </span>
+            <ChevronDown size={16} className={`text-slate-400 transition-transform duration-300 ${showAnalyticsHub ? 'rotate-180' : ''}`} />
+          </div>
+        </button>
+
+        <AnimatePresence>
+          {showAnalyticsHub && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.3, ease: 'easeInOut' }}
+              className="border-t border-slate-100 bg-slate-50/30 overflow-hidden"
+            >
+              <div className="p-6 space-y-6">
+                {/* Metrics ribbon inside hub */}
+                <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-3xs">
+                    <div className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest">Average Teaching Score</div>
+                    <div className="text-xl font-black text-slate-900 leading-none mt-1">
+                      {(performanceData.reduce((a, b) => a + b.avgScore, 0) / (performanceData.length || 1)).toFixed(1)}%
+                    </div>
+                    <div className="text-[8px] text-slate-500 font-medium mt-1">Based on {performanceData.reduce((a, b) => a + b.assessmentCount, 0)} assessments</div>
+                  </div>
+                  
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-3xs">
+                    <div className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest">Elite Instructors</div>
+                    <div className="text-xl font-black text-emerald-600 leading-none mt-1">
+                      {performanceData.filter(p => p.isHighPerformer).length}
+                    </div>
+                    <div className="text-[8px] text-slate-500 font-medium mt-1">Averages above 75% score</div>
+                  </div>
+
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-3xs">
+                    <div className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest">Optimal Staffing</div>
+                    <div className="text-xl font-black text-indigo-600 leading-none mt-1">
+                      {((workloadData.filter(w => !w.isUnderloaded).length / (teachers.length || 1)) * 100).toFixed(0)}%
+                    </div>
+                    <div className="text-[8px] text-slate-500 font-medium mt-1">Staff with optimal workload balance</div>
+                  </div>
+
+                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-3xs">
+                    <div className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest">Unassigned Classes</div>
+                    <div className="text-xl font-black text-rose-500 leading-none mt-1">
+                      {Object.values(classCoverage).filter((c: any) => !c.primary).length}
+                    </div>
+                    <div className="text-[8px] text-slate-500 font-medium mt-1">Vacant class teacher slots</div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Academic Performance AreaChart */}
+                  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-3xs space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h5 className="text-[11px] uppercase font-extrabold text-slate-700 flex items-center gap-2">
+                        <Award size={14} className="text-amber-500 animate-pulse" /> Academic Performance Benchmark
+                      </h5>
+                      <span className="text-[9px] text-slate-400 font-mono italic">Sorted by Average GPA</span>
+                    </div>
+                    <div className="h-[240px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={performanceData.slice(0, 10)}>
+                          <defs>
+                            <linearGradient id="hubColorAvg" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#6366f1" stopOpacity={0.15}/>
+                              <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                          <XAxis dataKey="name" fontSize={9} tick={{ fill: '#94a3b8', fontWeight: 'semibold' }} axisLine={false} tickLine={false} />
+                          <YAxis domain={[0, 100]} fontSize={9} tick={{ fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                          <Tooltip 
+                            contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }}
+                            labelStyle={{ fontWeight: 'bold' }}
+                          />
+                          <Area type="monotone" dataKey="avgScore" name="Avg Score (%)" stroke="#6366f1" fillOpacity={1} fill="url(#hubColorAvg)" strokeWidth={2} />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  {/* Workload Distribution BarChart */}
+                  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-3xs space-y-4">
+                    <h5 className="text-[11px] uppercase font-extrabold text-slate-700 flex items-center gap-2">
+                      <BarChart2 size={14} className="text-indigo-500" /> Instructional Workload Index
+                    </h5>
+                    <div className="h-[240px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={workloadData.slice(0, 10)}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                          <XAxis dataKey="name" fontSize={9} tick={{ fill: '#94a3b8', fontWeight: 'semibold' }} axisLine={false} tickLine={false} />
+                          <YAxis fontSize={9} tick={{ fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                          <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }} />
+                          <Bar dataKey="totalLoad" name="Weighted Load" fill="#4f46e5" radius={[4, 4, 0, 0]}>
+                            {workloadData.slice(0, 10).map((entry, index) => (
+                              <Cell key={`cell-${index}`} fill={entry.isOverloaded ? '#ef4444' : entry.isUnderloaded ? '#f59e0b' : '#6366f1'} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  {/* Rank Seniority BarChart */}
+                  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-3xs space-y-4">
+                     <h5 className="text-[11px] uppercase font-extrabold text-slate-700 flex items-center gap-2">
+                       <Briefcase size={14} className="text-slate-400" /> Seniority & Distribution
+                     </h5>
+                     <div className="h-[200px]">
+                       {(() => {
+                         const rankCounts: Record<string, number> = {};
+                         teachers.forEach(t => { rankCounts[t.rank] = (rankCounts[t.rank] || 0) + 1; });
+                         const rankData = Object.entries(rankCounts).map(([name, value]) => ({ name, value }));
+                         return (
+                           <ResponsiveContainer width="100%" height="100%">
+                             <BarChart data={rankData} layout="vertical" margin={{ left: 10 }}>
+                               <XAxis type="number" hide />
+                               <YAxis dataKey="name" type="category" fontSize={8} width={75} axisLine={false} tickLine={false} />
+                               <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ borderRadius: '8px', border: 'none' }} />
+                               <Bar dataKey="value" name="Count" fill="#818cf8" radius={[0, 4, 4, 0]} />
+                             </BarChart>
+                           </ResponsiveContainer>
+                         );
+                       })()}
+                     </div>
+                  </div>
+
+                  {/* Supervision Heatmap */}
+                  <div className="lg:col-span-2 bg-white p-5 rounded-2xl border border-slate-200 shadow-3xs">
+                    <h5 className="text-[11px] uppercase font-extrabold text-slate-700 mb-4 flex items-center gap-2">
+                      <ShieldAlert size={14} className="text-teal-600" /> Class Supervision Coverage Heatmap
+                    </h5>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
+                      {CLASSES.map(cls => {
+                        const coverage = classCoverage[cls];
+                        const isUnassigned = !coverage?.primary;
+                        return (
+                          <div key={cls} className={`p-2 rounded-xl border transition ${isUnassigned ? 'bg-rose-50/30 border-rose-100' : 'bg-slate-50/40 border-slate-100'}`}>
+                            <div className="flex justify-between items-start mb-0.5">
+                              <div className="text-[9px] font-black text-slate-800">{cls}</div>
+                              {isUnassigned ? <AlertCircle size={10} className="text-rose-500" /> : <Check size={10} className="text-emerald-500" />}
+                            </div>
+                            <div className="text-[8px] text-slate-500 font-bold truncate leading-none">
+                              {isUnassigned ? <span className="text-rose-600">VACANT</span> : coverage.primary}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
-      
-      {/* Control ribbon workspace */}
       <div className="flex flex-col md:flex-row items-center justify-between gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-sm no-print">
         <div className="relative w-full md:w-auto flex-grow max-w-md">
           <Search className="absolute left-2.5 top-2.5 text-slate-400" size={16} />
@@ -1025,180 +1708,625 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
             placeholder="Search teacher by name or staff ID..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full text-xs pl-8 pr-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-slate-400 focus:border-slate-400"
+            className="w-full text-xs pl-8 pr-10 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-slate-400 focus:border-slate-400"
           />
+          <button
+            type="button"
+            onClick={toggleListening}
+            className={`absolute right-2 top-1.5 p-1 rounded-md transition-all ${
+              isListening 
+                ? 'text-rose-500 bg-rose-50 animate-pulse hover:bg-rose-100' 
+                : 'text-slate-400 hover:text-slate-600 hover:bg-slate-100'
+            }`}
+            title={isListening ? "Stop listening" : "Start voice-to-text dictation"}
+          >
+            <Mic size={14} className={isListening ? "animate-bounce" : ""} />
+          </button>
         </div>
 
-        <div className="flex items-center gap-2 w-full md:w-auto justify-end">
+        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-start md:justify-end">
+          <select
+            value={teacherSortBy}
+            onChange={(e) => setTeacherSortBy(e.target.value as any)}
+            className="text-xs px-2.5 py-2 border border-slate-200 rounded-lg bg-white font-medium text-slate-700 cursor-pointer"
+            title="Sort teachers list table"
+          >
+            <option value="name-asc">Sort: Name (A-Z)</option>
+            <option value="name-desc">Sort: Name (Z-A)</option>
+            <option value="id-asc">Sort: Staff ID</option>
+          </select>
+
+          <div className="flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200">
+            <button
+              type="button"
+              onClick={() => setDirectoryView('grid')}
+              className={`px-2.5 py-1.5 rounded-md text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
+                directoryView === 'grid'
+                  ? 'bg-white text-slate-850 shadow-2xs border border-slate-200/50'
+                  : 'text-slate-500 hover:text-slate-850'
+              }`}
+            >
+              <Users size={12} /> Cards View
+            </button>
+            <button
+              type="button"
+              onClick={() => setDirectoryView('table')}
+              className={`px-2.5 py-1.5 rounded-md text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
+                directoryView === 'table'
+                  ? 'bg-white text-slate-850 shadow-2xs border border-slate-200/50'
+                  : 'text-slate-500 hover:text-slate-850'
+              }`}
+            >
+              <FileSpreadsheet size={12} /> Table View
+            </button>
+          </div>
           <button
             onClick={handleExportCSV}
             className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 border border-emerald-600 text-white hover:bg-emerald-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
             title="Export filtered/all records to a CSV spreadsheet"
           >
-            <FileSpreadsheet size={15} /> Export to CSV
+            <FileSpreadsheet size={15} />
+            <span className="hidden sm:inline">Export to CSV</span>
+            <span className="sm:hidden">Export</span>
           </button>
+          {(isAdmin || isHeadteacherLoggedIn) && (
+            <button
+              onClick={() => setShowImportModal(true)}
+              className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 border border-blue-600 text-white hover:bg-blue-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
+              title="Import teacher records from a formatted CSV file"
+            >
+              <Upload size={15} />
+              <span className="hidden sm:inline">Bulk Import CSV</span>
+              <span className="sm:hidden">Import</span>
+            </button>
+          )}
           <button
-            onClick={() => setShowImportModal(true)}
-            className="flex items-center gap-1.5 px-3 py-2 bg-blue-600 border border-blue-600 text-white hover:bg-blue-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
-            title="Import teacher records from a formatted CSV file"
+            onClick={() => setIsBatchCameraOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 border border-indigo-600 text-white hover:bg-indigo-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
+            title="Open batch camera capture station to snap and assign passport photos quickly"
           >
-            <Upload size={15} /> Bulk Import CSV
+            <Camera size={15} />
+            <span className="hidden sm:inline">Batch Camera</span>
+            <span className="sm:hidden">Camera</span>
           </button>
           <button
             onClick={() => setShowPdfGuide(!showPdfGuide)}
             className="flex items-center gap-1.5 px-3 py-2 bg-slate-900 border border-slate-900 text-white hover:bg-slate-800 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer"
           >
-            <Eye size={15} /> Toggle Preview Mode
+            <Eye size={15} />
+            <span className="hidden sm:inline">Toggle Preview Mode</span>
+            <span className="sm:hidden">Preview</span>
           </button>
-          <button
-            onClick={handleOpenAdd}
-            className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-semibold cursor-pointer active:translate-y-0.5 transition ${theme.btnColors}`}
-          >
-            <Plus size={16} /> Add Teacher Record
-          </button>
+          {(isAdmin || isHeadteacherLoggedIn) && (
+            <button
+              onClick={handleOpenAdd}
+              className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-semibold cursor-pointer active:translate-y-0.5 transition ${theme.btnColors}`}
+            >
+              <Plus size={16} />
+              <span className="hidden sm:inline">Add Teacher Record</span>
+              <span className="sm:hidden">Add Staff</span>
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Grid container of teacher profiles */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 no-print">
+      {/* MODERN FLOATING SELECTION BAR */}
+      <AnimatePresence>
+        {selectedTeacherIds.length > 0 && (
+          <motion.div 
+            initial={{ y: 100, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 100, opacity: 0 }}
+            className="fixed bottom-4 sm:bottom-8 left-1/2 -translate-x-1/2 z-[60] w-[calc(100vw-1.5rem)] max-w-2xl no-print"
+          >
+            <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-3 shadow-[0_20px_50px_rgba(0,0,0,0.4)] flex flex-col xs:flex-row items-center justify-between gap-3 backdrop-blur-md">
+              <div className="flex items-center justify-between xs:justify-start w-full xs:w-auto gap-3 pl-2">
+                <div className="flex flex-col">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono">Teachers Selected</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg font-black text-white font-mono">{selectedTeacherIds.length}</span>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedTeacherIds(filteredTeachers.map(t => t.id))}
+                      className={`text-[9px] font-bold uppercase tracking-tighter px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 hover:bg-indigo-500/20 transition cursor-pointer ${selectedTeacherIds.length === filteredTeachers.length ? 'hidden' : ''}`}
+                    >
+                      All {filteredTeachers.length}
+                    </button>
+                  </div>
+                </div>
+                
+                <button
+                  onClick={() => setSelectedTeacherIds([])}
+                  className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-xl transition cursor-pointer xs:hidden"
+                  title="Clear Selection"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+
+              <div className="flex items-center justify-end w-full xs:w-auto gap-2">
+                <div className="h-8 w-px bg-slate-800 mx-1 hidden xs:block"></div>
+                
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => {
+                      setSelectedBulkTeachers([...selectedTeacherIds]);
+                      setBulkQrFormat('id_card');
+                      setShowBulkQrModal(true);
+                    }}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold px-2.5 py-2 rounded-xl flex items-center gap-1.5 transition cursor-pointer shadow-lg shadow-emerald-900/20 active:scale-95"
+                  >
+                    <IdCard size={14} />
+                    <span className="hidden sm:inline">ID Cards</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setSelectedBulkTeachers([...selectedTeacherIds]);
+                      setBulkQrFormat('qr_only');
+                      setShowBulkQrModal(true);
+                    }}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold px-2.5 py-2 rounded-xl flex items-center gap-1.5 transition cursor-pointer shadow-lg shadow-indigo-900/20 active:scale-95"
+                  >
+                    <QrCode size={14} />
+                    <span className="hidden sm:inline">QR Codes</span>
+                  </button>
+
+                  <button
+                    onClick={handleBulkDeleteTeachers}
+                    className="bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-bold px-2.5 py-2 rounded-xl flex items-center gap-1.5 transition cursor-pointer shadow-lg shadow-rose-900/20 active:scale-95"
+                  >
+                    <Trash2 size={14} />
+                    <span className="hidden sm:inline">Delete</span>
+                  </button>
+
+                  <div className="h-8 w-px bg-slate-800 mx-1 hidden xs:block"></div>
+
+                  <button
+                    onClick={() => setSelectedTeacherIds([])}
+                    className="p-2.5 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-xl transition cursor-pointer hidden xs:block"
+                    title="Clear Selection"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {(isAdmin || isHeadteacherLoggedIn) && paginatedTeachers.length > 0 && (
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6 no-print">
+          <div className="flex items-center gap-3">
+            <input
+              type="checkbox"
+              id="bulk-select-teachers-checkbox"
+              checked={isAllSelected}
+              onChange={toggleSelectAll}
+              className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4 cursor-pointer"
+            />
+            <label htmlFor="bulk-select-teachers-checkbox" className="text-xs font-semibold text-slate-700 cursor-pointer select-none">
+              Select All on Current Page ({paginatedTeachers.length})
+            </label>
+            {selectedTeacherIds.length > 0 && (
+              <span className="text-xs bg-indigo-50 text-indigo-700 border border-indigo-150 px-2 py-0.5 rounded-full font-bold font-mono">
+                {selectedTeacherIds.length} Selected
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Grid or Table container of teacher profiles */}
+      <div className={`${
+        directoryView === 'table' ? 'block' : 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6'
+      } no-print`}>
         {paginatedTeachers.length === 0 ? (
           <div className="col-span-full bg-slate-50 border-2 border-dashed border-slate-200 p-12 text-center rounded-xl">
             <Briefcase size={36} className="text-slate-300 mx-auto mb-2" />
             <h4 className="text-sm font-semibold text-slate-700">No Teacher Profiles Registered</h4>
             <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">Create records of your academic faculty to manage class teachers, assign grades, and populate official report cards.</p>
-            <button
-              onClick={handleOpenAdd}
-              className={`mt-4 inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer ${theme.btnColors}`}
-            >
-              <Plus size={14} /> Add First Teacher
-            </button>
+            {(isAdmin || isHeadteacherLoggedIn) && (
+              <button
+                onClick={handleOpenAdd}
+                className={`mt-4 inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer ${theme.btnColors}`}
+              >
+                <Plus size={14} /> Add First Teacher
+              </button>
+            )}
+          </div>
+        ) : directoryView === 'table' ? (
+          <div className="col-span-full bg-white border border-slate-200/80 rounded-2xl shadow-xs overflow-x-auto no-print">
+            {/* Mobile Swipe Guidance Indicator */}
+            <div className="md:hidden flex items-center justify-center gap-1.5 text-center text-[10px] text-slate-400 font-mono py-2 border-b border-slate-100 bg-slate-50/50">
+              <span>← Swipe horizontally to see full column details →</span>
+            </div>
+            <table className="w-full text-left border-collapse text-xs font-sans min-w-[1000px]">
+              <thead className="bg-slate-50/75 border-b border-slate-200">
+                <tr className="text-slate-500 font-mono text-[10px] uppercase tracking-wider">
+                  {(isAdmin || isHeadteacherLoggedIn) && (
+                    <th className="py-4 px-5 w-12 text-center select-none">
+                      <input
+                        type="checkbox"
+                        checked={isAllSelected}
+                        onChange={toggleSelectAll}
+                        title="Select / deselect all current teachers"
+                        className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4 cursor-pointer transition"
+                      />
+                    </th>
+                  )}
+                  <th className="py-4 px-5 font-bold">
+                    <span>Staff ID / TIN</span>
+                  </th>
+                  <th className="py-4 px-5 font-bold">Faculty Member</th>
+                  <th className="py-4 px-5 font-bold">Rank & Performance</th>
+                  <th className="py-4 px-5 font-bold">Status</th>
+                  <th className="py-4 px-5 font-bold">Gender</th>
+                  <th className="py-4 px-5 font-bold">Contact & Login</th>
+                  <th className="py-4 px-5 font-bold text-right pr-8">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 bg-white">
+                {paginatedTeachers.map((tea, idx) => {
+                  const isSelected = selectedTeacherIds.includes(tea.id);
+                  return (
+                    <tr 
+                      key={tea.id} 
+                      className={`hover:bg-slate-50/50 transition duration-150 ${
+                        isSelected ? 'bg-indigo-50/15' : ''
+                      }`}
+                    >
+                      {(isAdmin || isHeadteacherLoggedIn) && (
+                        <td className="py-3 px-5 text-center">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => {
+                              setSelectedTeacherIds(prev =>
+                                prev.includes(tea.id)
+                                  ? prev.filter(id => id !== tea.id)
+                                  : [...prev, tea.id]
+                              );
+                            }}
+                            className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4 cursor-pointer transition"
+                          />
+                        </td>
+                      )}
+                      <td className="py-3 px-5">
+                        <div className="space-y-0.5">
+                          <span className="inline-block px-2.5 py-1 bg-slate-100 text-slate-700 border border-slate-200/60 rounded font-mono font-bold text-[10px]">
+                            {tea.staffId || tea.id}
+                          </span>
+                          {tea.tinNumber && (
+                            <span className="block text-[9px] font-mono text-indigo-600 truncate max-w-[130px]" title={`TIN: ${tea.tinNumber}`}>
+                              TIN: {tea.tinNumber}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-3 px-5">
+                        <div className="flex items-center gap-3">
+                          <div className="relative w-10 h-10 rounded-full bg-slate-100 border border-slate-200 overflow-hidden shrink-0 shadow-2xs">
+                            {tea.photoUrl ? (
+                              <img src={tea.photoUrl} alt={tea.firstName} className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center bg-indigo-50 text-indigo-500">
+                                <UserCheck size={18} />
+                              </div>
+                            )}
+                            <span className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border border-white ${
+                              tea.status === 'Active' ? 'bg-emerald-500' :
+                              tea.status === 'On Leave' ? 'bg-amber-500' : 'bg-rose-500'
+                            }`} />
+                          </div>
+                          <div>
+                            <div className="font-bold text-slate-800 text-[13px] tracking-tight flex items-center gap-1.5 flex-wrap">
+                              {tea.title} {tea.firstName} {tea.lastName}
+                              {schoolInfo.assignedTeacherId === tea.id && (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200 text-[8px] font-black uppercase tracking-wider">
+                                  <ShieldCheck size={10} className="text-indigo-600 shrink-0" /> Headteacher
+                                </span>
+                              )}
+                            </div>
+                            {tea.isClassTeacher ? (
+                              <span className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-100 text-[9px] font-bold uppercase tracking-wider">
+                                <Award size={10} className="text-emerald-500 shrink-0" /> Class Teacher: {tea.classTeacherOf} {tea.sectionTeacherOf ? `(${tea.sectionTeacherOf})` : ''}
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-slate-400 font-mono">Faculty Staff</span>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-3 px-5">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <div className="font-semibold text-slate-700 text-[12px]">{tea.rank || 'N/A'}</div>
+                            {performanceData.find(p => p.teacherId === tea.id) && (
+                              <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-600 border border-emerald-100 rounded text-[9px] font-black uppercase">
+                                {performanceData.find(p => p.teacherId === tea.id)?.avgScore}%
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-slate-400 font-medium flex items-center gap-1 mt-0.5">
+                            <GraduationCap size={11} className="text-slate-400 shrink-0" /> {tea.highestAcademicQualifications || 'No Qualification Listed'}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-3 px-5">
+                        <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                          tea.status === 'Active' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                          tea.status === 'On Leave' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                          'bg-rose-50 text-rose-700 border-rose-200'
+                        }`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${
+                            tea.status === 'Active' ? 'bg-emerald-500' :
+                            tea.status === 'On Leave' ? 'bg-amber-500' : 'bg-rose-500'
+                          }`} />
+                          {tea.status}
+                        </span>
+                      </td>
+                      <td className="py-3 px-5">
+                        <span className="px-2 py-0.5 rounded-md text-[11px] font-medium bg-slate-50 border border-slate-200 text-slate-600">
+                          {tea.gender}
+                        </span>
+                      </td>
+                      <td className="py-3 px-5">
+                        <div className="space-y-0.5">
+                          {tea.phone && <div className="text-slate-700 font-semibold text-[11px]">{tea.phone}</div>}
+                          {tea.email && <div className="text-slate-400 font-mono text-[10px] truncate max-w-[180px]" title={tea.email}>{tea.email}</div>}
+                        </div>
+                      </td>
+                      <td className="py-3 px-5 text-right pr-8">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={() => setSelectedIdCardTeacher(tea)}
+                            className="p-1.5 text-indigo-600 hover:bg-indigo-50 border border-transparent hover:border-indigo-150 rounded-lg transition-all cursor-pointer"
+                            title="Print ID Card / Badge"
+                          >
+                            <IdCard size={15} />
+                          </button>
+                          {(isAdmin || isHeadteacherLoggedIn) && (
+                            <>
+                              <button
+                                onClick={() => handleOpenEdit(tea)}
+                                className="p-1.5 text-blue-600 hover:bg-blue-50 border border-transparent hover:border-blue-150 rounded-lg transition-all cursor-pointer"
+                                title="Edit profile"
+                              >
+                                <Edit2 size={15} />
+                              </button>
+                              <button
+                                onClick={() => handleDelete(tea.id)}
+                                className="p-1.5 text-rose-600 hover:bg-rose-50 border border-transparent hover:border-rose-150 rounded-lg transition-all cursor-pointer"
+                                title="Delete profile"
+                              >
+                                <Trash2 size={15} />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         ) : (
           paginatedTeachers.map(tea => (
-            <div 
+            <motion.div 
               key={tea.id}
-              className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs hover:shadow-md transition duration-200 flex flex-col justify-between"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.22, ease: 'easeOut' }}
+              className={`bg-white border rounded-2xl overflow-hidden shadow-xs hover:shadow-md transition-all duration-300 flex flex-col justify-between ${
+                selectedTeacherIds.includes(tea.id) 
+                  ? 'border-indigo-400 bg-indigo-50/5' 
+                  : 'border-slate-200/85 hover:border-indigo-200'
+              }`}
             >
-              <div className="p-4 space-y-4">
+              <div className="relative p-4 sm:p-5 pb-4 border-b border-slate-100/80">
+                {/* Visual status top-strip */}
+                <div className={`absolute top-0 left-0 right-0 h-1 ${
+                  tea.status === 'Active' ? 'bg-emerald-500' :
+                  tea.status === 'On Leave' ? 'bg-amber-500' : 'bg-rose-500'
+                }`} />
+
                 <div className="flex gap-4">
-                  {/* Photo profile container */}
-                  <div className="w-16 h-16 rounded-lg bg-slate-100 border border-slate-200 overflow-hidden flex-shrink-0 flex items-center justify-center">
+                  {(isAdmin || isHeadteacherLoggedIn) && (
+                    <div className="absolute top-4 right-4 z-10">
+                      <input
+                        type="checkbox"
+                        checked={selectedTeacherIds.includes(tea.id)}
+                        onChange={() => {
+                          setSelectedTeacherIds(prev =>
+                            prev.includes(tea.id)
+                              ? prev.filter(id => id !== tea.id)
+                              : [...prev, tea.id]
+                          );
+                        }}
+                        className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 h-4 w-4 cursor-pointer transition shadow-2xs"
+                      />
+                    </div>
+                  )}
+
+                  {/* Profile Image Container */}
+                  <div className="relative w-16 h-16 rounded-xl bg-slate-50 border border-slate-200/80 overflow-hidden shrink-0 shadow-2xs flex items-center justify-center">
                     {tea.photoUrl ? (
                       <img src={tea.photoUrl} alt={tea.firstName} className="w-full h-full object-cover" />
                     ) : (
-                      <UserCheck size={24} className="text-slate-400" />
+                      <div className="w-full h-full flex items-center justify-center bg-indigo-50 text-indigo-500">
+                        <UserCheck size={26} />
+                      </div>
                     )}
+                    <span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white shadow-2xs ${
+                      tea.status === 'Active' ? 'bg-emerald-500' :
+                      tea.status === 'On Leave' ? 'bg-amber-500' : 'bg-rose-500'
+                    }`} />
                   </div>
 
-                  <div className="flex-1 min-w-0">
-                    <span className="inline-block px-1.5 py-0.5 text-[9px] font-bold uppercase rounded bg-teal-50 text-teal-800 border border-teal-100 mb-1">
-                      {tea.rank}
-                    </span>
-                    <h4 className="text-sm font-semibold text-slate-800 truncate">
-                      {tea.firstName} {tea.middleName ? tea.middleName + ' ' : ''}{tea.lastName}
-                    </h4>
-                    <div className="font-mono text-[10px] text-slate-400 mt-0.5 space-y-0.5">
-                      <div>Staff ID: {tea.staffId || 'N/A'} | Gender: {tea.gender}</div>
-                      {tea.schoolId && (
-                        <div className="text-[10px] text-indigo-600 font-extrabold font-mono">School ID: {tea.schoolId}</div>
+                  <div className="flex-1 min-w-0 pr-6">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="inline-block px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider rounded bg-slate-100 text-slate-700 border border-slate-200/50">
+                        {tea.rank || 'Faculty Staff'}
+                      </span>
+                      {performanceData.find(p => p.teacherId === tea.id) && (
+                        <span className={`inline-block px-2 py-0.5 text-[9px] font-black uppercase tracking-wider rounded border ${
+                          (performanceData.find(p => p.teacherId === tea.id)?.avgScore ?? 0) >= 75 
+                            ? 'bg-emerald-50 text-emerald-600 border-emerald-100' 
+                            : 'bg-indigo-50 text-indigo-600 border-indigo-100'
+                        }`}>
+                          {performanceData.find(p => p.teacherId === tea.id)?.avgScore}% Avg
+                        </span>
                       )}
+                    </div>
+                    <h4 className="text-[14px] font-bold text-slate-800 leading-tight tracking-tight truncate mt-1 flex items-center gap-1 flex-wrap">
+                      {tea.title} {tea.firstName} {tea.lastName}
+                      {schoolInfo.assignedTeacherId === tea.id && (
+                        <span className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded bg-indigo-100 text-indigo-800 border border-indigo-200 text-[8px] font-black uppercase tracking-wider">
+                          Headteacher
+                        </span>
+                      )}
+                    </h4>
+                    <div className="font-mono text-[10px] text-slate-400 mt-1 flex items-center gap-1.5 flex-wrap">
+                      <span>
+                        Staff ID: <strong className="text-slate-700 font-bold">{tea.staffId || tea.id}</strong>
+                      </span>
+                      {tea.tinNumber && (
+                        <>
+                          <span>•</span>
+                          <span title={`TIN: ${tea.tinNumber}`}>TIN: <strong className="text-indigo-600 font-semibold">{tea.tinNumber}</strong></span>
+                        </>
+                      )}
+                      <span>•</span>
+                      <span className="capitalize">{tea.gender}</span>
                     </div>
                   </div>
                 </div>
+              </div>
 
-                {/* Subtext info */}
-                <div className="space-y-1 text-[11px] border-t border-slate-100 pt-3">
-                  {/* Assigned Subjects & Classes tags */}
-                  <div className="pt-1">
+              {/* Card Body */}
+              <div className="p-4 sm:p-5 pt-4 space-y-4 flex-1 flex flex-col justify-between">
+                <div className="space-y-3.5 text-xs">
+                  {/* Subjects */}
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5 font-mono flex items-center gap-1">
+                      <BookOpen size={11} className="text-slate-400 shrink-0" /> Assigned Subjects
+                    </div>
                     {tea.assignedSubjects && tea.assignedSubjects.length > 0 ? (
-                      <div className="flex flex-wrap gap-1 mb-1.5">
+                      <div className="flex flex-wrap gap-1.5">
                         {tea.assignedSubjects.map(sub => (
-                          <span key={sub} className="px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 text-[9px] font-semibold leading-tight">
+                          <span key={sub} className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-150 text-[10px] font-semibold tracking-wide">
                             {sub}
                           </span>
                         ))}
                       </div>
                     ) : (
-                      <div className="flex items-center gap-1 text-slate-600">
-                        <GraduationCap size={13} className="text-slate-400" />
-                        <span className="truncate"><strong>Subject/Class:</strong> {tea.subjectsTaught || 'Not specified'}</span>
-                      </div>
+                      <div className="text-[11px] text-slate-500 italic pl-1">No subjects assigned</div>
                     )}
                   </div>
 
-                  {tea.email && (
-                    <div className="flex items-center gap-1 text-slate-500 font-mono text-[10px] truncate">
-                      <span><strong>Login Email:</strong> {tea.email}</span>
+                  {/* Classes */}
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5 font-mono flex items-center gap-1">
+                      <GraduationCap size={11} className="text-slate-400 shrink-0" /> Academic Classes
                     </div>
-                  )}
-
-                  {/* Assigned Classes */}
-                  {tea.assignedClasses && tea.assignedClasses.length > 0 ? (
-                    <div className="flex flex-wrap gap-1 mt-1">
-                      {tea.assignedClasses.map(cls => {
-                        const isPrimary = tea.assignedClass === cls;
-                        return (
-                          <span
-                            key={cls}
-                            className={`px-1.5 py-0.5 rounded border text-[9px] font-bold uppercase tracking-wider ${
-                              isPrimary
-                                ? 'bg-indigo-100 text-indigo-800 border-indigo-200 shadow-2xs'
-                                : 'bg-slate-50 text-slate-600 border-slate-200'
-                            }`}
-                            title={isPrimary ? "Primary Class Teacher" : "Assigned Class"}
-                          >
-                            {cls} {isPrimary && '★'}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  ) : tea.assignedClass && tea.assignedClass !== 'None' ? (
-                    <div className="flex items-center gap-1 text-slate-600 mt-1">
-                      <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100 font-bold text-[9px] uppercase">
+                    {tea.assignedClasses && tea.assignedClasses.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {tea.assignedClasses.map(cls => {
+                          const isPrimary = tea.assignedClass === cls;
+                          return (
+                            <span
+                              key={cls}
+                              className={`px-2 py-0.5 rounded border text-[10px] font-bold transition-all ${
+                                isPrimary
+                                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200 shadow-2xs'
+                                  : 'bg-slate-50 text-slate-600 border-slate-200'
+                              }`}
+                              title={isPrimary ? "Primary Class Teacher" : "Assigned Class"}
+                            >
+                              {cls} {isPrimary && '★'}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    ) : tea.assignedClass && tea.assignedClass !== 'None' ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-bold text-[10px] uppercase tracking-wider">
                         Class Teacher: {tea.assignedClass}
                       </span>
+                    ) : (
+                      <div className="text-[11px] text-slate-500 italic pl-1">No classes assigned</div>
+                    )}
+                  </div>
+
+                  {/* Two Column Grid */}
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-3 pt-3 border-t border-slate-100 text-[11px]">
+                    <div className="space-y-0.5">
+                      <span className="text-[10px] text-slate-400 block uppercase font-mono tracking-wider">Qualification</span>
+                      <span className="font-medium text-slate-700 truncate block" title={tea.highestAcademicQualifications}>
+                        {tea.highestAcademicQualifications || 'N/A'}
+                      </span>
                     </div>
-                  ) : null}
-                  <div className="flex items-center gap-1 text-slate-600">
-                    <Award size={13} className="text-slate-400" />
-                    <span className="truncate"><strong>Degree:</strong> {tea.highestAcademicQualifications || 'N/A'}</span>
+                    <div className="space-y-0.5">
+                      <span className="text-[10px] text-slate-400 block uppercase font-mono tracking-wider">Appointment</span>
+                      <span className="font-medium text-slate-700 block">
+                        {tea.dateOfFirstAppointment || 'N/A'}
+                      </span>
+                    </div>
+                    {tea.email && (
+                      <div className="col-span-2 space-y-0.5 pt-1.5 border-t border-dashed border-slate-100">
+                        <span className="text-[10px] text-slate-400 block uppercase font-mono tracking-wider">Login / Contact Email</span>
+                        <span className="font-mono text-[10.5px] text-slate-600 truncate block" title={tea.email}>
+                          {tea.email}
+                        </span>
+                      </div>
+                    )}
+                    {tea.phone && (
+                      <div className="col-span-2 space-y-0.5">
+                        <span className="text-[10px] text-slate-400 block uppercase font-mono tracking-wider">Telephone Line</span>
+                        <span className="font-semibold text-slate-700 block">
+                          {tea.phone}
+                        </span>
+                      </div>
+                    )}
                   </div>
-                  <div className="flex items-center gap-1 text-slate-600">
-                    <Calendar size={13} className="text-slate-400" />
-                    <span><strong>Appointed:</strong> {tea.dateOfFirstAppointment || 'N/A'}</span>
+                </div>
+
+                {/* Footer Action Bar */}
+                <div className="bg-slate-50 -mx-4 -mb-4 px-4 py-3 sm:-mx-5 sm:-mb-5 sm:px-5 sm:py-3.5 border-t border-slate-100/80 mt-5 flex flex-wrap gap-2.5 items-center justify-between text-[10.5px]">
+                  <div className="font-mono text-slate-400 font-semibold">NTC: {tea.ntcNumber || 'N/A'}</div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => setSelectedIdCardTeacher(tea)}
+                      className="flex items-center gap-1 px-2.5 py-1.5 bg-indigo-50 border border-indigo-150 hover:bg-indigo-100 text-indigo-700 rounded-lg transition-all cursor-pointer font-bold"
+                      title="Print Badge/ID Card"
+                    >
+                      <QrCode size={12} />
+                      <span>Badge</span>
+                    </button>
+                    {(isAdmin || isHeadteacherLoggedIn) && (
+                      <>
+                        <button
+                          onClick={() => handleOpenEdit(tea)}
+                          className="p-1.5 bg-white border border-slate-200 hover:bg-slate-100 hover:border-slate-300 rounded-lg text-slate-600 hover:text-slate-800 transition-all cursor-pointer"
+                          title="Edit profile"
+                        >
+                          <Edit2 size={12} />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(tea.id)}
+                          className="p-1.5 bg-rose-50 border border-rose-150 hover:bg-rose-100 rounded-lg text-rose-600 hover:text-rose-850 transition-all cursor-pointer"
+                          title="Delete profile"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
-
-              {/* Action buttons footer */}
-              <div className="bg-slate-50 px-4 py-2 border-t border-slate-100 text-[10px] text-slate-500 font-mono flex justify-between items-center">
-                <div>NTC No: {tea.ntcNumber || 'N/A'}</div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setSelectedIdCardTeacher(tea)}
-                    className="p-1 hover:bg-indigo-50 hover:text-indigo-600 rounded text-slate-600 cursor-pointer transition"
-                    title="Print Credential Badge"
-                  >
-                    <QrCode size={12} />
-                  </button>
-                  <button
-                    onClick={() => handleOpenEdit(tea)}
-                    className="p-1 hover:bg-slate-200 rounded text-slate-600 cursor-pointer transition"
-                    title="Edit profile"
-                  >
-                    <Edit2 size={12} />
-                  </button>
-                  <button
-                    onClick={() => handleDelete(tea.id)}
-                    className="p-1 hover:bg-red-50 hover:text-red-600 rounded text-slate-600 cursor-pointer transition"
-                    title="Delete profile"
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                </div>
-              </div>
-
-            </div>
+            </motion.div>
           ))
         )}
       </div>
@@ -1299,14 +2427,14 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
 
       {/* PRINT-ONLY STAFF DIRECTORY REGISTER SHEET */}
       <div className="hidden print:block font-sans max-w-6xl mx-auto p-4 bg-white text-black relative">
-        <div className="absolute inset-0 z-0 pointer-events-none" dangerouslySetInnerHTML={{ __html: getWatermarkHtml(DbController.getSchoolInfo().crestUrl) }} />
+        <div className="absolute inset-0 z-0 pointer-events-none" dangerouslySetInnerHTML={{ __html: getWatermarkHtml(schoolInfo.crestUrl) }} />
         
         <div className="text-center pb-6 border-b-2 border-slate-900 mb-6">
           <h1 className="text-2xl font-bold uppercase tracking-wide">
-            {DbController.getSchoolInfo().name}
+            {schoolInfo.name}
           </h1>
           <p className="text-xs font-mono mt-1 italic">
-            Motto: "{DbController.getSchoolInfo().motto}" | Official Staff Directory List
+            Motto: "{schoolInfo.motto}" | Official Staff Directory List
           </p>
           <div className="text-[10px] text-slate-600 font-mono mt-2">
             Generated on: {new Date().toLocaleDateString()} | Active Personnel Registers
@@ -1368,115 +2496,160 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
         <div className="animate-fade-in space-y-6">
           {/* Analytics Header */}
           <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div>
-              <h3 className="text-lg font-black text-slate-900 leading-tight">Faculty Workload & Distribution</h3>
-              <p className="text-xs text-slate-500 font-medium">Graphical overview of teaching assignments, gender distribution, and rank seniority.</p>
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center">
+                <BarChart2 size={24} />
+              </div>
+              <div>
+                <h3 className="text-lg font-black text-slate-900 leading-tight">Faculty Intelligence Dashboard</h3>
+                <p className="text-xs text-slate-500 font-medium tracking-tight uppercase font-mono">Real-time performance metrics, workload distribution & staff insights</p>
+              </div>
             </div>
-            <button 
-              onClick={() => setTeachersSubTab('directory')}
-              className="flex items-center gap-2 px-4 py-2 bg-slate-50 text-slate-600 hover:bg-slate-100 rounded-xl text-xs font-bold transition"
-            >
-              <ChevronLeft size={14} /> Back to Directory
-            </button>
+            <div className="flex items-center gap-2">
+              <div className="px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-lg text-[10px] font-bold border border-emerald-100">
+                LIVE DATA SYNC
+              </div>
+            </div>
+          </div>
+
+          {/* Quick Metrics */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+             <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Avg Teaching Score</div>
+                <div className="text-2xl font-black text-slate-900 leading-none">
+                  {(performanceData.reduce((a, b) => a + b.avgScore, 0) / (performanceData.length || 1)).toFixed(1)}%
+                </div>
+                <div className="mt-2 text-[9px] text-slate-500 font-medium">Based on {performanceData.reduce((a, b) => a + b.assessmentCount, 0)} assessments</div>
+             </div>
+             <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">High Performers</div>
+                <div className="text-2xl font-black text-emerald-600 leading-none">
+                  {performanceData.filter(p => p.isHighPerformer).length}
+                </div>
+                <div className="mt-2 text-[9px] text-slate-500 font-medium">Scoring above 75% average</div>
+             </div>
+             <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Staff Utilization</div>
+                <div className="text-2xl font-black text-indigo-600 leading-none">
+                  {((workloadData.filter(w => !w.isUnderloaded).length / teachers.length) * 100).toFixed(0)}%
+                </div>
+                <div className="mt-2 text-[9px] text-slate-500 font-medium">Percentage of staff with optimal load</div>
+             </div>
+             <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Coverage Gap</div>
+                <div className="text-2xl font-black text-rose-500 leading-none">
+                  {Object.values(classCoverage).filter((c: any) => !c.primary).length}
+                </div>
+                <div className="mt-2 text-[9px] text-slate-500 font-medium">Classes without primary supervisors</div>
+             </div>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Academic Performance Chart */}
+            <div className="bg-white p-6 rounded-[24px] border border-slate-200 shadow-xs space-y-4">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                  <Award size={16} className="text-amber-500" /> Academic Impact per Faculty
+                </h4>
+                <div className="text-[9px] text-slate-400 font-mono italic">Sorted by Avg Score</div>
+              </div>
+              <div className="h-[300px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={performanceData.slice(0, 10)}>
+                    <defs>
+                      <linearGradient id="colorAvg" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#10b981" stopOpacity={0.1}/>
+                        <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                    <XAxis dataKey="name" fontSize={9} tick={{ fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                    <YAxis domain={[0, 100]} fontSize={9} tick={{ fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                    <Tooltip 
+                      contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                      labelStyle={{ fontWeight: 'bold', marginBottom: '4px' }}
+                    />
+                    <Area type="monotone" dataKey="avgScore" name="Avg Score (%)" stroke="#10b981" fillOpacity={1} fill="url(#colorAvg)" strokeWidth={2} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
             {/* Workload Distribution */}
             <div className="bg-white p-6 rounded-[24px] border border-slate-200 shadow-xs space-y-4">
               <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-                <BarChart2 size={16} className="text-indigo-500" /> Teaching Load per Faculty Member
+                <BarChart2 size={16} className="text-indigo-500" /> Teaching Load Distribution
               </h4>
               <div className="h-[300px] w-full">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={workloadData.slice(0, 8)}>
+                  <BarChart data={workloadData.slice(0, 10)}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                     <XAxis dataKey="name" fontSize={9} tick={{ fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-                    <YAxis fontSize={9} tick={{ fill: '#94a3b8' }} axisLine={false} tickLine={false} label={{ value: 'Assigned Classes/Subs', angle: -90, position: 'insideLeft', fontSize: 9 }} />
-                    <Tooltip contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
-                    <Bar dataKey="totalLoad" fill="#6366f1" radius={[4, 4, 0, 0]}>
-                      {workloadData.slice(0, 8).map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.isOverloaded ? '#f43f5e' : entry.isUnderloaded ? '#f59e0b' : '#6366f1'} />
+                    <YAxis fontSize={9} tick={{ fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                    <Tooltip contentStyle={{ borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }} />
+                    <Bar dataKey="totalLoad" name="Weighted Load" fill="#6366f1" radius={[6, 6, 0, 0]}>
+                      {workloadData.slice(0, 10).map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.isOverloaded ? '#ef4444' : entry.isUnderloaded ? '#f59e0b' : '#6366f1'} />
                       ))}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
-              <div className="flex justify-center gap-4 text-[10px] font-bold">
-                <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-rose-500" /> Overloaded (&gt;8)</div>
-                <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-indigo-500" /> Normal Load</div>
-                <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-amber-500" /> Underloaded (&lt;2)</div>
-              </div>
-            </div>
-
-            {/* Rank Distribution */}
-            <div className="bg-white p-6 rounded-[24px] border border-slate-200 shadow-xs space-y-4">
-              <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-                <Award size={16} className="text-amber-500" /> Professional Rank Seniority
-              </h4>
-              <div className="h-[300px] w-full">
-                {(() => {
-                  const rankCounts: Record<string, number> = {};
-                  teachers.forEach(t => {
-                    rankCounts[t.rank] = (rankCounts[t.rank] || 0) + 1;
-                  });
-                  const rankData = Object.entries(rankCounts).map(([name, value]) => ({ name, value }));
-
-                  return (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={rankData} layout="vertical">
-                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
-                        <XAxis type="number" fontSize={9} tick={{ fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-                        <YAxis dataKey="name" type="category" fontSize={8} width={100} tick={{ fill: '#64748b' }} axisLine={false} tickLine={false} />
-                        <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
-                        <Bar dataKey="value" fill="#10b981" radius={[0, 4, 4, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  );
-                })()}
+              <div className="flex justify-center gap-4 text-[9px] font-bold uppercase tracking-wider text-slate-400">
+                <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-rose-500" /> Overloaded</div>
+                <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-indigo-500" /> Optimal</div>
+                <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-amber-500" /> Underloaded</div>
               </div>
             </div>
           </div>
 
-          {/* Class Coverage Overview */}
-          <div className="bg-white p-6 rounded-[24px] border border-slate-200 shadow-xs overflow-hidden">
-            <h4 className="text-sm font-bold text-slate-800 mb-4 flex items-center gap-2">
-              <ShieldAlert size={16} className="text-blue-500" /> Class Level Supervisor Coverage
-            </h4>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-              {CLASSES.map(cls => {
-                const coverage = classCoverage[cls];
-                const isUnassigned = !coverage?.primary;
-                return (
-                  <div key={cls} className={`p-3 rounded-xl border transition ${isUnassigned ? 'bg-rose-50/30 border-rose-100' : 'bg-white border-slate-100 hover:border-slate-200 shadow-2xs'}`}>
-                    <div className="flex justify-between items-start mb-2">
-                      <div className="text-[11px] font-black text-slate-900">{cls}</div>
-                      {isUnassigned ? (
-                        <div className="p-1 bg-rose-100 text-rose-600 rounded-lg" title="Unassigned Class Teacher">
-                          <AlertCircle size={12} />
-                        </div>
-                      ) : (
-                        <div className="p-1 bg-emerald-100 text-emerald-600 rounded-lg">
-                          <Check size={12} />
-                        </div>
-                      )}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Rank Seniority */}
+            <div className="bg-white p-6 rounded-[24px] border border-slate-200 shadow-xs space-y-4">
+               <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                 <Briefcase size={16} className="text-slate-400" /> Rank Seniority
+               </h4>
+               <div className="h-[250px]">
+                 {(() => {
+                   const rankCounts: Record<string, number> = {};
+                   teachers.forEach(t => { rankCounts[t.rank] = (rankCounts[t.rank] || 0) + 1; });
+                   const rankData = Object.entries(rankCounts).map(([name, value]) => ({ name, value }));
+                   return (
+                     <ResponsiveContainer width="100%" height="100%">
+                       <BarChart data={rankData} layout="vertical" margin={{ left: 20 }}>
+                         <XAxis type="number" hide />
+                         <YAxis dataKey="name" type="category" fontSize={8} width={80} axisLine={false} tickLine={false} />
+                         <Tooltip cursor={{ fill: 'transparent' }} contentStyle={{ borderRadius: '12px', border: 'none' }} />
+                         <Bar dataKey="value" name="Count" fill="#94a3b8" radius={[0, 4, 4, 0]} />
+                       </BarChart>
+                     </ResponsiveContainer>
+                   );
+                 })()}
+               </div>
+            </div>
+
+            {/* Coverage Detailed Overview */}
+            <div className="lg:col-span-2 bg-white p-6 rounded-[24px] border border-slate-200 shadow-xs">
+              <h4 className="text-sm font-bold text-slate-800 mb-4 flex items-center gap-2">
+                <ShieldAlert size={16} className="text-blue-500" /> Supervision Coverage Heatmap
+              </h4>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
+                {CLASSES.map(cls => {
+                  const coverage = classCoverage[cls];
+                  const isUnassigned = !coverage?.primary;
+                  return (
+                    <div key={cls} className={`p-2.5 rounded-xl border transition ${isUnassigned ? 'bg-rose-50/40 border-rose-100 shadow-sm shadow-rose-100/50' : 'bg-white border-slate-100'}`}>
+                      <div className="flex justify-between items-start mb-1">
+                        <div className="text-[10px] font-black text-slate-900">{cls}</div>
+                        {isUnassigned ? <AlertCircle size={10} className="text-rose-500" /> : <Check size={10} className="text-emerald-500" />}
+                      </div>
+                      <div className="text-[9px] text-slate-500 font-medium truncate">
+                        {isUnassigned ? <span className="text-rose-600 font-bold">VACANT</span> : coverage.primary}
+                      </div>
                     </div>
-                    <div className="text-[10px] text-slate-500 font-medium">
-                      {isUnassigned ? (
-                        <span className="text-rose-600 italic">No primary supervisor</span>
-                      ) : (
-                        <span className="text-slate-800 font-bold">{coverage.primary}</span>
-                      )}
-                    </div>
-                    <div className="mt-2 flex flex-wrap gap-1">
-                      {coverage?.teachers.filter(t => t !== coverage.primary).map((t, idx) => (
-                        <span key={idx} className="px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[8px] font-bold">
-                          {t.split(' ')[0]}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           </div>
         </div>
@@ -1499,8 +2672,191 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
         />
       )}
 
+      {teachersSubTab === 'leave-requests' && (
+        <LeaveTracker 
+          theme={theme} 
+          teachers={teachers} 
+          onRefresh={onRefresh} 
+          isAdminOrHead={isAdmin || isHeadteacherLoggedIn} 
+        />
+      )}
+
       {/* RICH EDIT / ADD MODAL PANEL (NO-PRINT) */}
       <AnimatePresence>
+        {showBulkQrModal && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[110] p-4 no-print animate-fade-in">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-slate-50 w-full max-w-6xl h-full max-h-[90vh] rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col md:flex-row relative"
+            >
+              <button
+                onClick={() => setShowBulkQrModal(false)}
+                className="absolute top-4 right-4 z-50 p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-200/50 rounded-full transition cursor-pointer"
+              >
+                <X size={20} />
+              </button>
+
+              {/* Left Config Panel */}
+              <div className="w-full md:w-80 bg-white border-r border-slate-200 p-6 flex flex-col justify-between shrink-0 overflow-y-auto">
+                <div className="space-y-6">
+                  <div>
+                    <h3 className="text-xl font-black text-slate-800 tracking-tight font-sans">
+                      Bulk ID Generator
+                    </h3>
+                    <p className="text-[11px] text-slate-500 font-medium leading-relaxed mt-1">
+                      Configure and generate batch ID credentials for your staff.
+                    </p>
+                  </div>
+
+                  {/* Print Parameters */}
+                  <div className="space-y-4">
+                    <span className="text-[10px] uppercase font-black text-slate-400 tracking-wider block">Print Options</span>
+                    
+                    {/* Format Selection */}
+                    <div className="space-y-2">
+                      <label className="text-xs font-bold text-slate-700">Document Format</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setBulkQrFormat('id_card')}
+                          className={`py-2 px-3 rounded-xl border text-[10px] font-bold transition flex items-center justify-center gap-2 ${bulkQrFormat === 'id_card' ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                        >
+                          <IdCard size={14} /> ID Cards
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setBulkQrFormat('qr_only')}
+                          className={`py-2 px-3 rounded-xl border text-[10px] font-bold transition flex items-center justify-center gap-2 ${bulkQrFormat === 'qr_only' ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                        >
+                          <QrCode size={14} /> QR Only
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Grid Columns */}
+                    <div className="flex justify-between items-center bg-slate-50/50 p-3 rounded-xl border border-slate-150">
+                      <span className="text-xs font-semibold text-slate-700">Cards/Columns per Row</span>
+                      <select
+                        value={bulkQrCols}
+                        onChange={(e) => setBulkQrCols(Number(e.target.value) as 2|3|4)}
+                        className="text-xs px-2 py-1 border border-slate-200 rounded-lg bg-white font-bold text-slate-800"
+                      >
+                        <option value={2}>2 Columns</option>
+                        <option value={3}>3 Columns</option>
+                        <option value={4}>4 Columns</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3 pt-6 border-t border-slate-100 mt-6">
+                  <div className="text-center">
+                    <span className="text-[10px] font-bold text-indigo-600">
+                      {selectedBulkTeachers.length} of {teachers.length} Selected
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handlePrintBulkQrCodes}
+                    disabled={selectedBulkTeachers.length === 0}
+                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-xl font-bold font-sans text-xs transition cursor-pointer flex items-center justify-center gap-2 shadow-md hover:shadow-lg"
+                  >
+                    <Printer size={16} />
+                    Print Selected {bulkQrFormat === 'id_card' ? 'ID Cards' : 'QR Codes'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Right Selection & Preview Layout */}
+              <div className="flex-1 p-6 overflow-y-auto flex flex-col justify-between max-h-[90vh]">
+                <div className="space-y-6">
+                  {/* Select Actions header */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                    <div>
+                      <h4 className="text-xs font-extrabold text-slate-700 uppercase tracking-wider">Select Profiles ({teachers.length})</h4>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedBulkTeachers(teachers.map(s => s.id))}
+                        className="text-[10px] font-black text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50/50 px-2.5 py-1 rounded-lg border border-indigo-150 transition cursor-pointer bg-white"
+                      >
+                        Select All
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedBulkTeachers([])}
+                        className="text-[10px] font-black text-slate-500 hover:text-slate-600 hover:bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-200 transition cursor-pointer bg-white"
+                      >
+                        Deselect All
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Checklist of teachers */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 max-h-[220px] overflow-y-auto p-3 border border-slate-200/60 bg-white rounded-2xl shadow-inner">
+                    {teachers.length === 0 ? (
+                      <p className="text-xs text-slate-400 text-center col-span-full py-6">No matching staff found.</p>
+                    ) : (
+                      teachers.map(teacher => {
+                        const isChecked = selectedBulkTeachers.includes(teacher.id);
+                        return (
+                          <label 
+                            key={teacher.id} 
+                            className={`flex items-start gap-2 p-2 rounded-xl border cursor-pointer select-none transition ${isChecked ? 'bg-indigo-50/30 border-indigo-200 ring-1 ring-indigo-200/50' : 'bg-slate-50/50 border-slate-100 hover:bg-slate-50'}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => {
+                                if (isChecked) {
+                                  setSelectedBulkTeachers(prev => prev.filter(id => id !== teacher.id));
+                                } else {
+                                  setSelectedBulkTeachers(prev => [...prev, teacher.id]);
+                                }
+                              }}
+                              className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500 h-3.5 w-3.5 shrink-0"
+                            />
+                            <div className="min-w-0">
+                              <p className="text-[10.5px] font-black text-slate-800 leading-tight truncate">{teacher.firstName} {teacher.lastName}</p>
+                              <p className="text-[8.5px] font-mono font-medium text-slate-400 truncate mt-0.5">ID: {teacher.staffId}</p>
+                            </div>
+                          </label>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  {/* Print Preview Canvas */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] uppercase font-black text-slate-400 tracking-wider block">Live Print Canvas Preview</span>
+                      <span className="text-[10px] font-bold text-slate-400 italic">Portrait A4 Orientation Suggested</span>
+                    </div>
+                    
+                    <div className="border border-slate-250 bg-slate-200 rounded-3xl p-6 shadow-inner max-h-[350px] overflow-y-auto">
+                      <div 
+                        id="bulk-teacher-qr-print-area" 
+                        className="grid gap-6 bg-white p-8 rounded-2xl w-full text-slate-900 font-sans print-page"
+                        style={{
+                          gridTemplateColumns: `repeat(${bulkQrCols}, minmax(0, 1fr))`
+                        }}
+                      >
+                        {teachers.filter(s => selectedBulkTeachers.includes(s.id)).map(teacher => (
+                          bulkQrFormat === 'id_card' 
+                            ? renderTeacherIdCardContent(teacher, `bulk-id-${teacher.id}`)
+                            : renderTeacherQrOnlyContent(teacher, `bulk-qr-${teacher.id}`)
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
         {showFormModal && (
           <div 
             onClick={(e) => {
@@ -1669,18 +3025,63 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
               <div className="space-y-4 pt-1">
                 <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider pb-1 border-b border-slate-100 font-display">Administrative & Academic Credentials</h4>
                 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-slate-600 font-medium mb-1">Staff ID Number (Recommended)</label>
-                    <input
-                      type="text"
-                      value={formState.staffId}
-                      onChange={(e) => setFormState(prev => ({ ...prev, staffId: e.target.value }))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none"
-                      placeholder="e.g. GES-T89045 (Recommended)"
-                    />
+                <div className="p-3.5 bg-slate-50/80 rounded-xl border border-slate-200/80 space-y-2.5">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                    <span className="text-xs font-bold text-slate-700 font-display">
+                      {formIdMode === 'staffId' ? 'Staff ID Number' : 'TIN Number (Taxpayer ID)'}
+                    </span>
+                    <div className="flex items-center gap-3 bg-white px-2.5 py-1 rounded-lg border border-slate-200 w-fit">
+                      <label className="inline-flex items-center gap-1.5 text-xs font-bold cursor-pointer text-slate-700">
+                        <input
+                          type="radio"
+                          name="teacherProfileIdSwitcher"
+                          value="staffId"
+                          checked={formIdMode === 'staffId'}
+                          onChange={() => setFormIdMode('staffId')}
+                          className="w-3.5 h-3.5 cursor-pointer accent-indigo-600"
+                        />
+                        <span>Staff ID</span>
+                      </label>
+                      <label className="inline-flex items-center gap-1.5 text-xs font-bold cursor-pointer text-slate-700">
+                        <input
+                          type="radio"
+                          name="teacherProfileIdSwitcher"
+                          value="tinNumber"
+                          checked={formIdMode === 'tinNumber'}
+                          onChange={() => setFormIdMode('tinNumber')}
+                          className="w-3.5 h-3.5 cursor-pointer accent-indigo-600"
+                        />
+                        <span>TIN Number</span>
+                      </label>
+                    </div>
                   </div>
 
+                  {formIdMode === 'staffId' ? (
+                    <div>
+                      <input
+                        type="text"
+                        value={formState.staffId || ''}
+                        onChange={(e) => setFormState(prev => ({ ...prev, staffId: e.target.value }))}
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono text-xs"
+                        placeholder="e.g. GES-T89045"
+                      />
+                      <p className="text-[10px] text-slate-400 mt-1">Official Ghana Education Service (GES) or school staff ID.</p>
+                    </div>
+                  ) : (
+                    <div>
+                      <input
+                        type="text"
+                        value={formState.tinNumber || ''}
+                        onChange={(e) => setFormState(prev => ({ ...prev, tinNumber: e.target.value }))}
+                        className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono text-xs"
+                        placeholder="e.g. P0001234567 or C0009876543"
+                      />
+                      <p className="text-[10px] text-slate-400 mt-1">Ghana Revenue Authority (GRA) Taxpayer Identification Number.</p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-slate-600 font-medium mb-1">NTC Number (Licence)</label>
                     <input
@@ -1865,8 +3266,8 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
                                       </div>
                                     </div>
                                     <div className="flex items-center gap-1.5">
-                                      {hasConflict && <AlertCircle size={12} className="text-red-500" title="Unbalanced Workload (Too many teachers)" />}
-                                      {noPrimary && <ShieldAlert size={12} className="text-amber-500" title="Missing Primary Teacher" />}
+                                      {hasConflict && <span title="Unbalanced Workload (Too many teachers)"><AlertCircle size={12} className="text-red-500" /></span>}
+                                      {noPrimary && <span title="Missing Primary Teacher"><ShieldAlert size={12} className="text-amber-500" /></span>}
                                       <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${noPrimary ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600'}`}>
                                         {noPrimary ? 'No Supervisor' : cov.primary?.split(' ')[0]}
                                       </span>
@@ -2226,7 +3627,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
                   type="submit"
                   className="flex items-center gap-1.5 px-5 py-2.5 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl shadow-xs transition cursor-pointer text-[12px]"
                 >
-                  <Check size={14} /> {isEditing ? 'Confirm Updates' : 'Enrol Faculty Member'}
+                  <Check size={14} /> {isEditing ? 'Save Profile Changes' : 'Save & Enrol Faculty'}
                 </button>
               </div>
 
@@ -2289,11 +3690,11 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
                 </span>
               </div>
               
-              <div id="teachers-roster-preview-card" className="relative w-full max-w-[650px] aspect-[1.414/1] bg-white p-6 text-black border shadow-2xl text-[8px] space-y-3 font-sans rounded-none overflow-y-auto">
+              <div id="teachers-roster-preview-card" className="relative w-full max-w-[650px] min-h-[460px] bg-white p-6 text-black border shadow-2xl text-[8px] space-y-3 font-sans rounded-none overflow-y-auto">
                 {/* Transparent School Crest Watermark */}
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none opacity-[0.045] z-0">
-                  {DbController.getSchoolInfo().crestUrl ? (
-                    <img src={DbController.getSchoolInfo().crestUrl} className="w-[280px] h-[280px] object-contain" alt="Watermark Crest" referrerPolicy="no-referrer" />
+                  {schoolInfo.crestUrl ? (
+                    <img src={schoolInfo.crestUrl} className="w-[280px] h-[280px] object-contain" alt="Watermark Crest" referrerPolicy="no-referrer" />
                   ) : (
                     <div className="w-[280px] h-[280px]" dangerouslySetInnerHTML={{ __html: GHANA_CREST_SVG_SIMPLE }} />
                   )}
@@ -2301,10 +3702,10 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
 
                 <div className="relative z-10 text-center pb-3 border-b-2 border-slate-800 mb-3">
                   <h3 className="text-xs font-bold uppercase tracking-wide text-stone-900">
-                    {DbController.getSchoolInfo().name}
+                    {schoolInfo.name}
                   </h3>
                   <p className="text-[8px] font-mono mt-0.5 italic text-stone-600">
-                    Motto: "{DbController.getSchoolInfo().motto}" | Official Staff Directory List
+                    Motto: "{schoolInfo.motto}" | Official Staff Directory List
                   </p>
                   <div className="text-[7px] text-slate-500 font-mono mt-1">
                     Generated on: {new Date().toLocaleDateString()} | Active Personnel Registers
@@ -2365,7 +3766,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
             </div>
 
             {/* Right: Setup Manual & Control */}
-            <div className="w-full md:w-[400px] p-6 bg-white flex flex-col justify-between overflow-y-auto max-h-none md:max-h-[90vh]">
+            <div className="w-full md:w-[400px] p-6 bg-white flex flex-col justify-between overflow-y-auto max-h-none md:max-h-[90vh] no-print">
               <div className="space-y-4">
                 <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
                   <div className="w-10 h-10 bg-indigo-50 rounded-lg flex items-center justify-center text-indigo-600 flex-shrink-0">
@@ -2559,117 +3960,25 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
               
               {/* Left Column: ID Card Live Preview */}
               <div className="flex-1 p-6 overflow-y-auto bg-slate-700 dark:bg-slate-950 flex flex-col justify-between items-center space-y-4">
-                <span className="text-white text-xs font-mono tracking-widest uppercase opacity-70">Teacher ID Card Print Preview</span>
+                <span className="text-white text-xs font-mono tracking-widest uppercase opacity-70">
+                  Teacher {selectedIdCardFormat === 'id_card' ? 'ID Card' : 'QR Pass'} Print Preview
+                </span>
                 
-                {/* ID CARD PORTRAIT COMPONENT WITH STANDARD CR80 PROPORTIONS */}
-                <div 
-                  id="teacher-id-card-print-area" 
-                  className="w-[300px] h-[460px] bg-white text-slate-950 rounded-2xl border border-slate-350 shadow-2xl relative overflow-hidden flex flex-col justify-between font-sans select-none p-4"
-                >
-                  {/* Card Header Wave / Banner */}
-                  <div className="bg-teal-900 text-white p-3 pt-4 text-center relative overflow-hidden flex flex-col items-center justify-center min-h-[75px] rounded-t-xl -m-4 mb-4">
-                    <div className="absolute inset-0 bg-gradient-to-tr from-teal-950 to-teal-800 opacity-90"></div>
-                    
-                    <div className="relative z-10 flex items-center gap-2 max-w-[90%] justify-center">
-                      {DbController.getSchoolInfo().logoUrl ? (
-                        <img 
-                          src={DbController.getSchoolInfo().logoUrl} 
-                          alt="School Logo" 
-                          className="w-7 h-7 object-contain rounded-full bg-white p-0.5"
-                          referrerPolicy="no-referrer"
-                        />
-                      ) : (
-                        <div className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center text-[10px] font-bold text-white">SCH</div>
-                      )}
-                      
-                      <div className="text-left flex-1 min-w-0">
-                        <h4 className="text-[9px] font-black uppercase tracking-wide truncate leading-tight">
-                          {DbController.getSchoolInfo().name}
-                        </h4>
-                        <p className="text-[6.5px] italic font-mono text-teal-200 truncate leading-none mt-0.5">
-                          "{DbController.getSchoolInfo().motto}"
-                        </p>
-                      </div>
+                <div id="teacher-id-card-print-area" className="print-area-wrapper">
+                  {selectedIdCardFormat === 'id_card' ? (
+                    <div className="w-[300px] h-[460px] bg-white text-slate-950 rounded-2xl border border-slate-350 shadow-2xl relative overflow-hidden flex flex-col justify-between font-sans select-none">
+                      {renderTeacherIdCardContent(selectedIdCardTeacher, 'single-preview')}
                     </div>
-                    
-                    {/* ID Card label tab */}
-                    <div className="absolute bottom-0 right-0 left-0 bg-amber-500 text-[6.5px] font-extrabold uppercase tracking-widest py-0.5 text-center text-slate-950 z-10">
-                      Teacher Credential Badge
+                  ) : (
+                    <div className="w-[300px] h-[300px] bg-white text-slate-950 rounded-2xl border border-slate-350 shadow-2xl relative overflow-hidden flex flex-col justify-center items-center font-sans select-none p-4">
+                      {renderTeacherQrOnlyContent(selectedIdCardTeacher, 'single-preview-qr')}
                     </div>
-                  </div>
-
-                  {/* Card Body - Photo & Credentials & QR */}
-                  <div className="flex-1 flex flex-col items-center justify-between relative z-10 py-1 bg-radial from-white to-slate-50/50">
-                    {/* Watermark Logo/Badge */}
-                    {DbController.getSchoolInfo().logoUrl && (
-                      <img 
-                        src={DbController.getSchoolInfo().logoUrl} 
-                        alt="Watermark" 
-                        className="absolute inset-0 m-auto w-32 h-32 object-contain opacity-[0.03] pointer-events-none select-none"
-                        referrerPolicy="no-referrer"
-                      />
-                    )}
-
-                    {/* Teacher Details & Photo */}
-                    <div className="flex flex-col items-center space-y-2">
-                      <div className="relative">
-                        <div className="w-20 h-20 rounded-full border-2 border-teal-900 overflow-hidden bg-slate-100 flex items-center justify-center shadow-md">
-                          {selectedIdCardTeacher.photoUrl ? (
-                            <img 
-                              src={selectedIdCardTeacher.photoUrl} 
-                              alt={`${selectedIdCardTeacher.firstName} Photo`} 
-                              className="w-full h-full object-cover"
-                              referrerPolicy="no-referrer"
-                            />
-                          ) : (
-                            <User size={36} className="text-slate-400" />
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="text-center">
-                        <h3 className="text-sm font-bold text-slate-900 uppercase tracking-tight">
-                          {selectedIdCardTeacher.firstName} {selectedIdCardTeacher.lastName}
-                        </h3>
-                        <p className="text-[9px] font-extrabold text-teal-800 uppercase tracking-widest mt-0.5">
-                          {selectedIdCardTeacher.rank}
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* QR Code and Credentials block */}
-                    <div className="flex flex-col items-center space-y-2 w-full mt-1 pb-1">
-                      {/* Embedded QR Code */}
-                      <div className="bg-white p-1.5 rounded-xl border border-slate-200/80 shadow-xs">
-                        <QRCodeSVG 
-                          value={JSON.stringify({
-                            staffId: selectedIdCardTeacher.staffId,
-                            email: selectedIdCardTeacher.email,
-                            schoolId: selectedIdCardTeacher.schoolId || DbController.getSchoolInfo().schoolId || "school_default"
-                          })}
-                          size={100}
-                          level="M"
-                          includeMargin={false}
-                        />
-                      </div>
-                      <p className="text-[7px] font-mono font-bold uppercase tracking-widest text-slate-400">
-                        Scan QR Badge to Sign In
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Card Footer / School info */}
-                  <div className="border-t border-slate-100 pt-2 text-center text-[7px] font-mono text-slate-400 space-y-0.5 shrink-0">
-                    <div className="font-bold text-slate-600">STAFF ID: {selectedIdCardTeacher.staffId || "N/A"}</div>
-                    <div>REGISTERED: {selectedIdCardTeacher.dateOfFirstAppointment || "N/A"}</div>
-                    <div className="text-[6.5px] text-teal-800 font-bold uppercase tracking-wider">Ghana Education Service</div>
-                  </div>
-
+                  )}
                 </div>
               </div>
 
               {/* Right Column: Information & Export Options */}
-              <div className="flex-1 p-6 bg-white dark:bg-slate-900 flex flex-col justify-between max-h-[90vh] overflow-y-auto">
+              <div className="flex-1 p-6 bg-white dark:bg-slate-900 flex flex-col justify-between max-h-[90vh] overflow-y-auto no-print">
                 <div className="space-y-4">
                   <div className="flex items-center gap-2">
                     <div className="p-2 bg-teal-50 dark:bg-teal-950/40 rounded-xl text-teal-600 dark:text-teal-400">
@@ -2681,11 +3990,32 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
                     </div>
                   </div>
 
+                  {/* Format Selection */}
+                  <div className="space-y-2 pt-2">
+                    <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Select Document Format</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedIdCardFormat('id_card')}
+                        className={`py-2 px-3 rounded-xl border text-xs font-bold transition flex items-center justify-center gap-2 ${selectedIdCardFormat === 'id_card' ? 'bg-teal-600 border-teal-600 text-white' : 'bg-white border-slate-200 text-slate-600 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-400 hover:bg-slate-50'}`}
+                      >
+                        <IdCard size={14} /> ID Card
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedIdCardFormat('qr_only')}
+                        className={`py-2 px-3 rounded-xl border text-xs font-bold transition flex items-center justify-center gap-2 ${selectedIdCardFormat === 'qr_only' ? 'bg-teal-600 border-teal-600 text-white' : 'bg-white border-slate-200 text-slate-600 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-400 hover:bg-slate-50'}`}
+                      >
+                        <QrCode size={14} /> QR Pass
+                      </button>
+                    </div>
+                  </div>
+
                   {/* Cloud Drive PDF Export Trigger Integration */}
                   <GoogleDriveExportControl 
                     elementId="teacher-id-card-print-area" 
                     defaultFilename={`${selectedIdCardTeacher.firstName}_${selectedIdCardTeacher.lastName}_Credential_Badge.pdf`}
-                    isLandscape={false} 
+                    isLandscape={true} 
                   />
 
                   <div className="p-3 bg-teal-50 dark:bg-teal-950/20 border border-teal-100 dark:border-teal-900/40 rounded-xl space-y-1 text-teal-950 dark:text-teal-200 text-[11px]">
@@ -2732,53 +4062,7 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
                   <button
                     type="button"
                     onClick={() => {
-                      const printContents = document.getElementById("teacher-id-card-print-area")?.outerHTML;
-                      if (printContents) {
-                        const printWindow = window.open("", "_blank");
-                        if (printWindow) {
-                          const htmlLines = [
-                            '<html>',
-                            '  <head>',
-                            '    <title>Print Teacher Credential Badge</title>',
-                            '    <script src="https://cdn.tailwindcss.com"></script>',
-                            '    <style>',
-                            '      @media print {',
-                            '        body {',
-                            '          margin: 0;',
-                            '          padding: 0;',
-                            '          background: transparent;',
-                            '          display: flex;',
-                            '          align-items: center;',
-                            '          justify-content: center;',
-                            '          height: 100vh;',
-                            '        }',
-                            '        #teacher-id-card-print-area {',
-                            '          border: none !important;',
-                            '          box-shadow: none !important;',
-                            '          transform: scale(1) !important;',
-                            '        }',
-                            '      }',
-                            '    </style>',
-                            '  </head>',
-                            '  <body class="bg-white flex items-center justify-center min-h-screen">',
-                            '    <div id="teacher-id-card-print-area" class="w-[300px] h-[460px] bg-white text-slate-950 rounded-2xl border border-slate-350 relative overflow-hidden flex flex-col justify-between font-sans select-none p-4">',
-                            printContents,
-                            '    </div>',
-                            '    <script>',
-                            '      window.onload = function() {',
-                            '        window.print();',
-                            '        setTimeout(function() { window.close(); }, 500);',
-                            '      }',
-                            '    </script>',
-                            '  </body>',
-                            '</html>'
-                          ];
-                          printWindow.document.write(htmlLines.join('\n'));
-                          printWindow.document.close();
-                        } else {
-                          window.print();
-                        }
-                      }
+                      window.print();
                     }}
                     className="flex-1 py-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-black shadow-md shadow-teal-600/10 cursor-pointer transition flex items-center justify-center gap-1.5"
                   >
@@ -3054,42 +4338,44 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
       </AnimatePresence>
 
       {/* SECTION DATA CONTROLS */}
-      <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-3 no-print">
-        <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
-          <ShieldAlert className="text-indigo-500" size={14} /> Section Teacher Controls
-        </h4>
-        <p className="text-[10px] text-slate-500 leading-relaxed">
-          Manage local instructor profile states, erase database inputs, and process personnel purge states for this module.
-        </p>
-        <div className="flex flex-wrap gap-2.5 pt-1">
-          <button
-            type="button"
-            onClick={handleClearInputs}
-            className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-50 border border-slate-200 text-slate-600 hover:text-slate-850 hover:bg-slate-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs"
-          >
-            <Eraser size={13} /> Clear All Inputs
-          </button>
-          <button
-            type="button"
-            onClick={handleDeleteActiveSelection}
-            className="inline-flex items-center gap-1.5 px-3 py-2 bg-amber-50 border border-amber-200 text-amber-700 hover:text-amber-850 hover:bg-amber-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs"
-          >
-            <RotateCcw size={13} /> Delete Active / Selected Teacher
-          </button>
-          <button
-            type="button"
-            onClick={handleDeleteAllTeachers}
-            className="inline-flex items-center gap-1.5 px-3 py-2 bg-rose-50 border border-rose-200 text-rose-700 hover:text-rose-850 hover:bg-rose-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs sm:ml-auto"
-          >
-            <Trash2 size={13} /> Delete All Section Data
-          </button>
+      {(isAdmin || isHeadteacherLoggedIn) && (
+        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-3 no-print">
+          <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+            <ShieldAlert className="text-indigo-500" size={14} /> Section Teacher Controls
+          </h4>
+          <p className="text-[10px] text-slate-500 leading-relaxed">
+            Manage local instructor profile states, erase database inputs, and process personnel purge states for this module.
+          </p>
+          <div className="flex flex-wrap gap-2.5 pt-1">
+            <button
+              type="button"
+              onClick={handleClearInputs}
+              className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-50 border border-slate-200 text-slate-600 hover:text-slate-850 hover:bg-slate-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs"
+            >
+              <Eraser size={13} /> Clear All Inputs
+            </button>
+            <button
+              type="button"
+              onClick={handleDeleteActiveSelection}
+              className="inline-flex items-center gap-1.5 px-3 py-2 bg-amber-50 border border-amber-200 text-amber-700 hover:text-amber-850 hover:bg-amber-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs"
+            >
+              <RotateCcw size={13} /> Delete Active / Selected Teacher
+            </button>
+            <button
+              type="button"
+              onClick={handleDeleteAllTeachers}
+              className="inline-flex items-center gap-1.5 px-3 py-2 bg-rose-50 border border-rose-200 text-rose-700 hover:text-rose-850 hover:bg-rose-100 rounded-xl font-bold font-sans transition text-xs cursor-pointer shadow-xs sm:ml-auto"
+            >
+              <Trash2 size={13} /> Delete All Section Data
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Dynamic Feedback Toast */}
       <AnimatePresence>
         {toastMessage && (
-          <div className={`fixed bottom-5 right-5 z-50 flex items-center gap-3 px-4 py-3 rounded-lg shadow-xl text-white transition-all duration-300 transform translate-y-0 ${
+          <div className={`fixed bottom-4 right-4 sm:bottom-5 sm:right-5 left-4 sm:left-auto max-w-sm z-50 flex items-center gap-3 px-4 py-3 rounded-lg shadow-xl text-white transition-all duration-300 transform translate-y-0 ${
             toastMessage.type === 'success' ? 'bg-emerald-600' : 'bg-rose-600'
           }`}>
             <Check className="h-5 w-5 shrink-0" />
@@ -3181,6 +4467,25 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
         />
       )}
 
+      {isBatchCameraOpen && (
+        <BatchTeacherCameraCaptureModal
+          teachers={teachers}
+          onPhotoCaptured={(teacherId, photoUrl) => {
+            const teacherToUpdate = teachers.find(t => t.id === teacherId);
+            if (teacherToUpdate) {
+              const updated = { ...teacherToUpdate, photoUrl };
+              DbController.saveTeacher(updated);
+              onRefresh();
+              if (!isAutoSave) {
+                onManualSave();
+              }
+            }
+          }}
+          onClose={() => setIsBatchCameraOpen(false)}
+          theme={theme}
+        />
+      )}
+
       {confirmModal && confirmModal.isOpen && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[110] p-4 no-print animate-fade-in">
           <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden text-left p-6 space-y-4 animate-scale-up">
@@ -3224,6 +4529,72 @@ export default function TeachersTab({ theme, teachers, onRefresh, isAutoSave, on
           </div>
         </div>
       )}
+
+      {showImageLinkModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[120] p-4 no-print animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden text-left p-6 space-y-4 animate-scale-up">
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-xl shrink-0 bg-indigo-50 text-indigo-600">
+                <User size={24} />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-base font-bold text-slate-900 font-sans tracking-tight">
+                  Enter Profile Image URL
+                </h3>
+                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                  Provide a direct web link to the teacher's profile photo:
+                </p>
+                <div className="mt-3">
+                  <input
+                    type="url"
+                    value={tempImageUrl}
+                    onChange={(e) => setTempImageUrl(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-slate-800 font-semibold text-xs animate-scale-up"
+                    placeholder="https://example.com/photo.jpg"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowImageLinkModal(false)}
+                className="flex-1 py-2 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-xl transition cursor-pointer select-none text-center"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setFormState(prev => ({ ...prev, photoUrl: tempImageUrl }));
+                  setShowImageLinkModal(false);
+                }}
+                className="flex-1 py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition cursor-pointer select-none text-center"
+              >
+                Apply Image
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+        </>
+      )}
+
+      {/* Hidden single teacher print target. Visible only during @media print */}
+      <div 
+        id="teacher-id-card-print-area" 
+        className="hidden print:block print:w-[297mm]"
+      >
+        {selectedIdCardTeacher && (
+          <div className="id-cards-landscape-page">
+            {Array.from({ length: 8 }).map((_, idx) => (
+              renderTeacherIdCardContent(selectedIdCardTeacher, `single-teacher-print-${idx}`)
+            ))}
+          </div>
+        )}
+      </div>
 
     </div>
   );

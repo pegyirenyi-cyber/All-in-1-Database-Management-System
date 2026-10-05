@@ -1,6 +1,6 @@
 {
   "name": "School Management and Assessment System",
   "description": "A professional All in 1 School Database & Assessment Center featuring admin and headteacher roles, student and teacher databases with print/PDF support, real-time attendance trackers, mark limit enforcement, rank checking, and broad sheet report card generators.",
-  "requestFramePermissions": ["camera"],
+  "requestFramePermissions": ["camera", "microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

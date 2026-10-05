@@ -1,5 +1,16 @@
-import React, { useMemo, useState } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  Legend, 
+  Cell,
+  ResponsiveContainer
+} from 'recharts';
 import { 
   Users, 
   Calendar, 
@@ -19,11 +30,41 @@ import {
   MessageSquare,
   X,
   ShieldCheck,
-  User
+  User,
+  Archive,
+  Cake,
+  Save,
+  FileDown,
+  Check,
+  BarChart2,
+  Layers,
+  Award,
+  Landmark,
+  StickyNote,
+  Pin,
+  ChevronDown,
+  ChevronUp,
+  Search,
+  Tag,
+  Filter,
+  Trash2,
+  Edit3,
+  Coins,
+  SlidersHorizontal,
+  Megaphone,
+  Bell,
+  MapPin,
+  CheckSquare,
+  BellRing
 } from 'lucide-react';
-import { Teacher, Student, AttendanceRecord, AcademicCalendarConfig, ClassType, SubjectType, StudentAssessment, TeacherReflection, SchoolInfo } from '../types';
+import Markdown from 'react-markdown';
+import { Teacher, Student, AttendanceRecord, AcademicCalendarConfig, ClassType, SubjectType, StudentAssessment, TeacherReflection, SchoolInfo, CustomTask, QuickNote, NoteCategory } from '../types';
 import TeacherReflections from './TeacherReflections';
+import AverageImprovementChart from './AverageImprovementChart';
 import { DbController } from '../db';
+import { formatIdentifiableFilename } from '../utils';
+import { evaluateSubscription } from '../subscription';
+import SmartTextarea from './SmartTextarea';
 
 interface TeacherDashboardTabProps {
   teacherProfile: Teacher;
@@ -36,21 +77,94 @@ interface TeacherDashboardTabProps {
   themeStyles: any;
   onNavigate: (tabId: string, params?: any) => void;
   onRefresh: () => void;
+  onSaveAll?: () => Promise<void>;
+  isManualSaving?: boolean;
 }
 
 export default function TeacherDashboardTab({
   teacherProfile,
   students,
   attendance,
-  calendar,
+  calendar: calendarProp,
   assessments,
   reflections,
   schoolInfo,
   themeStyles,
   onNavigate,
-  onRefresh
+  onRefresh,
+  onSaveAll,
+  isManualSaving
 }: TeacherDashboardTabProps) {
   
+  const calendar = useMemo(() => {
+    if (calendarProp && calendarProp.activeAcademicYear && calendarProp.years) {
+      return calendarProp;
+    }
+    return DbController.getAcademicCalendar();
+  }, [calendarProp]);
+
+  const currentUser = useMemo(() => DbController.getCurrentUser(), []);
+  const [ticker, setTicker] = useState(0);
+
+  // Headteacher & Staff Quick Notes State
+  const [quickNotes, setQuickNotes] = useState<QuickNote[]>(() => DbController.getQuickNotes());
+  const [expandedNoteIds, setExpandedNoteIds] = useState<Set<string>>(new Set());
+  const [noteSearch, setNoteSearch] = useState('');
+  const [notePriorityFilter, setNotePriorityFilter] = useState<'all' | 'urgent' | 'high' | 'medium' | 'low'>('all');
+  const [noteCategoryFilter, setNoteCategoryFilter] = useState<'all' | NoteCategory>('all');
+
+  // Listen for real-time quick notes updates from Headteacher / Admin
+  useEffect(() => {
+    const handleSync = (e: any) => {
+      if (e.detail?.type === 'quick-notes-updated') {
+        setQuickNotes(DbController.getQuickNotes());
+      }
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener('school-system-sync', handleSync);
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('school-system-sync', handleSync);
+      }
+    };
+  }, []);
+
+  const toggleNoteExpand = (id: string) => {
+    setExpandedNoteIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleAcknowledgeNote = (noteId: string) => {
+    const note = quickNotes.find(n => n.id === noteId);
+    if (!note) return;
+    const currentUser = DbController.getCurrentUser();
+    const teacherKey = teacherProfile.staffId || teacherProfile.id || currentUser?.uid || 'teacher';
+    const teacherName = `${teacherProfile.firstName || ''} ${teacherProfile.lastName || ''}`.trim() || currentUser?.name || 'Class Teacher';
+    
+    const existingAcks = note.acknowledgedBy || [];
+    if (!existingAcks.some(a => a.teacherId === teacherKey)) {
+      const updatedNote: QuickNote = {
+        ...note,
+        acknowledgedBy: [
+          ...existingAcks,
+          {
+            teacherId: teacherKey,
+            teacherName,
+            acknowledgedAt: new Date().toISOString()
+          }
+        ]
+      };
+      DbController.saveQuickNote(updatedNote);
+      setQuickNotes(DbController.getQuickNotes());
+      window.dispatchEvent(new CustomEvent('app-toast', { detail: { text: 'Memo / Notice confirmed & acknowledged.', type: 'success' } }));
+    }
+  };
+
   const assignedClasses = useMemo(() => {
     const classesList: ClassType[] = [];
     if (teacherProfile.assignedClasses) {
@@ -62,42 +176,271 @@ export default function TeacherDashboardTab({
     return classesList;
   }, [teacherProfile]);
 
+  const missingAttendanceClasses = useMemo(() => {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const attList = Array.isArray(attendance) ? attendance : [];
+    const todayAtt = attList.filter(a => a.date === todayStr);
+    return assignedClasses.filter(cls => {
+      return !todayAtt.some(a => a.class === cls);
+    });
+  }, [attendance, assignedClasses]);
+
+  const isPastCutoff = useMemo(() => {
+    const now = new Date();
+    return now.getHours() >= 10;
+  }, []);
+
+  const isWeekday = useMemo(() => {
+    const today = new Date();
+    return today.getDay() !== 0 && today.getDay() !== 6;
+  }, []);
+
+  const filteredQuickNotes = useMemo(() => {
+    const query = noteSearch.trim().toLowerCase();
+    return quickNotes.filter(n => {
+      // Check target audience match for assigned Class Teacher
+      if (n.targetAudience === 'specific_class') {
+        if (!n.targetClass || !assignedClasses.includes(n.targetClass)) {
+          return false;
+        }
+      }
+
+      const matchesSearch = !query || 
+        n.title.toLowerCase().includes(query) || 
+        n.content.toLowerCase().includes(query) ||
+        (n.author && n.author.toLowerCase().includes(query)) ||
+        (n.meetingVenue && n.meetingVenue.toLowerCase().includes(query));
+      if (!matchesSearch) return false;
+
+      if (n.isPinned) return true;
+
+      const matchesPriority = notePriorityFilter === 'all' || n.priority === notePriorityFilter;
+      const matchesCategory = noteCategoryFilter === 'all' || (n.category || 'General') === noteCategoryFilter;
+      return matchesPriority && matchesCategory;
+    }).sort((a, b) => {
+      if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+  }, [quickNotes, noteSearch, notePriorityFilter, noteCategoryFilter, assignedClasses]);
+
+  const urgentNoticeMemos = useMemo(() => {
+    const currentUser = DbController.getCurrentUser();
+    const teacherKey = teacherProfile.staffId || teacherProfile.id || currentUser?.uid || 'teacher';
+    return filteredQuickNotes.filter(n => {
+      const isUrgentOrMeeting = n.priority === 'urgent' || n.isMeetingNotice || n.priority === 'high';
+      const isAcknowledged = n.acknowledgedBy?.some(ack => ack.teacherId === teacherKey);
+      return isUrgentOrMeeting && !isAcknowledged;
+    });
+  }, [filteredQuickNotes, teacherProfile]);
+
+  const teacherNoteColorStyles: Record<string, { bg: string; border: string; text: string; badge: string }> = {
+    amber: {
+      bg: 'bg-gradient-to-br from-amber-50/90 via-amber-50/60 to-orange-50/40 dark:from-amber-950/40 dark:via-amber-900/30 dark:to-slate-800',
+      border: 'border-amber-200/90 dark:border-amber-700/50',
+      text: 'text-amber-950 dark:text-amber-100',
+      badge: 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-900/70 dark:text-amber-200 dark:border-amber-700'
+    },
+    blue: {
+      bg: 'bg-gradient-to-br from-sky-50/90 via-sky-50/60 to-indigo-50/40 dark:from-sky-950/40 dark:via-sky-900/30 dark:to-slate-800',
+      border: 'border-sky-200/90 dark:border-sky-700/50',
+      text: 'text-sky-950 dark:text-sky-100',
+      badge: 'bg-sky-100 text-sky-800 border-sky-300 dark:bg-sky-900/70 dark:text-sky-200 dark:border-sky-700'
+    },
+    emerald: {
+      bg: 'bg-gradient-to-br from-emerald-50/90 via-emerald-50/60 to-teal-50/40 dark:from-emerald-950/40 dark:via-emerald-900/30 dark:to-slate-800',
+      border: 'border-emerald-200/90 dark:border-emerald-700/50',
+      text: 'text-emerald-950 dark:text-emerald-100',
+      badge: 'bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-900/70 dark:text-emerald-200 dark:border-emerald-700'
+    },
+    rose: {
+      bg: 'bg-gradient-to-br from-rose-50/90 via-rose-50/60 to-pink-50/40 dark:from-rose-950/40 dark:via-rose-900/30 dark:to-slate-800',
+      border: 'border-rose-200/90 dark:border-rose-700/50',
+      text: 'text-rose-950 dark:text-rose-100',
+      badge: 'bg-rose-100 text-rose-800 border-rose-300 dark:bg-rose-900/70 dark:text-rose-200 dark:border-rose-700'
+    },
+    purple: {
+      bg: 'bg-gradient-to-br from-purple-50/90 via-purple-50/60 to-indigo-50/40 dark:from-purple-950/40 dark:via-purple-900/30 dark:to-slate-800',
+      border: 'border-purple-200/90 dark:border-purple-700/50',
+      text: 'text-purple-950 dark:text-purple-100',
+      badge: 'bg-purple-100 text-purple-800 border-purple-300 dark:bg-purple-900/70 dark:text-purple-200 dark:border-purple-700'
+    },
+    slate: {
+      bg: 'bg-gradient-to-br from-slate-100/90 via-slate-50/70 to-zinc-100/50 dark:from-slate-800/90 dark:via-slate-800/70 dark:to-slate-850',
+      border: 'border-slate-250 dark:border-slate-700',
+      text: 'text-slate-900 dark:text-slate-100',
+      badge: 'bg-slate-200 text-slate-700 border-slate-300 dark:bg-slate-750 dark:text-slate-200 dark:border-slate-600'
+    }
+  };
+
+  const getTeacherDueDateStatus = (dueDateStr?: string) => {
+    if (!dueDateStr) return null;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const due = new Date(dueDateStr);
+    due.setHours(0, 0, 0, 0);
+    const diffDays = Math.round((due.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+
+    if (diffDays < 0) {
+      return {
+        status: 'overdue',
+        label: `Overdue (${Math.abs(diffDays)}d ago)`,
+        colorClass: 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300 border-rose-200 dark:border-rose-800',
+        icon: AlertCircle,
+      };
+    } else if (diffDays === 0) {
+      return {
+        status: 'due-today',
+        label: 'Due Today',
+        colorClass: 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border-amber-200 dark:border-amber-800 font-bold',
+        icon: Clock,
+      };
+    } else if (diffDays <= 3) {
+      return {
+        status: 'approaching',
+        label: `Due in ${diffDays}d`,
+        colorClass: 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300 border-blue-200 dark:border-blue-800',
+        icon: Calendar,
+      };
+    } else {
+      return {
+        status: 'upcoming',
+        label: `Due ${due.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`,
+        colorClass: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 border-slate-200 dark:border-slate-700',
+        icon: Calendar,
+      };
+    }
+  };
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setTicker(prev => prev + 1);
+    }, 30000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const subStatus = useMemo(() => currentUser ? evaluateSubscription(currentUser) : null, [currentUser, ticker]);
+
   const assignedSubjects = teacherProfile.assignedSubjects || [];
 
   // Filter students belonging to assigned classes
   const myStudents = useMemo(() => {
-    return students.filter(s => assignedClasses.includes(s.class));
+    const sList = Array.isArray(students) ? students : [];
+    return sList.filter(s => s && assignedClasses.includes(s.class));
   }, [students, assignedClasses]);
+
+  // Success feedback states
+  const [showSaveSuccess, setShowSaveSuccess] = useState(false);
+  const [showJsonSuccess, setShowJsonSuccess] = useState(false);
+  const prevIsSaving = useRef(isManualSaving);
+
+  // Monitor save progress for success feedback
+  useEffect(() => {
+    if (prevIsSaving.current && !isManualSaving) {
+      // Transitioned from saving to idle
+      setShowSaveSuccess(true);
+      const timer = setTimeout(() => setShowSaveSuccess(false), 2500);
+      return () => clearTimeout(timer);
+    }
+    prevIsSaving.current = isManualSaving;
+  }, [isManualSaving]);
+
+  // Export database handler
+  const handleExportJSON = () => {
+    try {
+      const dataStr = DbController.exportAllData();
+      const blob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const formatedDate = new Date().toISOString().split('T')[0];
+      const exportFileDefaultName = formatIdentifiableFilename({
+        docType: 'School System Backup',
+        date: formatedDate,
+        extension: 'json'
+      });
+      
+      const linkElement = document.createElement('a');
+      linkElement.href = url;
+      linkElement.download = exportFileDefaultName;
+      document.body.appendChild(linkElement);
+      linkElement.click();
+      document.body.removeChild(linkElement);
+      URL.revokeObjectURL(url);
+      
+      setShowJsonSuccess(true);
+      setTimeout(() => setShowJsonSuccess(false), 2500);
+      window.dispatchEvent(new CustomEvent('app-toast', { detail: { text: 'Full database JSON snapshot exported successfully.', type: 'success' } }));
+    } catch (e: any) {
+      window.dispatchEvent(new CustomEvent('app-toast', { detail: { text: 'Failed to export JSON: ' + e.message, type: 'error' } }));
+    }
+  };
+
+  // Student birthdays calculations
+  const birthdayStudents = useMemo(() => {
+    const today = new Date();
+    const month = today.getMonth() + 1;
+    const day = today.getDate();
+    
+    return myStudents.filter(s => {
+      if (!s.dateOfBirth) return false;
+      const dobParts = s.dateOfBirth.split('-');
+      if (dobParts.length !== 3) return false;
+      const dobMonth = parseInt(dobParts[1], 10);
+      const dobDay = parseInt(dobParts[2], 10);
+      return dobMonth === month && dobDay === day;
+    }).map(s => {
+      const dobParts = s.dateOfBirth.split('-');
+      const birthYear = parseInt(dobParts[0], 10);
+      const birthMonth = parseInt(dobParts[1], 10);
+      const birthDay = parseInt(dobParts[2], 10);
+      
+      let age = today.getFullYear() - birthYear;
+      const m = (today.getMonth() + 1) - birthMonth;
+      if (m < 0 || (m === 0 && today.getDate() < birthDay)) {
+        age--;
+      }
+      return {
+        ...s,
+        age
+      };
+    });
+  }, [myStudents]);
 
   // Calculate students per class
   const studentsPerClass = useMemo(() => {
     const counts: Record<string, number> = {};
+    const sList = Array.isArray(students) ? students : [];
     assignedClasses.forEach(c => {
-      counts[c] = students.filter(s => s.class === c).length;
+      counts[c] = sList.filter(s => s && s.class === c).length;
     });
     return counts;
   }, [assignedClasses, students]);
 
   // Attendance rate for assigned classes (last 30 days or current month)
   const attendanceRate = useMemo(() => {
-    const relevantAttendance = attendance.filter(a => assignedClasses.includes(a.class));
+    const attList = Array.isArray(attendance) ? attendance : [];
+    const relevantAttendance = attList.filter(a => a && assignedClasses.includes(a.class));
     if (relevantAttendance.length === 0) return 0;
-    const presents = relevantAttendance.filter(a => a.status === 'Present').length;
+    const presents = relevantAttendance.filter(a => a && a.status === 'Present').length;
     return Math.round((presents / relevantAttendance.length) * 100);
   }, [attendance, assignedClasses]);
 
   // Pending grading tasks (heuristic: count students in assigned classes/subjects who don't have an assessment for the active term/year)
   const pendingGradingCount = useMemo(() => {
     let count = 0;
+    const sList = Array.isArray(students) ? students : [];
+    const assList = Array.isArray(assessments) ? assessments : [];
+    const activeYear = calendar?.activeAcademicYear;
+    const activeTerm = calendar?.activeTerm;
+
     assignedClasses.forEach(cls => {
-      const classStudents = students.filter(s => s.class === cls);
+      const classStudents = sList.filter(s => s && s.class === cls);
       assignedSubjects.forEach(sub => {
         classStudents.forEach(stu => {
-          const hasRecord = assessments.some(a => 
+          const hasRecord = assList.some(a => 
+            a &&
             a.studentId === stu.id && 
             a.subject === sub && 
-            a.academicYear === calendar.activeAcademicYear && 
-            a.term === calendar.activeTerm
+            a.academicYear === activeYear && 
+            a.term === activeTerm
           );
           if (!hasRecord) count++;
         });
@@ -105,6 +448,76 @@ export default function TeacherDashboardTab({
     });
     return count;
   }, [assignedClasses, assignedSubjects, students, assessments, calendar]);
+
+  // Chart View Toggle State for Recharts Bar Chart
+  const [chartView, setChartView] = useState<'bands' | 'average'>('bands');
+
+  // Performance distribution computation across assigned classes
+  const performanceChartData = useMemo(() => {
+    const sList = Array.isArray(students) ? students : [];
+    const assList = Array.isArray(assessments) ? assessments : [];
+    const activeYear = calendar?.activeAcademicYear;
+    const activeTerm = calendar?.activeTerm;
+
+    return assignedClasses.map(cls => {
+      const classStudents = sList.filter(s => s && s.class === cls);
+      if (classStudents.length === 0) {
+        return {
+          class: cls,
+          average: 0,
+          excellent: 0,
+          proficient: 0,
+          developing: 0,
+          needsSupport: 0,
+          totalStudents: 0,
+          assessedStudents: 0
+        };
+      }
+
+      let totalScoreSum = 0;
+      let assessedCount = 0;
+      let excellentCount = 0; // 80-100%
+      let proficientCount = 0; // 60-79%
+      let developingCount = 0; // 40-59%
+      let needsSupportCount = 0; // <40%
+
+      classStudents.forEach(stu => {
+        let stuAssessments = assList.filter(a => 
+          a &&
+          a.studentId === stu.id && 
+          a.academicYear === activeYear && 
+          a.term === activeTerm
+        );
+        if (stuAssessments.length === 0) {
+          stuAssessments = assList.filter(a => a && a.studentId === stu.id);
+        }
+
+        if (stuAssessments.length > 0) {
+          const avgScore = stuAssessments.reduce((sum, a) => sum + (a ? (a.totalScore || 0) : 0), 0) / stuAssessments.length;
+          totalScoreSum += avgScore;
+          assessedCount++;
+
+          if (avgScore >= 80) excellentCount++;
+          else if (avgScore >= 60) proficientCount++;
+          else if (avgScore >= 40) developingCount++;
+          else needsSupportCount++;
+        }
+      });
+
+      const classAverage = assessedCount > 0 ? Math.round(totalScoreSum / assessedCount) : 0;
+
+      return {
+        class: cls,
+        average: classAverage,
+        excellent: excellentCount,
+        proficient: proficientCount,
+        developing: developingCount,
+        needsSupport: needsSupportCount,
+        totalStudents: classStudents.length,
+        assessedStudents: assessedCount
+      };
+    });
+  }, [assignedClasses, students, assessments, calendar]);
 
   // Upcoming Tasks list
   const upcomingTasks = useMemo(() => {
@@ -159,6 +572,30 @@ export default function TeacherDashboardTab({
     return tasks;
   }, [assignedClasses, calendar, pendingGradingCount, onNavigate]);
 
+  const [customTasks, setCustomTasks] = useState(() => DbController.getTasks().filter(t => !t.isArchived));
+  const [showAddTaskModal, setShowAddTaskModal] = useState(false);
+  const [newTaskTitle, setNewTaskTitle] = useState('');
+  const [newTaskDescription, setNewTaskDescription] = useState('');
+
+  const allTasks = useMemo(() => {
+    const combined = [...upcomingTasks];
+    customTasks.forEach(ct => {
+      combined.push({
+        id: ct.id,
+        title: ct.title,
+        description: ct.description,
+        icon: CheckCircle,
+        priority: ct.priority,
+        action: () => {},
+        isCustom: true
+      });
+    });
+    // Sort by priority (critical > high > medium > low)
+    const pMap: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+    combined.sort((a, b) => pMap[b.priority] - pMap[a.priority]);
+    return combined;
+  }, [upcomingTasks, customTasks]);
+
   const [isQuickActionsOpen, setIsQuickActionsOpen] = useState(false);
   const [quickActionModal, setQuickActionModal] = useState<'behavior' | 'grade' | 'attendance' | null>(null);
   
@@ -205,7 +642,7 @@ export default function TeacherDashboardTab({
         studentId: student.id,
         studentName: `${student.firstName} ${student.lastName}`,
         class: student.class,
-        status: qaAttendanceStatus
+        status: qaAttendanceStatus as any
       };
       DbController.saveAttendanceBatch([record]);
       window.dispatchEvent(new CustomEvent('app-toast', { detail: { text: `Attendance for ${student.firstName} flagged as ${qaAttendanceStatus}.`, type: 'success' } }));
@@ -222,7 +659,7 @@ export default function TeacherDashboardTab({
         assessmentToUpdate = { ...allAssessments[existingIdx] };
       } else {
         assessmentToUpdate = {
-          id: `currAuthUser_${student.id}_${year}_${term}_${qaSubject}`, // Fallback mock id
+          id: `ass_${student.id}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
           studentId: student.id,
           studentName: `${student.firstName} ${student.lastName}`,
           class: student.class,
@@ -284,44 +721,303 @@ export default function TeacherDashboardTab({
         animate={{ opacity: 1, y: 0 }}
         className="space-y-8"
       >
-      {/* Welcome Notice Board */}
-      <div className="bg-white border-4 border-indigo-600 rounded-3xl p-8 relative overflow-hidden shadow-2xl">
-        <div className="absolute top-0 right-0 p-4">
-          <div className="bg-indigo-600 text-white px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest shadow-lg flex items-center gap-2">
-            <ShieldCheck size={14} /> Official Notice Board
+      {/* Headteacher Real-Time Subscription Countdown Banner */}
+      {subStatus && (
+        <div className={`p-5 rounded-3xl border-2 ${
+          subStatus.isLocked 
+            ? 'bg-rose-50 border-rose-300 text-rose-950'
+            : subStatus.remainingDays <= 30
+              ? 'bg-amber-50/90 border-amber-300 text-amber-950'
+              : 'bg-gradient-to-r from-emerald-50 via-teal-50 to-emerald-100/80 border-emerald-300 text-emerald-950'
+        } flex flex-col md:flex-row items-center justify-between gap-4 shadow-md no-print`}>
+          <div className="flex items-center gap-3.5">
+            <div className={`p-3 rounded-2xl shrink-0 ${
+              subStatus.isLocked ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-800'
+            }`}>
+              <Clock size={24} className="animate-pulse text-emerald-700" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-black uppercase tracking-wider font-mono text-slate-800">
+                  Headteacher School Subscription Live Countdown
+                </span>
+                <span className={`text-xs px-3 py-1 rounded-xl font-black font-mono tracking-wider shadow-2xs ${
+                  subStatus.isLocked
+                    ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                    : 'bg-emerald-200/90 text-emerald-900 border border-emerald-300'
+                }`}>
+                  ⏱️ {subStatus.countdownString}
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 font-medium mt-1 leading-relaxed">
+                {subStatus.message}
+              </p>
+            </div>
+          </div>
+          <div className="text-right text-xs font-mono font-bold text-slate-600 shrink-0 self-end md:self-auto bg-white/70 px-3.5 py-2 rounded-xl border border-slate-200/60">
+            <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">School Expiry Date</span>
+            <span className="text-slate-900 font-black">{subStatus.expiryDate.toLocaleDateString()}</span>
           </div>
         </div>
-        
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-8">
-          <div className="space-y-4">
+      )}
+
+      {/* DAILY ATTENDANCE CUTOFF ALERT BANNER */}
+      {isWeekday && missingAttendanceClasses.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className={`p-5 rounded-3xl border-2 shadow-lg ${
+            isPastCutoff 
+              ? 'bg-rose-50 border-rose-300 text-rose-950 animate-pulse' 
+              : 'bg-amber-50 border-amber-300 text-amber-950'
+          } flex flex-col md:flex-row items-center justify-between gap-4 no-print`}
+        >
+          <div className="flex items-center gap-3.5">
+            <div className={`p-3 rounded-2xl shrink-0 ${
+              isPastCutoff ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-800'
+            }`}>
+              <AlertCircle size={24} className={isPastCutoff ? 'animate-bounce text-rose-700' : 'text-amber-700'} />
+            </div>
+            <div className="text-left">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-black uppercase tracking-wider font-mono text-slate-800">
+                  {isPastCutoff ? '⚠️ Attendance Compliance Cutoff Breach' : '⏰ Attendance Reminder'}
+                </span>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-black tracking-wide uppercase ${
+                  isPastCutoff ? 'bg-rose-200 text-rose-900' : 'bg-amber-200 text-amber-900'
+                }`}>
+                  {isPastCutoff ? 'Overdue' : 'Due by 10:00 AM'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-700 font-medium mt-1 leading-relaxed">
+                Daily student attendance registers for class <strong>{missingAttendanceClasses.join(', ')}</strong> have not been logged. Please complete the register immediately to ensure compliance and administrative accuracy.
+              </p>
+            </div>
+          </div>
+          
+          <button
+            onClick={() => onNavigate('attendance')}
+            className={`py-2 px-4 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-md shrink-0 ${
+              isPastCutoff 
+                ? 'bg-rose-600 hover:bg-rose-700 text-white animate-pulse' 
+                : 'bg-amber-500 hover:bg-amber-600 text-slate-900 font-extrabold'
+            }`}
+          >
+            Record Register Now <ArrowRight size={13} />
+          </button>
+        </motion.div>
+      )}
+
+      {/* HEADTEACHER URGENT MEMO & STAFF MEETING ALERT BANNER */}
+      {urgentNoticeMemos.length > 0 && (
+        <motion.div 
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-gradient-to-r from-amber-500 via-rose-500 to-indigo-600 p-1 rounded-3xl shadow-xl no-print"
+        >
+          <div className="bg-white dark:bg-slate-900 rounded-[22px] p-5 md:p-6 space-y-4">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 rounded-2xl bg-rose-500 text-white animate-bounce shadow-md">
+                  <Megaphone size={20} />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
+                    Headteacher Urgent Directives & Meeting Notices
+                    <span className="px-2.5 py-0.5 rounded-full bg-rose-500 text-white text-[10px] font-black uppercase tracking-wider">
+                      {urgentNoticeMemos.length} Urgent / Action Required
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+                    Official announcements broadcasted directly to assigned class teachers.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {urgentNoticeMemos.map((memo) => (
+                <div 
+                  key={memo.id}
+                  className="p-4 rounded-2xl bg-gradient-to-br from-amber-50/90 to-rose-50/70 dark:from-amber-950/40 dark:to-rose-950/30 border border-amber-200 dark:border-amber-800 flex flex-col md:flex-row md:items-center justify-between gap-4"
+                >
+                  <div className="space-y-2 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="px-2 py-0.5 rounded-md bg-rose-500 text-white text-[9px] font-black uppercase tracking-wider">
+                        {memo.priority}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-md bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300 text-[9.5px] font-bold border border-indigo-200 dark:border-indigo-800">
+                        {memo.targetAudience === 'specific_class'
+                          ? `To: ${memo.targetClass || 'Class'} Teacher`
+                          : memo.targetAudience === 'class_teachers'
+                          ? 'To: All Class Teachers'
+                          : 'To: All Staff'}
+                      </span>
+                      {memo.isMeetingNotice && (
+                        <span className="px-2 py-0.5 rounded-md bg-amber-500 text-white text-[9.5px] font-bold flex items-center gap-1">
+                          <Calendar size={11} /> Staff Meeting Directive
+                        </span>
+                      )}
+                    </div>
+
+                    <h4 className="text-sm font-black text-slate-900 dark:text-white">
+                      {memo.title}
+                    </h4>
+
+                    {memo.isMeetingNotice && (memo.meetingDate || memo.meetingTime || memo.meetingVenue) && (
+                      <div className="p-2.5 rounded-xl bg-white/80 dark:bg-slate-800/80 border border-amber-200/80 dark:border-amber-800/80 text-xs text-slate-800 dark:text-slate-200 flex items-center gap-4 flex-wrap font-bold">
+                        {memo.meetingDate && <span>📅 Date: {memo.meetingDate}</span>}
+                        {memo.meetingTime && <span>⏰ Time: {memo.meetingTime}</span>}
+                        {memo.meetingVenue && <span>📍 Venue: {memo.meetingVenue}</span>}
+                      </div>
+                    )}
+
+                    <div className="text-xs text-slate-700 dark:text-slate-300 font-medium leading-relaxed prose prose-xs max-w-none">
+                      <Markdown>{memo.content}</Markdown>
+                    </div>
+                  </div>
+
+                  <div className="shrink-0 self-end md:self-center">
+                    <button
+                      onClick={() => handleAcknowledgeNote(memo.id)}
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs rounded-xl shadow-md flex items-center gap-1.5 transition cursor-pointer active:scale-95"
+                    >
+                      <Check size={14} /> Confirm Receipt & Acknowledge
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+
+      {/* Official School Institutional Branding & Teacher Faculty Notice Board */}
+      <div className="bg-white border-2 border-indigo-600/30 rounded-3xl p-6 md:p-8 relative overflow-hidden shadow-xl space-y-6">
+        {/* Top Institutional Header Banner */}
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6 pb-6 border-b border-slate-100 relative z-10">
+          <div className="flex items-center gap-4">
+            {/* School Crest / Logo */}
+            <div className="flex items-center gap-2">
+              <div className="w-16 h-16 rounded-2xl bg-indigo-50 border-2 border-indigo-200/80 flex items-center justify-center text-indigo-600 overflow-hidden shadow-sm shrink-0">
+                {(schoolInfo.logoUrl || schoolInfo.crestUrl) ? (
+                  <img 
+                    src={schoolInfo.logoUrl || schoolInfo.crestUrl} 
+                    alt="School Logo" 
+                    className="w-full h-full object-cover"
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      (e.currentTarget as HTMLElement).style.display = 'none';
+                    }}
+                  />
+                ) : (
+                  <GraduationCap size={32} className="text-indigo-600" />
+                )}
+              </div>
+              {schoolInfo.crestUrl && schoolInfo.logoUrl && schoolInfo.crestUrl !== schoolInfo.logoUrl && (
+                <div className="w-14 h-14 rounded-2xl bg-amber-50 border-2 border-amber-200/80 hidden sm:flex items-center justify-center text-amber-600 overflow-hidden shadow-sm shrink-0">
+                  <img 
+                    src={schoolInfo.crestUrl} 
+                    alt="School Crest" 
+                    className="w-full h-full object-cover"
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      (e.currentTarget as HTMLElement).style.display = 'none';
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* School Name, Motto & Regional Identifiers */}
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-xl md:text-2xl font-black font-display tracking-tight text-slate-900 uppercase">
+                  {schoolInfo.name || 'Ghana Education Service School'}
+                </h1>
+                <span className="bg-indigo-600 text-white px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider shadow-sm">
+                  {schoolInfo.schoolType || 'Public'} School
+                </span>
+                {schoolInfo.emisCode && (
+                  <span className="bg-amber-100 text-amber-900 border border-amber-200 px-2 py-0.5 rounded-md text-[10px] font-bold font-mono">
+                    EMIS: {schoolInfo.emisCode}
+                  </span>
+                )}
+              </div>
+              
+              {schoolInfo.motto && (
+                <p className="text-xs font-serif italic text-indigo-700 font-semibold">
+                  Motto: "{schoolInfo.motto}"
+                </p>
+              )}
+
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500 font-medium pt-0.5">
+                {schoolInfo.circuit && <span>Circuit: <strong className="text-slate-700">{schoolInfo.circuit}</strong></span>}
+                {schoolInfo.district && <span>• District: <strong className="text-slate-700">{schoolInfo.district}</strong></span>}
+                {schoolInfo.schoolNumber && <span>• Reg: <strong className="text-slate-700">{schoolInfo.schoolNumber}</strong></span>}
+                <span>• Session: <strong className="text-indigo-600">{calendar.activeAcademicYear} ({calendar.activeTerm})</strong></span>
+              </div>
+            </div>
+          </div>
+
+          <div className="shrink-0 self-start md:self-center">
+            <div className="bg-indigo-600 text-white px-3.5 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest shadow-md flex items-center gap-2">
+              <ShieldCheck size={14} /> Teacher Portal
+            </div>
+          </div>
+        </div>
+
+        {/* Teacher Faculty Profile & Today's Schedule */}
+        <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+          <div className="space-y-3">
             <div className="flex items-center gap-3">
-              <div className="w-16 h-16 rounded-2xl bg-indigo-50 border-2 border-indigo-100 flex items-center justify-center text-indigo-600 shadow-sm">
-                <User size={32} />
+              <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-indigo-700 text-white flex items-center justify-center font-bold text-lg shadow-md shrink-0 overflow-hidden">
+                {teacherProfile.photoUrl ? (
+                  <img 
+                    src={teacherProfile.photoUrl} 
+                    alt={teacherProfile.firstName} 
+                    className="w-full h-full object-cover" 
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      (e.currentTarget as HTMLElement).style.display = 'none';
+                    }}
+                  />
+                ) : (
+                  <span>{teacherProfile.firstName?.[0] || 'T'}{teacherProfile.lastName?.[0] || ''}</span>
+                )}
               </div>
               <div className="space-y-1">
-                <h1 className="text-3xl md:text-4xl font-black font-display tracking-tight text-slate-900 leading-none">
-                  Welcome, <span className="text-indigo-600">{teacherProfile.firstName} {teacherProfile.lastName}</span>
-                </h1>
-                <div className="space-y-1.5">
-                  <div className="flex items-center gap-2 text-slate-500 font-bold text-[11px] uppercase tracking-tight">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-2xl font-black font-display tracking-tight text-slate-900 leading-none">
+                    Welcome, <span className="text-indigo-600">{teacherProfile.firstName} {teacherProfile.lastName}</span>
+                  </h2>
+                  {teacherProfile.staffId && (
+                    <span className="bg-slate-100 text-slate-700 border border-slate-200 text-[10px] font-mono font-bold px-2 py-0.5 rounded">
+                      ID: {teacherProfile.staffId}
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                  <div className="flex items-center gap-1.5 text-slate-500 font-bold text-[11px] uppercase tracking-tight">
                     <GraduationCap size={14} className="text-amber-500" />
-                    Assigned Classes: <span className="text-slate-900 font-black">{assignedClasses.length > 0 ? assignedClasses.join(', ') : 'None'}</span>
+                    Classes: <span className="text-slate-900 font-black">{assignedClasses.length > 0 ? assignedClasses.join(', ') : 'None'}</span>
                   </div>
-                  <div className="flex items-center gap-2 text-slate-500 font-bold text-[11px] uppercase tracking-tight">
+                  <div className="flex items-center gap-1.5 text-slate-500 font-bold text-[11px] uppercase tracking-tight">
                     <BookOpen size={14} className="text-indigo-500" />
-                    Assigned Subjects: <span className="text-slate-900 font-black">{assignedSubjects.length > 0 ? assignedSubjects.join(', ') : 'None'}</span>
+                    Subjects: <span className="text-slate-900 font-black">{assignedSubjects.length > 0 ? assignedSubjects.join(', ') : 'None'}</span>
                   </div>
                 </div>
               </div>
             </div>
             
-            <p className="text-slate-500 text-sm font-sans max-w-xl leading-relaxed">
-              We're glad to have you back! Your dedication to shaping young minds at <span className="text-indigo-600 font-bold">{schoolInfo.name || 'our institution'}</span> is what makes our community thrive. Use the dashboard below to manage your students and academic records for the <span className="text-indigo-600 font-bold">{calendar.activeAcademicYear}</span> session.
+            <p className="text-slate-500 text-xs font-sans max-w-xl leading-relaxed">
+              We're glad to have you back! Your dedication to shaping young minds at <span className="text-indigo-600 font-bold">{schoolInfo.name || 'our school'}</span> drives educational excellence. Use the tools below to manage classroom attendance, student assessments, and term reports.
             </p>
           </div>
 
           {/* Quick Notice Widgets */}
-          <div className="flex flex-col gap-3 min-w-[280px]">
+          <div className="flex flex-col sm:flex-row lg:flex-col gap-3 min-w-[280px]">
             {/* Birthday Alert */}
             {(() => {
               const today = new Date();
@@ -373,12 +1069,129 @@ export default function TeacherDashboardTab({
         </div>
 
         {/* Decorative elements */}
-        <div className="absolute -bottom-6 -right-6 w-32 h-32 bg-indigo-500/5 rounded-full blur-2xl" />
-        <div className="absolute -top-10 -left-10 w-40 h-40 bg-amber-500/5 rounded-full blur-3xl" />
+        <div className="absolute -bottom-6 -right-6 w-32 h-32 bg-indigo-500/5 rounded-full blur-2xl pointer-events-none" />
+        <div className="absolute -top-10 -left-10 w-40 h-40 bg-amber-500/5 rounded-full blur-3xl pointer-events-none" />
+      </div>
+
+      {/* Main Action & Birthday Panel */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 no-print">
+        {/* Birthday Panel (Col span 2) */}
+        <div className="lg:col-span-2 bg-gradient-to-r from-amber-500/10 to-orange-500/5 border border-amber-200/60 rounded-3xl p-6 relative overflow-hidden flex flex-col md:flex-row items-start md:items-center justify-between gap-6 shadow-sm">
+          <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none">
+            <Cake size={120} className="text-amber-600" />
+          </div>
+          <div className="flex gap-4 items-center">
+            <div className="p-3 bg-gradient-to-br from-amber-400 to-orange-500 text-white rounded-2xl shadow-md shrink-0">
+              <Cake size={24} className="animate-bounce-subtle" />
+            </div>
+            <div>
+              <h4 className="text-sm font-extrabold text-amber-900 uppercase tracking-wider flex items-center gap-1.5">
+                Birthday Celebrations Corner
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-200 text-amber-800 animate-pulse">
+                  TODAY
+                </span>
+              </h4>
+              <p className="text-xs text-amber-850/90 mt-1 max-w-md font-sans">
+                Recognize and celebrate our students who are marking another year of growth and learning today.
+              </p>
+            </div>
+          </div>
+
+          <div className="w-full md:w-auto shrink-0">
+            {birthdayStudents.length > 0 ? (
+              <div className="flex flex-col gap-2 max-w-sm">
+                {birthdayStudents.map(student => (
+                  <div key={student.id} className="bg-white/95 backdrop-blur-xs border border-amber-100 rounded-xl p-3 flex items-center gap-3 shadow-xs">
+                    <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center text-amber-800 font-extrabold text-xs shrink-0">
+                      {student.firstName[0]}
+                    </div>
+                    <div>
+                      <p className="text-xs font-extrabold text-slate-800 font-sans">
+                        {student.firstName} {student.middleName ? student.middleName + ' ' : ''}{student.lastName}
+                      </p>
+                      <p className="text-[10px] text-amber-800 font-bold font-sans">
+                        Age: <span className="font-extrabold">{student.age} years old</span> | Class: <span className="font-extrabold">{student.class}</span>
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="bg-white/40 border border-amber-100/40 rounded-xl p-3 text-center md:text-left">
+                <p className="text-xs font-bold text-amber-800 font-sans">No student birthdays today.</p>
+                <p className="text-[10px] text-amber-700/70 mt-0.5 font-sans">We'll show today's celebrants here when their birthday arrives!</p>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Quick Actions Panel (Col span 1) */}
+        <div className="bg-white border border-slate-200 rounded-3xl p-6 flex flex-col justify-between shadow-xs relative overflow-hidden">
+          <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none">
+            <Save size={100} className="text-indigo-600" />
+          </div>
+          <div>
+            <h4 className="text-sm font-extrabold text-slate-850 uppercase tracking-wider flex items-center gap-2">
+              <Sparkles size={16} className="text-indigo-500" />
+              Quick Actions Center
+            </h4>
+            <p className="text-xs text-slate-500 mt-1 font-sans">
+              Save active adjustments or backup the complete school database.
+            </p>
+          </div>
+
+          <div className="flex flex-col sm:flex-row lg:flex-col gap-3 mt-4">
+            {onSaveAll && (
+              <motion.button
+                whileHover={{ scale: 1.01 }}
+                whileTap={{ scale: 0.99 }}
+                onClick={onSaveAll}
+                disabled={isManualSaving}
+                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition cursor-pointer border select-none shadow-xs ${
+                  isManualSaving
+                    ? 'bg-amber-400 text-slate-950 border-amber-300 animate-pulse'
+                    : showSaveSuccess 
+                      ? 'bg-emerald-500 text-white border-emerald-400'
+                      : 'bg-indigo-600 hover:bg-indigo-750 text-white border-indigo-550 active:bg-indigo-850'
+                }`}
+              >
+                {isManualSaving ? (
+                  <div className="w-3.5 h-3.5 border-2 border-slate-900/30 border-t-slate-900 rounded-full animate-spin" />
+                ) : showSaveSuccess ? (
+                  <Check size={14} />
+                ) : (
+                  <Save size={14} />
+                )}
+                <span>
+                  {isManualSaving 
+                    ? "Saving Records..." 
+                    : showSaveSuccess 
+                      ? "Personnel Records Saved!" 
+                      : "Save Personnel Changes"}
+                </span>
+              </motion.button>
+            )}
+
+            <motion.button
+              whileHover={{ scale: 1.01 }}
+              whileTap={{ scale: 0.99 }}
+              onClick={handleExportJSON}
+              className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 border transition text-xs font-bold rounded-xl cursor-pointer shadow-xs ${
+                showJsonSuccess 
+                  ? 'bg-emerald-500 text-white border-emerald-400'
+                  : 'bg-slate-800 border-slate-900 text-white hover:bg-slate-900'
+              }`}
+              title="Download a full JSON data snapshot of all school records"
+            >
+              {showJsonSuccess ? <Check size={14} /> : <FileDown size={14} />}
+              <span>{showJsonSuccess ? "Data Backup Created!" : "Save All Data (.json)"}</span>
+            </motion.button>
+          </div>
+        </div>
       </div>
 
       {/* Quick Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid gap-6" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))' }}>
         <StatCard 
           icon={Users} 
           label="Total Students" 
@@ -418,6 +1231,261 @@ export default function TeacherDashboardTab({
           subtext={calendar.activeTerm}
           color="rose"
         />
+      </div>
+
+      {/* HEADTEACHER & ADMINISTRATIVE QUICK NOTES / STAFF MEMOS */}
+      <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm p-6 space-y-4">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-amber-50 text-amber-600 border border-amber-100">
+              <StickyNote size={22} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-black text-slate-900 uppercase tracking-tight">
+                  Headteacher & Administrative Memos
+                </h3>
+                <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold border border-amber-200 font-mono">
+                  {quickNotes.length} Active
+                </span>
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-100">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Live Sync
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 font-sans mt-0.5">
+                Important announcements, policy updates, and staff directives posted by Headteacher & Management
+              </p>
+            </div>
+          </div>
+
+          {/* Search bar & Filters */}
+          <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+            <div className="relative min-w-[180px] sm:min-w-[220px]">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search memos & directives..."
+                value={noteSearch}
+                onChange={(e) => setNoteSearch(e.target.value)}
+                className="w-full pl-9 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500/30 text-slate-800 font-medium placeholder:text-slate-400"
+              />
+              {noteSearch && (
+                <button
+                  onClick={() => setNoteSearch('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-[10px]"
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+
+            {/* Priority filter selector */}
+            <select
+              value={notePriorityFilter}
+              onChange={(e) => setNotePriorityFilter(e.target.value as any)}
+              className="px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 focus:outline-none cursor-pointer"
+            >
+              <option value="all">All Priorities</option>
+              <option value="urgent">🔴 Urgent</option>
+              <option value="high">🟠 High</option>
+              <option value="medium">🔵 Medium</option>
+              <option value="low">⚪ Low</option>
+            </select>
+
+            {/* Category filter selector */}
+            <select
+              value={noteCategoryFilter}
+              onChange={(e) => setNoteCategoryFilter(e.target.value as any)}
+              className="px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-700 focus:outline-none cursor-pointer"
+            >
+              <option value="all">All Categories</option>
+              <option value="Academic">Academic</option>
+              <option value="Finance">Finance</option>
+              <option value="Personnel">Personnel</option>
+              <option value="Events">Events</option>
+              <option value="Maintenance">Maintenance</option>
+              <option value="General">General</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Note cards grid */}
+        {filteredQuickNotes.length === 0 ? (
+          <div className="p-8 text-center bg-slate-50/70 border border-dashed border-slate-200 rounded-2xl space-y-2">
+            <StickyNote size={28} className="mx-auto text-slate-300" />
+            <p className="text-xs font-bold text-slate-500">No administrative memos match your current filters.</p>
+            {(noteSearch || notePriorityFilter !== 'all' || noteCategoryFilter !== 'all') && (
+              <button
+                onClick={() => {
+                  setNoteSearch('');
+                  setNotePriorityFilter('all');
+                  setNoteCategoryFilter('all');
+                }}
+                className="text-[11px] font-bold text-amber-600 hover:underline cursor-pointer"
+              >
+                Clear note filters
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredQuickNotes.map((note) => {
+              const style = teacherNoteColorStyles[note.color] || teacherNoteColorStyles.amber;
+              const isExpanded = expandedNoteIds.has(note.id);
+              const isLongContent = note.content.length > 150 || note.content.includes('\n');
+              const dueDateObj = getTeacherDueDateStatus(note.dueDate);
+              const DueIcon = dueDateObj?.icon;
+              const currentUser = DbController.getCurrentUser();
+              const teacherKey = teacherProfile.staffId || teacherProfile.id || currentUser?.uid || 'teacher';
+              const isAcked = note.acknowledgedBy?.some(a => a.teacherId === teacherKey);
+
+              return (
+                <motion.div
+                  key={note.id}
+                  layout
+                  initial={{ opacity: 0, scale: 0.96 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ duration: 0.18 }}
+                  className={`relative p-4 rounded-2xl border shadow-xs flex flex-col justify-between space-y-3 ${style.bg} ${style.border} transition-all duration-200`}
+                >
+                  <div className="space-y-2">
+                    {/* Header line: Badges */}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {note.isPinned && (
+                          <span className="px-2 py-0.5 rounded-full bg-amber-500 text-white font-black text-[9px] uppercase tracking-wider flex items-center gap-1 shadow-xs">
+                            <Pin size={10} className="fill-current" /> Pinned
+                          </span>
+                        )}
+                        <span className={`px-2 py-0.5 rounded-full font-bold text-[9.5px] border capitalize ${style.badge}`}>
+                          {note.category || 'General'}
+                        </span>
+                        <span
+                          className={`px-1.5 py-0.5 rounded-md font-extrabold text-[9px] uppercase tracking-wider ${
+                            note.priority === 'urgent'
+                              ? 'bg-rose-500 text-white'
+                              : note.priority === 'high'
+                              ? 'bg-amber-500 text-white'
+                              : note.priority === 'medium'
+                              ? 'bg-blue-500 text-white'
+                              : 'bg-slate-400 text-white'
+                          }`}
+                        >
+                          {note.priority}
+                        </span>
+                        <span className="px-1.5 py-0.5 rounded-md bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300 font-bold text-[9px] border border-indigo-200 dark:border-indigo-800">
+                          {note.targetAudience === 'specific_class'
+                            ? `To: ${note.targetClass || 'Class'}`
+                            : note.targetAudience === 'class_teachers'
+                            ? 'To: Class Teachers'
+                            : 'To: All Staff'}
+                        </span>
+                      </div>
+
+                      {dueDateObj && DueIcon && (
+                        <span className={`px-2 py-0.5 rounded-full text-[9.5px] font-bold border flex items-center gap-1 ${dueDateObj.colorClass}`}>
+                          <DueIcon size={11} />
+                          {dueDateObj.label}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Staff Meeting Notice Callout Box */}
+                    {note.isMeetingNotice && (
+                      <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-[10.5px] space-y-1">
+                        <div className="flex items-center justify-between text-amber-800 dark:text-amber-200 font-black uppercase tracking-wider text-[9.5px]">
+                          <span className="flex items-center gap-1">
+                            <Calendar size={11} className="text-amber-600" /> Staff Meeting Notice
+                          </span>
+                          {note.meetingVenue && (
+                            <span className="flex items-center gap-1">
+                              <MapPin size={10} /> {note.meetingVenue}
+                            </span>
+                          )}
+                        </div>
+                        {(note.meetingDate || note.meetingTime) && (
+                          <p className="font-bold text-amber-900 dark:text-amber-100">
+                            📅 {note.meetingDate || 'Date TBD'} {note.meetingTime ? `at ${note.meetingTime}` : ''}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Note Title */}
+                    <h5 className={`text-sm font-black leading-tight ${style.text}`}>
+                      {note.title}
+                    </h5>
+
+                    {/* Note Content with Markdown */}
+                    <div className="relative">
+                      <motion.div
+                        layout
+                        initial={false}
+                        animate={{ height: !isExpanded && isLongContent ? 68 : 'auto' }}
+                        transition={{ duration: 0.2, ease: 'easeInOut' }}
+                        className="overflow-hidden prose prose-xs max-w-none text-xs text-slate-700 dark:text-slate-300 font-sans leading-relaxed break-words font-medium [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_p]:mb-1 [&_strong]:font-black [&_strong]:text-slate-900 dark:[&_strong]:text-white [&_h3]:font-black [&_h3]:text-xs [&_h3]:mt-1 [&_h3]:mb-0.5 [&_blockquote]:border-l-2 [&_blockquote]:border-amber-400 [&_blockquote]:pl-2 [&_blockquote]:italic [&_code]:bg-white/60 dark:[&_code]:bg-slate-900/60 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:font-mono [&_code]:text-[10px]"
+                      >
+                        <Markdown>{note.content}</Markdown>
+                      </motion.div>
+
+                      {!isExpanded && isLongContent && (
+                        <div className="absolute inset-x-0 bottom-0 h-7 bg-gradient-to-t from-amber-50/90 dark:from-slate-850/90 to-transparent pointer-events-none rounded-b-md" />
+                      )}
+                    </div>
+
+                    {isLongContent && (
+                      <button
+                        onClick={() => toggleNoteExpand(note.id)}
+                        className="mt-0.5 text-[11px] font-bold text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 inline-flex items-center gap-1 cursor-pointer transition"
+                      >
+                        {isExpanded ? (
+                          <>
+                            <ChevronUp size={12} /> Show less
+                          </>
+                        ) : (
+                          <>
+                            <ChevronDown size={12} /> Read full memo
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Note Footer */}
+                  <div className="pt-2 border-t border-slate-200/60 dark:border-slate-700/60 flex flex-col gap-2">
+                    <div className="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400 font-medium">
+                      <span>{note.author ? `Posted by ${note.author}` : 'Headteacher Directive'}</span>
+                      <span className="font-mono text-[9.5px]">
+                        {new Date(note.createdAt).toLocaleDateString(undefined, {
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })}
+                      </span>
+                    </div>
+
+                    {/* Acknowledgment Action / Status */}
+                    <div className="pt-1 flex items-center justify-between">
+                      {isAcked ? (
+                        <span className="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 font-black text-[10px] border border-emerald-200 dark:border-emerald-800 inline-flex items-center gap-1.5 shadow-2xs">
+                          <Check size={12} className="text-emerald-600 dark:text-emerald-400" /> Confirmed & Acknowledged
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => handleAcknowledgeNote(note.id)}
+                          className="w-full py-1.5 px-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-black text-[10.5px] shadow-sm flex items-center justify-center gap-1.5 transition cursor-pointer active:scale-95"
+                        >
+                          <CheckSquare size={13} /> Confirm & Acknowledge Memo
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </motion.div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -495,6 +1563,165 @@ export default function TeacherDashboardTab({
             </div>
           </div>
 
+          {/* Recharts Bar Chart: Student Performance Distribution Across Assigned Classes */}
+          <div id="teacher-performance-distribution-chart" className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+            <div className="p-6 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-xl bg-indigo-50 text-indigo-600">
+                  <BarChart2 size={20} />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900 uppercase tracking-tight">Student Performance Distribution</h3>
+                  <p className="text-xs text-slate-500 font-sans">Academic standing breakdown across assigned classes ({calendar.activeAcademicYear} • {calendar.activeTerm})</p>
+                </div>
+              </div>
+
+              {/* Chart View Toggle Controls */}
+              <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200 shrink-0 self-start sm:self-auto">
+                <button
+                  type="button"
+                  onClick={() => setChartView('bands')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                    chartView === 'bands'
+                      ? 'bg-white text-indigo-600 shadow-xs border border-slate-200'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Layers size={13} /> Performance Tiers
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setChartView('average')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                    chartView === 'average'
+                      ? 'bg-white text-indigo-600 shadow-xs border border-slate-200'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Award size={13} /> Class Averages
+                </button>
+              </div>
+            </div>
+
+            <div className="p-6">
+              {assignedClasses.length === 0 ? (
+                <div className="py-12 text-center text-slate-400 space-y-2">
+                  <AlertCircle size={28} className="mx-auto text-slate-300" />
+                  <p className="text-xs font-bold text-slate-600">No Assigned Classes Found</p>
+                  <p className="text-[11px]">Performance distribution charts will render here once classes are assigned.</p>
+                </div>
+              ) : performanceChartData.every(d => d.assessedStudents === 0) ? (
+                <div className="py-12 text-center text-slate-400 space-y-2 bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
+                  <GraduationCap size={28} className="mx-auto text-slate-300" />
+                  <p className="text-xs font-bold text-slate-700">No Assessment Data Logged Yet</p>
+                  <p className="text-[11px] text-slate-500 max-w-sm mx-auto font-sans">
+                    Grade assessments under the <button onClick={() => onNavigate('assessments')} className="text-indigo-600 underline font-bold cursor-pointer">Marks Input Sheet</button> to generate live performance distributions.
+                  </p>
+                </div>
+              ) : (
+                <div>
+                  <div className="h-72 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={performanceChartData} margin={{ top: 10, right: 10, left: -20, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                        <XAxis dataKey="class" tick={{ fill: '#64748b', fontSize: 11, fontWeight: 700 }} axisLine={false} tickLine={false} />
+                        <YAxis 
+                          tick={{ fill: '#64748b', fontSize: 11 }} 
+                          axisLine={false} 
+                          tickLine={false}
+                          domain={chartView === 'average' ? [0, 100] : ['auto', 'auto']}
+                          unit={chartView === 'average' ? '%' : ''}
+                        />
+                        <Tooltip 
+                          content={({ active, payload, label }: any) => {
+                            if (active && payload && payload.length) {
+                              return (
+                                <div className="bg-slate-900/95 text-white p-3 rounded-xl shadow-xl border border-slate-700/80 text-xs backdrop-blur-md space-y-1.5 min-w-[170px]">
+                                  <p className="font-extrabold text-amber-400 uppercase tracking-wider font-mono text-[11px] pb-1 border-b border-slate-800">
+                                    Class: {label}
+                                  </p>
+                                  {payload.map((entry: any, index: number) => (
+                                    <div key={`item-${index}`} className="flex items-center justify-between gap-4 font-sans text-[11px]">
+                                      <span className="flex items-center gap-1.5 font-medium" style={{ color: entry.color || entry.fill }}>
+                                        <span className="w-2 h-2 rounded-full inline-block" style={{ backgroundColor: entry.color || entry.fill }} />
+                                        {entry.name}:
+                                      </span>
+                                      <span className="font-black font-mono">{entry.value}{entry.name === 'Class Average' ? '%' : ' Students'}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              );
+                            }
+                            return null;
+                          }}
+                        />
+                        <Legend 
+                          wrapperStyle={{ paddingTop: '15px', fontSize: '11px', fontWeight: 600 }} 
+                          iconType="circle"
+                        />
+                        {chartView === 'bands' ? (
+                          <>
+                            <Bar dataKey="excellent" name="Excellent (80-100%)" fill="#10b981" radius={[4, 4, 0, 0]} maxBarSize={36} />
+                            <Bar dataKey="proficient" name="Proficient (60-79%)" fill="#6366f1" radius={[4, 4, 0, 0]} maxBarSize={36} />
+                            <Bar dataKey="developing" name="Developing (40-59%)" fill="#f59e0b" radius={[4, 4, 0, 0]} maxBarSize={36} />
+                            <Bar dataKey="needsSupport" name="Needs Support (<40%)" fill="#f43f5e" radius={[4, 4, 0, 0]} maxBarSize={36} />
+                          </>
+                        ) : (
+                          <Bar dataKey="average" name="Class Average" radius={[6, 6, 0, 0]} maxBarSize={48}>
+                            {performanceChartData.map((entry, index) => (
+                              <Cell 
+                                key={`cell-${index}`} 
+                                fill={
+                                  entry.average >= 75 ? '#10b981' :
+                                  entry.average >= 60 ? '#6366f1' :
+                                  entry.average >= 40 ? '#f59e0b' : '#f43f5e'
+                                } 
+                              />
+                            ))}
+                          </Bar>
+                        )}
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* Summary Breakdown Pills */}
+                  <div className="mt-4 pt-4 border-t border-slate-100 grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+                    <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase block font-sans">Total Assessed</span>
+                      <span className="text-sm font-black text-slate-800">
+                        {performanceChartData.reduce((acc, curr) => acc + curr.assessedStudents, 0)} Students
+                      </span>
+                    </div>
+                    <div className="bg-emerald-50 p-2.5 rounded-xl border border-emerald-100">
+                      <span className="text-[10px] font-bold text-emerald-700 uppercase block font-sans">Excellent Tiers</span>
+                      <span className="text-sm font-black text-emerald-800">
+                        {performanceChartData.reduce((acc, curr) => acc + curr.excellent, 0)}
+                      </span>
+                    </div>
+                    <div className="bg-indigo-50 p-2.5 rounded-xl border border-indigo-100">
+                      <span className="text-[10px] font-bold text-indigo-700 uppercase block font-sans">Proficient Tiers</span>
+                      <span className="text-sm font-black text-indigo-800">
+                        {performanceChartData.reduce((acc, curr) => acc + curr.proficient, 0)}
+                      </span>
+                    </div>
+                    <div className="bg-rose-50 p-2.5 rounded-xl border border-rose-100">
+                      <span className="text-[10px] font-bold text-rose-700 uppercase block font-sans">Needs Support</span>
+                      <span className="text-sm font-black text-rose-800">
+                        {performanceChartData.reduce((acc, curr) => acc + curr.needsSupport, 0)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <AverageImprovementChart 
+            assessments={assessments} 
+            calendar={calendar} 
+            assignedClasses={assignedClasses} 
+          />
+
           {/* Recently Recorded Attendance Summary */}
           <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
             <div className="p-6 border-b border-slate-100">
@@ -539,15 +1766,26 @@ export default function TeacherDashboardTab({
               <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
                 <Clock size={14} className="text-amber-400" /> Upcoming Tasks
               </h3>
+              <button
+                onClick={() => {
+                  setNewTaskTitle('');
+                  setNewTaskDescription('');
+                  setShowAddTaskModal(true);
+                }}
+                className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition cursor-pointer"
+                title="Add custom task"
+              >
+                <Plus size={16} />
+              </button>
             </div>
             <div className="divide-y divide-slate-800">
-              {upcomingTasks.map((task, idx) => (
+              {allTasks.map((task, idx) => (
                 <div 
                   key={task.id} 
-                  className="p-5 hover:bg-slate-800/50 transition-colors cursor-pointer group"
+                  className="p-5 hover:bg-slate-800/50 transition-colors cursor-pointer group flex items-center"
                   onClick={task.action}
                 >
-                  <div className="flex gap-4">
+                  <div className="flex gap-4 flex-1">
                     <div className={`mt-1 p-2 rounded-lg shrink-0 ${
                       task.priority === 'critical' ? 'bg-rose-500/20 text-rose-400' :
                       task.priority === 'high' ? 'bg-amber-500/20 text-amber-400' :
@@ -564,11 +1802,33 @@ export default function TeacherDashboardTab({
                       </div>
                       <p className="text-xs text-slate-500 leading-relaxed font-sans">{task.description}</p>
                     </div>
-                    <ArrowRight size={14} className="ml-auto text-slate-700 group-hover:text-white group-hover:translate-x-1 transition-all self-center" />
                   </div>
+                  {task.isCustom ? (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (window.confirm("Archive this task?")) {
+                          const existingTask = DbController.getTasks().find(t => t.id === task.id);
+                          if (existingTask) {
+                            existingTask.isArchived = true;
+                            existingTask.archivedAt = new Date().toISOString();
+                            DbController.saveTask(existingTask);
+                            setCustomTasks(DbController.getTasks().filter(t => !t.isArchived));
+                            window.dispatchEvent(new CustomEvent('app-toast', { detail: { text: 'Task archived successfully.', type: 'success' } }));
+                          }
+                        }
+                      }}
+                      className="opacity-0 group-hover:opacity-100 p-2 text-slate-500 hover:bg-slate-700 hover:text-white rounded-lg transition-all"
+                      title="Archive task"
+                    >
+                      <Archive size={14} />
+                    </button>
+                  ) : (
+                    <ArrowRight size={14} className="text-slate-700 group-hover:text-white group-hover:translate-x-1 transition-all" />
+                  )}
                 </div>
               ))}
-              {upcomingTasks.length === 0 && (
+              {allTasks.length === 0 && (
                 <div className="p-10 text-center space-y-3">
                   <div className="mx-auto w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center text-slate-600">
                     <CheckCircle size={24} />
@@ -633,7 +1893,7 @@ export default function TeacherDashboardTab({
     </motion.div>
 
     {/* Floating Quick Actions */}
-    <div className="fixed bottom-8 right-8 z-50">
+    <div className="fixed bottom-4 right-4 sm:bottom-8 sm:right-8 z-50">
         <AnimatePresence>
           {isQuickActionsOpen && (
             <div className="absolute bottom-20 right-0 space-y-3 flex flex-col items-end">
@@ -654,7 +1914,7 @@ export default function TeacherDashboardTab({
                   }}
                   className="flex items-center gap-3 group"
                 >
-                  <span className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity shadow-xl">
+                  <span className="px-3 py-1.5 rounded-lg bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity shadow-xl whitespace-nowrap">
                     {action.label}
                   </span>
                   <div className={`p-4 rounded-2xl ${action.color} text-white shadow-2xl hover:scale-110 transition-transform`}>
@@ -784,7 +2044,7 @@ export default function TeacherDashboardTab({
                 {quickActionModal === 'behavior' && (
                   <div className="space-y-1.5">
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Note Details</label>
-                    <textarea 
+                    <SmartTextarea 
                       required 
                       value={qaBehaviorContent} 
                       onChange={e => setQaBehaviorContent(e.target.value)}
@@ -807,6 +2067,84 @@ export default function TeacherDashboardTab({
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showAddTaskModal && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-100"
+            >
+              <div className="p-4 border-b bg-indigo-50 border-indigo-100 text-indigo-900 flex justify-between items-center">
+                <h3 className="font-black text-sm uppercase tracking-widest flex items-center gap-2">
+                  <Plus size={16} className="text-indigo-600" /> Add Custom Task
+                </h3>
+                <button onClick={() => setShowAddTaskModal(false)} className="p-1 hover:bg-black/5 rounded-lg transition">
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="p-5 space-y-4">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Task Title</label>
+                  <input
+                    type="text"
+                    required
+                    value={newTaskTitle}
+                    onChange={(e) => setNewTaskTitle(e.target.value)}
+                    className="w-full text-sm font-bold text-slate-700 bg-slate-50 border border-slate-200 rounded-xl p-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                    placeholder="e.g. Check class project submissions"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Task Description</label>
+                  <SmartTextarea
+                    required
+                    value={newTaskDescription}
+                    onChange={(e) => setNewTaskDescription(e.target.value)}
+                    className="w-full h-24 resize-none text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
+                    placeholder="Provide detailed notes about the task..."
+                  />
+                </div>
+
+                <div className="pt-2 flex gap-3">
+                  <button type="button" onClick={() => setShowAddTaskModal(false)} className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition">
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!newTaskTitle || !newTaskDescription) {
+                        alert('Please fill out both title and description.');
+                        return;
+                      }
+                      const newTask: CustomTask = {
+                        id: `task_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+                        title: newTaskTitle,
+                        description: newTaskDescription,
+                        priority: 'medium',
+                        isCompleted: false,
+                        isArchived: false,
+                        createdAt: new Date().toISOString(),
+                        createdBy: teacherProfile.id
+                      };
+                      DbController.saveTask(newTask);
+                      setCustomTasks(DbController.getTasks().filter(t => !t.isArchived));
+                      setShowAddTaskModal(false);
+                    }}
+                    className="flex-1 py-2.5 text-white rounded-xl text-xs font-bold transition bg-indigo-600 hover:bg-indigo-700 cursor-pointer"
+                  >
+                    Add Task
+                  </button>
+                </div>
+              </div>
             </motion.div>
           </div>
         )}

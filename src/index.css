@@ -16,8 +16,26 @@
 /* Print CSS Styles to support beautiful report card and profile printouts */
 @media print {
   @page {
-    size: A4 portrait;
-    margin: 0; /* Disables browser-native margins, headers, and footers */
+    size: A4 portrait !important;
+    margin: 0 !important; /* Disables browser-native margins, headers, and footers */
+  }
+
+  @page landscape-page {
+    size: A4 landscape;
+    margin: 0 !important;
+  }
+
+  @page dl-envelope-page {
+    size: 220mm 110mm landscape;
+    margin: 0 !important;
+  }
+
+  html, body, #root, #root > div {
+    height: auto !important;
+    min-height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    position: static !important;
   }
 
   body {
@@ -36,19 +54,65 @@
     overflow: hidden !important;
   }
 
-  /* Style our beautiful print sheets with proper margins built into the container */
-  .report-card-print-container {
-    position: relative !important;
+  /* Enforce exact A4 Portrait layout and fit for Student Report Cards */
+  .report-card-print-container,
+  .bulk-report-card-print-page {
+    width: 210mm !important;
+    min-height: 297mm !important;
+    height: auto !important;
+    max-height: none !important;
     box-sizing: border-box !important;
-    page-break-inside: avoid !important;
+    position: relative !important;
     margin: 0 !important;
-    padding: 10mm 10mm 10mm 10mm !important;
+    padding: 6mm 10mm 6mm 10mm !important;
+    overflow: visible !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: space-between !important;
+    background: #ffffff !important;
+    page-break-inside: avoid !important;
+    page-break-after: always !important;
+    break-after: page !important;
+  }
+
+  .report-card-print-container,
+  .report-card-print-container *,
+  .bulk-report-card-print-page,
+  .bulk-report-card-print-page * {
+    font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif !important;
+  }
+
+  .report-card-print-container:first-of-type,
+  .bulk-report-card-print-page:first-of-type {
+    page-break-before: avoid !important;
+  }
+
+  /* Ensure watermarks are centered on every page when printing globally */
+  .watermark-overlay {
+    position: absolute !important;
+    top: 50% !important;
+    left: 50% !important;
+    transform: translate(-50%, -50%) !important;
+    width: 100% !important;
+    height: 100% !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    z-index: 0 !important;
+    pointer-events: none !important;
+    opacity: 0.055 !important;
   }
 
   .no-print,
-  .no-print * {
+  .no-print *,
+  .setup-guide,
+  .setup-guide *,
+  .print-setup-guide,
+  .print-setup-guide * {
     display: none !important;
     visibility: hidden !important;
+    height: 0 !important;
+    overflow: hidden !important;
   }
 
   .print-only {
@@ -65,6 +129,456 @@
 
   .border {
     border: 1px solid #1e293b !important;
+  }
+
+  /* Elegantly reduce thick double borders on print */
+  .report-card-print-container .border-\[8px\],
+  .report-card-print-container .border-\[10px\],
+  .bulk-report-card-print-page .border-\[8px\] {
+    border-width: 4px !important;
+  }
+
+  .report-card-print-container h2,
+  .bulk-report-card-print-page h2 {
+    font-family: 'Space Grotesk', 'Inter', sans-serif !important;
+    font-size: 12pt !important;
+    margin-bottom: 1px !important;
+    line-height: 1.1 !important;
+  }
+
+  .report-card-print-container p,
+  .bulk-report-card-print-page p {
+    font-family: 'Helvetica Neue', Arial, sans-serif !important;
+    font-size: 8.5pt !important;
+    line-height: 1.25 !important;
+    margin-top: 0.5px !important;
+    margin-bottom: 0.5px !important;
+  }
+
+  /* Shrink the professional letterhead bottom padding and spacing */
+  .report-card-print-container .border-b-2,
+  .bulk-report-card-print-page .border-b-2 {
+    padding-bottom: 1.5mm !important;
+    margin-bottom: 2mm !important;
+  }
+
+  /* Shrink student passport size & school logos */
+  .report-card-print-container img[alt="School Logo"],
+  .bulk-report-card-print-page img[alt="School Logo"],
+  .report-card-print-container img[alt="Logo"],
+  .bulk-report-card-print-page img[alt="Logo"] {
+    max-height: 12mm !important;
+    width: auto !important;
+  }
+
+  .report-card-print-container img.student-report-photo,
+  .bulk-report-card-print-page img.student-report-photo,
+  .report-card-print-container .student-report-photo-placeholder,
+  .bulk-report-card-print-page .student-report-photo-placeholder {
+    width: 12mm !important;
+    height: 12mm !important;
+  }
+
+  .report-card-print-container .grid,
+  .bulk-report-card-print-page .grid {
+    gap: 1.5mm !important;
+    margin-top: 1.5mm !important;
+    margin-bottom: 1.5mm !important;
+  }
+
+  /* Compact student personal details block */
+  .report-card-print-container .bg-slate-50.p-5,
+  .bulk-report-card-print-page .bg-slate-50.p-5,
+  .report-card-print-container .bg-slate-50.p-4,
+  .bulk-report-card-print-page .bg-slate-50.p-4,
+  .report-card-print-container .grid-cols-2.gap-3,
+  .bulk-report-card-print-page .grid-cols-2.gap-3 {
+    padding: 2mm !important;
+    gap: 1.5mm !important;
+    margin-bottom: 2mm !important;
+  }
+
+  /* Substantial shrinking of table cells and text */
+  .report-card-print-container table,
+  .bulk-report-card-print-page table {
+    margin-top: 1.5mm !important;
+    margin-bottom: 1.5mm !important;
+    font-size: 7.5pt !important;
+  }
+
+  .report-card-print-container th,
+  .report-card-print-container td,
+  .bulk-report-card-print-page th,
+  .bulk-report-card-print-page td {
+    padding: 0.5mm 1.5mm !important;
+    font-size: 7.5pt !important;
+    line-height: 1.05 !important;
+  }
+
+  .report-card-print-container .grid-cols-2.md\:grid-cols-4,
+  .bulk-report-card-print-page .grid-cols-2.md\:grid-cols-4,
+  .report-card-print-container .grid-cols-4,
+  .bulk-report-card-print-page .grid-cols-4 {
+    margin-top: 1.5mm !important;
+    margin-bottom: 1.5mm !important;
+    gap: 1.5mm !important;
+  }
+
+  /* Compact ledger financial summary */
+  .report-card-print-container .bg-slate-50\/50.p-3,
+  .bulk-report-card-print-page .bg-slate-50\/50.p-3,
+  .report-card-print-container .bg-slate-50.p-3,
+  .bulk-report-card-print-page .bg-slate-50.p-3 {
+    padding: 1mm !important;
+    margin-top: 1.5mm !important;
+  }
+
+  /* Compact Remarks section */
+  .report-card-print-container p.italic,
+  .bulk-report-card-print-page p.italic {
+    font-size: 8.5pt !important;
+    line-height: 1.25 !important;
+    min-height: 10mm !important;
+    padding: 1.5mm !important;
+    margin-top: 0.5mm !important;
+  }
+
+  /* Prevent page-breaks splitting report card sub-sections (remarks & signatures, financial ledger, rows, student info blocks) */
+  .report-card-remarks-signatures,
+  .report-card-financial-ledger,
+  .report-card-student-info,
+  .report-card-aggregates,
+  .report-card-print-container tr,
+  .bulk-report-card-print-page tr,
+  .report-card-print-container .grid-cols-2,
+  .bulk-report-card-print-page .grid-cols-2 {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  /* Compact signatures stamp & seal space */
+  .report-card-print-container .relative.w-full.h-8,
+  .bulk-report-card-print-page .relative.w-full.h-8,
+  .report-card-print-container .relative.w-52.h-16,
+  .bulk-report-card-print-page .relative.w-52.h-16 {
+    height: 8mm !important;
+  }
+
+  .report-card-print-container img[alt="School Stamp"],
+  .bulk-report-card-print-page img[alt="School Stamp"],
+  .report-card-print-container img[alt="Stamp"],
+  .bulk-report-card-print-page img[alt="Stamp"] {
+    max-height: 8mm !important;
+    width: auto !important;
+  }
+
+  .report-card-print-container img[alt="Headteacher Signature"],
+  .bulk-report-card-print-page img[alt="Headteacher Signature"],
+  .report-card-print-container img[alt="Signature"],
+  .bulk-report-card-print-page img[alt="Signature"] {
+    max-height: 5mm !important;
+    width: auto !important;
+  }
+
+  /* Dynamic CSS-Based Autofit Scaling based on subject counts */
+  
+  /* Moderate (9-12 subjects) */
+  .subject-count-moderate {
+    padding: 5mm 8mm 5mm 8mm !important;
+  }
+  .subject-count-moderate h2 {
+    font-size: 11pt !important;
+  }
+  .subject-count-moderate p {
+    font-size: 7pt !important;
+  }
+  .subject-count-moderate .border-b-2 {
+    padding-bottom: 1.2mm !important;
+    margin-bottom: 1.5mm !important;
+  }
+  .subject-count-moderate table {
+    margin-top: 1.2mm !important;
+    margin-bottom: 1.2mm !important;
+    font-size: 7.2pt !important;
+  }
+  .subject-count-moderate th,
+  .subject-count-moderate td {
+    padding: 0.4mm 1.2mm !important;
+    font-size: 7.2pt !important;
+  }
+  .subject-count-moderate .grid {
+    gap: 1.2mm !important;
+    margin-top: 1.2mm !important;
+    margin-bottom: 1.2mm !important;
+  }
+  .subject-count-moderate .bg-slate-50.p-5,
+  .subject-count-moderate .bg-slate-50.p-4 {
+    padding: 1.5mm !important;
+    margin-bottom: 1.5mm !important;
+  }
+  .subject-count-moderate p.italic {
+    font-size: 7.2pt !important;
+    min-height: 8mm !important;
+    padding: 1.2mm !important;
+  }
+  .subject-count-moderate .relative.w-full.h-8,
+  .subject-count-moderate .relative.w-52.h-16 {
+    height: 6mm !important;
+  }
+
+  /* High (13-16 subjects) */
+  .subject-count-high {
+    padding: 4mm 7mm 4mm 7mm !important;
+  }
+  .subject-count-high h2 {
+    font-size: 10pt !important;
+  }
+  .subject-count-high p {
+    font-size: 6.8pt !important;
+  }
+  .subject-count-high .border-b-2 {
+    padding-bottom: 1mm !important;
+    margin-bottom: 1.2mm !important;
+  }
+  .subject-count-high img[alt="School Logo"],
+  .subject-count-high img[alt="Logo"] {
+    max-height: 10mm !important;
+  }
+  .subject-count-high img.student-report-photo,
+  .subject-count-high .student-report-photo-placeholder {
+    width: 10mm !important;
+    height: 10mm !important;
+  }
+  .subject-count-high table {
+    margin-top: 1mm !important;
+    margin-bottom: 1mm !important;
+    font-size: 6.8pt !important;
+  }
+  .subject-count-high th,
+  .subject-count-high td {
+    padding: 0.3mm 1mm !important;
+    font-size: 6.8pt !important;
+  }
+  .subject-count-high .grid {
+    gap: 1mm !important;
+    margin-top: 1mm !important;
+    margin-bottom: 1mm !important;
+  }
+  .subject-count-high .bg-slate-50.p-5,
+  .subject-count-high .bg-slate-50.p-4 {
+    padding: 1.2mm !important;
+    margin-bottom: 1.2mm !important;
+  }
+  .subject-count-high p.italic {
+    font-size: 6.8pt !important;
+    min-height: 6mm !important;
+    padding: 1mm !important;
+  }
+  .subject-count-high .relative.w-full.h-8,
+  .subject-count-high .relative.w-52.h-16 {
+    height: 5mm !important;
+  }
+  .subject-count-high img[alt="School Stamp"],
+  .subject-count-high img[alt="Stamp"] {
+    max-height: 6mm !important;
+  }
+  .subject-count-high img[alt="Headteacher Signature"],
+  .subject-count-high img[alt="Signature"] {
+    max-height: 4mm !important;
+  }
+
+  /* Extra High (17-20 subjects) */
+  .subject-count-extra-high {
+    padding: 3mm 6mm 3mm 6mm !important;
+  }
+  .subject-count-extra-high h2 {
+    font-size: 9pt !important;
+  }
+  .subject-count-extra-high p {
+    font-size: 6.5pt !important;
+  }
+  .subject-count-extra-high .border-b-2 {
+    padding-bottom: 0.8mm !important;
+    margin-bottom: 1mm !important;
+  }
+  .subject-count-extra-high img[alt="School Logo"],
+  .subject-count-extra-high img[alt="Logo"] {
+    max-height: 8mm !important;
+  }
+  .subject-count-extra-high img.student-report-photo,
+  .subject-count-extra-high .student-report-photo-placeholder {
+    width: 8mm !important;
+    height: 8mm !important;
+  }
+  .subject-count-extra-high table {
+    margin-top: 0.8mm !important;
+    margin-bottom: 0.8mm !important;
+    font-size: 6.2pt !important;
+  }
+  .subject-count-extra-high th,
+  .subject-count-extra-high td {
+    padding: 0.2mm 0.8mm !important;
+    font-size: 6.2pt !important;
+  }
+  .subject-count-extra-high .grid {
+    gap: 0.8mm !important;
+    margin-top: 0.8mm !important;
+    margin-bottom: 0.8mm !important;
+  }
+  .subject-count-extra-high .bg-slate-50.p-5,
+  .subject-count-extra-high .bg-slate-50.p-4 {
+    padding: 1mm !important;
+    margin-bottom: 1mm !important;
+  }
+  .subject-count-extra-high p.italic {
+    font-size: 6.2pt !important;
+    min-height: 5mm !important;
+    padding: 0.8mm !important;
+  }
+  .subject-count-extra-high .relative.w-full.h-8,
+  .subject-count-extra-high .relative.w-52.h-16 {
+    height: 4mm !important;
+  }
+  .subject-count-extra-high img[alt="School Stamp"],
+  .subject-count-extra-high img[alt="Stamp"] {
+    max-height: 5mm !important;
+  }
+  .subject-count-extra-high img[alt="Headteacher Signature"],
+  .subject-count-extra-high img[alt="Signature"] {
+    max-height: 3mm !important;
+  }
+
+  /* Extreme (21-24 subjects) */
+  .subject-count-extreme {
+    padding: 2.2mm 5mm 2.2mm 5mm !important;
+  }
+  .subject-count-extreme h2 {
+    font-size: 8pt !important;
+  }
+  .subject-count-extreme p {
+    font-size: 6pt !important;
+  }
+  .subject-count-extreme .border-b-2 {
+    padding-bottom: 0.6mm !important;
+    margin-bottom: 0.8mm !important;
+  }
+  .subject-count-extreme img[alt="School Logo"],
+  .subject-count-extreme img[alt="Logo"] {
+    max-height: 7mm !important;
+  }
+  .subject-count-extreme img.student-report-photo,
+  .subject-count-extreme .student-report-photo-placeholder {
+    width: 7mm !important;
+    height: 7mm !important;
+  }
+  .subject-count-extreme table {
+    margin-top: 0.6mm !important;
+    margin-bottom: 0.6mm !important;
+    font-size: 5.6pt !important;
+  }
+  .subject-count-extreme th,
+  .subject-count-extreme td {
+    padding: 0.15mm 0.6mm !important;
+    font-size: 5.6pt !important;
+  }
+  .subject-count-extreme .grid {
+    gap: 0.6mm !important;
+    margin-top: 0.6mm !important;
+    margin-bottom: 0.6mm !important;
+  }
+  .subject-count-extreme .bg-slate-50.p-5,
+  .subject-count-extreme .bg-slate-50.p-4 {
+    padding: 0.8mm !important;
+    margin-bottom: 0.8mm !important;
+  }
+  .subject-count-extreme p.italic {
+    font-size: 5.6pt !important;
+    min-height: 4mm !important;
+    padding: 0.6mm !important;
+  }
+  .subject-count-extreme .relative.w-full.h-8,
+  .subject-count-extreme .relative.w-52.h-16 {
+    height: 3.5mm !important;
+  }
+  .subject-count-extreme img[alt="School Stamp"],
+  .subject-count-extreme img[alt="Stamp"] {
+    max-height: 4mm !important;
+  }
+  .subject-count-extreme img[alt="Headteacher Signature"],
+  .subject-count-extreme img[alt="Signature"] {
+    max-height: 2.5mm !important;
+  }
+
+  /* Critical (> 24 subjects) */
+  .subject-count-critical {
+    padding: 1.5mm 4mm 1.5mm 4mm !important;
+  }
+  .subject-count-critical h2 {
+    font-size: 7.5pt !important;
+  }
+  .subject-count-critical p {
+    font-size: 5.5pt !important;
+  }
+  .subject-count-critical .border-b-2 {
+    padding-bottom: 0.4mm !important;
+    margin-bottom: 0.6mm !important;
+  }
+  .subject-count-critical img[alt="School Logo"],
+  .subject-count-critical img[alt="Logo"] {
+    max-height: 6mm !important;
+  }
+  .subject-count-critical img.student-report-photo,
+  .subject-count-critical .student-report-photo-placeholder {
+    width: 6mm !important;
+    height: 6mm !important;
+  }
+  .subject-count-critical table {
+    margin-top: 0.4mm !important;
+    margin-bottom: 0.4mm !important;
+    font-size: 5pt !important;
+  }
+  .subject-count-critical th,
+  .subject-count-critical td {
+    padding: 0.1mm 0.4mm !important;
+    font-size: 5pt !important;
+  }
+  .subject-count-critical .grid {
+    gap: 0.4mm !important;
+    margin-top: 0.4mm !important;
+    margin-bottom: 0.4mm !important;
+  }
+  .subject-count-critical .bg-slate-50.p-5,
+  .subject-count-critical .bg-slate-50.p-4 {
+    padding: 0.5mm !important;
+    margin-bottom: 0.5mm !important;
+  }
+  .subject-count-critical p.italic {
+    font-size: 5pt !important;
+    min-height: 3mm !important;
+    padding: 0.4mm !important;
+  }
+  .subject-count-critical .relative.w-full.h-8,
+  .subject-count-critical .relative.w-52.h-16 {
+    height: 3mm !important;
+  }
+  .subject-count-critical img[alt="School Stamp"],
+  .subject-count-critical img[alt="Stamp"] {
+    max-height: 3mm !important;
+  }
+  .subject-count-critical img[alt="Headteacher Signature"],
+  .subject-count-critical img[alt="Signature"] {
+    max-height: 2mm !important;
+  }
+
+  /* Disable absolute elements or background overlay noise */
+  .report-card-print-container .shadow-2xl,
+  .bulk-report-card-print-page .shadow-2xl {
+    box-shadow: none !important;
+  }
+
+  * {
+    overflow: visible !important;
+    box-shadow: none !important;
   }
 }
 
@@ -356,21 +870,28 @@
   html, body, #root, [class*="theme-"], [class*="theme-"] #root {
     background-color: #ffffff !important;
     background: #ffffff !important;
-    color: #000000 !important;
     margin: 0 !important;
     padding: 0 !important;
     width: 100% !important;
     height: auto !important;
-    font-family: Georgia, 'Times New Roman', Times, serif !important;
+    font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif !important;
+  }
+  
+  .print-document {
+    width: 210mm !important;
+    min-height: 297mm !important;
+    padding: 15mm !important;
+    background: white !important;
+    margin: 0 auto !important;
+    box-sizing: border-box !important;
   }
   
   /* Universal print reset for maximum clarity and ink efficiency */
   * {
-    background: transparent !important;
-    background-color: transparent !important;
-    color: #000000 !important;
     box-shadow: none !important;
     text-shadow: none !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
   }
 
   /* Adjust typography to prevent A4 overflow for text-heavy elements */
@@ -386,10 +907,7 @@
   [class*="theme-"] card,
   [class*="theme-"] form,
   [class*="theme-"] table {
-    background-color: transparent !important;
-    background: transparent !important;
-    color: #000000 !important;
-    border-color: #334155 !important;
+    border-color: #e2e8f0 !important;
     box-shadow: none !important;
     text-shadow: none !important;
     backdrop-filter: none !important;
@@ -410,8 +928,7 @@
   [class*="theme-"] div,
   [class*="theme-"] label,
   [class*="theme-"] font {
-    color: #000000 !important;
-    font-family: Georgia, 'Times New Roman', Times, serif !important;
+    font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif !important;
   }
 
   /* Hide ALL elements in the DOM by default when printing */
@@ -419,19 +936,23 @@
     visibility: hidden !important;
   }
 
-  /* Force bypass the no-print and layout constraints on parent wraps of active print targets */
-  div:has(.report-card-print-container),
-  div:has(.bulk-report-card-print-page),
-  div:has(#students-roster-preview-card),
-  div:has(#assessment-roster-preview-landscape),
-  div:has(#fee-receipt-print-area),
-  div:has(#fee-ledger-print-area),
-  div:has(#fees-reminder-notice-canvas),
-  div:has(#school-profile-print-area),
-  div:has(#school-profile-preview-card),
-  div:has(#student-id-card-print-area),
-  div:has(#teacher-registry-print-area),
-  div:has(#emis-census-print-area) {
+  /* Force bypass the no-print and layout constraints on parent wraps of active print targets when NOT using PrintPreviewModal wrapper */
+  body:not(.sms-printing-active) div:not(.no-print):not([aria-hidden="true"]):has(.report-card-print-container),
+  body:not(.sms-printing-active) div:not(.no-print):not([aria-hidden="true"]):has(.bulk-report-card-print-page),
+  body:not(.sms-printing-active) div:not(.no-print):not([aria-hidden="true"]):has(#students-roster-preview-card),
+  body:not(.sms-printing-active) div:not(.no-print):not([aria-hidden="true"]):has(#assessment-roster-preview-landscape),
+  body:not(.sms-printing-active) div:not(.no-print):not([aria-hidden="true"]):has(#fee-receipt-print-area),
+  body:not(.sms-printing-active) div:not(.no-print):not([aria-hidden="true"]):has(#fee-ledger-print-area),
+  body:not(.sms-printing-active) div:not(.no-print):not([aria-hidden="true"]):has(#fees-reminder-notice-canvas),
+  body:not(.sms-printing-active) div:not(.no-print):not([aria-hidden="true"]):has(#school-profile-print-area),
+  body:not(.sms-printing-active) div:not(.no-print):not([aria-hidden="true"]):has(#school-profile-preview-card),
+  body:not(.sms-printing-active) div:not(.no-print):not([aria-hidden="true"]):has(#student-id-card-print-area),
+  body:not(.sms-printing-active) div:not(.no-print):not([aria-hidden="true"]):has(#teacher-id-card-print-area),
+  body:not(.sms-printing-active) div:not(.no-print):not([aria-hidden="true"]):has(#bulk-student-id-cards-print-area),
+  body:not(.sms-printing-active) div:not(.no-print):not([aria-hidden="true"]):has(#bulk-teacher-qr-print-area),
+  body:not(.sms-printing-active) div:not(.no-print):not([aria-hidden="true"]):has(#teacher-registry-print-area),
+  body:not(.sms-printing-active) div:not(.no-print):not([aria-hidden="true"]):has(#emis-census-print-area),
+  body:not(.sms-printing-active) div:not(.no-print):not([aria-hidden="true"]):has(.transcript-print-page) {
     display: block !important;
     visibility: visible !important;
     opacity: 1 !important;
@@ -441,25 +962,54 @@
     box-shadow: none !important;
   }
 
+  /* When sms-printing-active is set, strictly hide everything in #root so only #sms-print-section prints */
+  body.sms-printing-active #root,
+  body.sms-printing-active #root * {
+    display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    overflow: hidden !important;
+  }
+
   /* SELECTIVELY show the active print target and its children */
+  #sms-print-section,
+  #sms-print-section *,
   .report-card-print-container,
   .report-card-print-container *,
   .bulk-report-card-print-page,
   .bulk-report-card-print-page *,
+  .transcript-print-page,
+  .transcript-print-page *,
   #students-roster-preview-card,
   #students-roster-preview-card *,
   #assessment-roster-preview-landscape,
   #assessment-roster-preview-landscape *,
+  #fee-receipt-print-area,
+  #fee-receipt-print-area *,
   #fee-ledger-print-area,
   #fee-ledger-print-area *,
+  #bulk-receipts-print-area,
+  #bulk-receipts-print-area *,
+  .bulk-receipt-item,
+  .bulk-receipt-item *,
   #fees-reminder-notice-canvas,
   #fees-reminder-notice-canvas *,
+  #fees-invoice-notice-canvas,
+  #fees-invoice-notice-canvas *,
+  #report-center-preview-content,
+  #report-center-preview-content *,
   #school-profile-print-area,
   #school-profile-print-area *,
   #school-profile-preview-card,
   #school-profile-preview-card *,
   #student-id-card-print-area,
   #student-id-card-print-area *,
+  #teacher-id-card-print-area,
+  #teacher-id-card-print-area *,
+  #bulk-student-id-cards-print-area,
+  #bulk-student-id-cards-print-area *,
+  #bulk-teacher-qr-print-area,
+  #bulk-teacher-qr-print-area *,
   #teacher-registry-print-area,
   #teacher-registry-print-area *,
   #emis-census-print-area,
@@ -467,88 +1017,264 @@
     visibility: visible !important;
   }
 
-  /* Specific restriction for Receipt to Envelope DL size */
-  #fee-receipt-print-area,
-  #fee-receipt-print-area *,
-  #fee-ledger-print-area,
-  #fee-ledger-print-area * {
-    visibility: visible !important;
-  }
-
-  /* Pull single print targets absolutely, but let bulk pages flow naturally with page breaks */
+  /* Allow print targets to flow naturally without stacking absolutely on top of each other */
   .report-card-print-container,
+  .bulk-report-card-print-page,
+  .transcript-print-page,
   #students-roster-preview-card,
   #assessment-roster-preview-landscape,
   #fees-reminder-notice-canvas,
+  #fees-invoice-notice-canvas,
+  #report-center-preview-content,
   #school-profile-print-area,
   #school-profile-preview-card,
-  #teacher-registry-print-area {
-    position: absolute !important;
-    left: 0 !important;
-    top: 0 !important;
-    width: 210mm !important; /* Fixed A4 width */
-    min-height: 297mm !important; /* Fixed A4 height */
-    margin: 0 !important;
-    padding: 15mm 12mm !important; /* Proper internal A4 page margins */
+  #teacher-registry-print-area,
+  #fee-receipt-print-area,
+  #fee-ledger-print-area,
+  #bulk-receipts-print-area,
+  .bulk-receipt-item,
+  #student-id-card-print-area,
+  #teacher-id-card-print-area,
+  #bulk-student-id-cards-print-area,
+  #emis-census-print-area {
+    position: relative !important;
+    left: auto !important;
+    top: auto !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 auto !important;
     box-sizing: border-box !important;
     background: #ffffff !important;
     box-shadow: none !important;
     border: none !important;
-    z-index: 999999 !important;
-    page-break-after: avoid !important;
+    overflow: visible !important;
+  }
+  
+  /* Reset and enforce clean natural flow inside PrintPreviewModal (#sms-print-section) */
+  #sms-print-section,
+  #sms-print-section * {
+    visibility: visible !important;
+  }
+
+  body > :not(#sms-print-section) {
+    display: none !important;
+    visibility: hidden !important;
+  }
+
+  #sms-print-section {
+    display: block !important;
+    position: relative !important;
+    left: auto !important;
+    top: auto !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+  }
+
+  #sms-print-section .report-card-print-container,
+  #sms-print-section .bulk-report-card-print-page,
+  #sms-print-section .transcript-print-page,
+  #sms-print-section #students-roster-preview-card,
+  #sms-print-section #assessment-roster-preview-landscape,
+  #sms-print-section #fees-reminder-notice-canvas,
+  #sms-print-section #fees-invoice-notice-canvas,
+  #sms-print-section #report-center-preview-content,
+  #sms-print-section #school-profile-print-area,
+  #sms-print-section #school-profile-preview-card,
+  #sms-print-section #teacher-registry-print-area,
+  #sms-print-section #fee-receipt-print-area,
+  #sms-print-section #fee-ledger-print-area,
+  #sms-print-section #bulk-receipts-print-area,
+  #sms-print-section .bulk-receipt-item,
+  #sms-print-section #student-id-card-print-area,
+  #sms-print-section #teacher-id-card-print-area,
+  #sms-print-section #bulk-student-id-cards-print-area,
+  #sms-print-section #emis-census-print-area {
+    position: relative !important;
+    left: auto !important;
+    top: auto !important;
+    width: 100% !important;
+    min-height: auto !important;
+    margin: 0 auto !important;
+    padding: 0 !important;
+  }
+
+  /* Specific Transcript Print Enhancements */
+  .transcript-print-page {
+    font-family: 'Inter', ui-sans-serif, system-ui, sans-serif !important;
+    line-height: 1.5 !important;
+  }
+
+  .transcript-print-page h2 {
+    font-family: 'Space Grotesk', sans-serif !important;
+    font-size: 20pt !important;
+    color: #0f172a !important;
+    letter-spacing: -0.02em !important;
+  }
+
+  .transcript-print-page h3 {
+    font-size: 14pt !important;
+    margin-top: 10mm !important;
+  }
+
+  .transcript-print-page table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    margin-top: 5mm !important;
+    font-size: 9pt !important;
+  }
+
+  .transcript-print-page th {
+    background-color: #f1f5f9 !important;
+    color: #475569 !important;
+    font-weight: 700 !important;
+    padding: 3mm !important;
+    text-transform: uppercase !important;
+    font-size: 8pt !important;
+    border: 1px solid #e2e8f0 !important;
+  }
+
+  .transcript-print-page td {
+    padding: 3mm !important;
+    border: 1px solid #e2e8f0 !important;
+  }
+
+  .transcript-print-page .bg-f8fafc {
+    background-color: #f8fafc !important;
+  }
+
+  /* FEE RECEIPTS & BILLING LEDGER CLEAN PRINT FORMAT */
+  #fee-receipt-print-area {
+    width: 220mm !important;
+    max-width: 220mm !important;
+    min-height: 110mm !important;
+    margin: 0 auto !important;
+    box-sizing: border-box !important;
     page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+  }
+
+  #fee-ledger-print-area {
+    width: 100% !important;
+    max-width: 210mm !important;
+    margin: 0 auto !important;
+    box-sizing: border-box !important;
+    page-break-inside: auto !important;
     overflow: visible !important;
   }
 
-  /* ENVELOPE DL SIZE RESTRICTION FOR RECEIPTS AND BILLING LEDGERS */
-  #fee-receipt-print-area,
-  #fee-ledger-print-area {
-    position: absolute !important;
-    left: 0 !important;
-    top: 0 !important;
-    width: 220mm !important; /* DL Envelope Width */
-    height: 110mm !important; /* DL Envelope Height */
-    min-height: 110mm !important;
-    max-height: 110mm !important;
-    margin: 0 !important;
-    padding: 8mm 10mm !important; /* Compact margins */
-    box-sizing: border-box !important;
+  #bulk-receipts-print-area {
+    width: 100% !important;
+    display: block !important;
+    overflow: visible !important;
     background: #ffffff !important;
-    border: 1px solid #e2e8f0 !important;
-    z-index: 999999 !important;
-    overflow: hidden !important;
-    page-break-after: avoid !important;
-    page-break-inside: avoid !important;
-    display: flex !important;
-    flex-direction: column !important;
   }
 
-  #fee-receipt-print-area > div,
-  #fee-ledger-print-area > div {
-    height: 100% !important;
+  /* 3 Receipts per A4 Portrait Sheet for Bulk Receipt Printing */
+  .bulk-receipts-print-page {
+    width: 210mm !important;
+    min-height: 297mm !important;
+    height: auto !important;
+    max-height: none !important;
+    box-sizing: border-box !important;
+    position: relative !important;
+    margin: 0 auto !important;
+    padding: 6mm 8mm !important;
+    overflow: visible !important;
     display: flex !important;
     flex-direction: column !important;
     justify-content: space-between !important;
-    padding: 0 !important;
-    border-width: 2px !important;
-    margin: 0 !important;
+    background: #ffffff !important;
+    page-break-inside: avoid !important;
+    page-break-after: always !important;
+    break-after: page !important;
   }
 
-  #student-id-card-print-area {
-    position: absolute !important;
-    left: 50% !important;
-    top: 50% !important;
-    transform: translate(-50%, -50%) !important;
-    width: 300px !important;
-    height: 460px !important;
-    box-shadow: none !important;
-    border: 1px solid #1e293b !important;
-    border-radius: 12px !important;
-    background: #ffffff !important;
-    page-break-after: avoid !important;
+  .bulk-receipts-print-page:first-of-type {
+    page-break-before: avoid !important;
+  }
+
+  .bulk-receipt-slip {
+    box-sizing: border-box !important;
+    height: 88mm !important;
+    max-height: 90mm !important;
     page-break-inside: avoid !important;
-    z-index: 999999 !important;
+    break-inside: avoid !important;
+    background: #ffffff !important;
     overflow: hidden !important;
+  }
+
+  .perforated-cut-line {
+    margin: 2mm 0 !important;
+    user-select: none !important;
+  }
+
+  .bulk-receipt-item {
+    page-break-inside: avoid !important;
+    page-break-after: always !important;
+    break-after: page !important;
+    margin-bottom: 20px !important;
+    width: 100% !important;
+    max-width: 210mm !important;
+    box-sizing: border-box !important;
+  }
+
+  #student-id-card-print-area,
+  #teacher-id-card-print-area,
+  #bulk-student-id-cards-print-area {
+    page: landscape-page !important;
+    display: block !important;
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 297mm !important;
+    height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-sizing: border-box !important;
+    background: #ffffff !important;
+    border: none !important;
+    z-index: 999999 !important;
+    overflow: visible !important;
+  }
+
+  /* High-fidelity 4x2 Grid layout for printing 8 cards per Landscape A4 sheet */
+  .id-cards-landscape-page {
+    page: landscape-page !important;
+    display: grid !important;
+    grid-template-columns: repeat(4, 1fr) !important;
+    grid-template-rows: repeat(2, 1fr) !important;
+    gap: 4mm !important;
+    width: 297mm !important;
+    height: 210mm !important;
+    padding: 8mm !important;
+    box-sizing: border-box !important;
+    background: #ffffff !important;
+    page-break-after: always !important;
+    break-after: page !important;
+    page-break-inside: avoid !important;
+    overflow: hidden !important;
+    z-index: 999999 !important;
+    position: relative !important;
+  }
+
+  .id-card-print-item,
+  .bulk-id-card-item {
+    box-sizing: border-box !important;
+    border: 1px solid #1e293b !important;
+    border-radius: 8px !important;
+    background: #ffffff !important;
+    overflow: hidden !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: space-between !important;
+    page-break-inside: avoid !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-height: 92mm !important;
   }
 
   .bulk-report-card-print-page {
@@ -590,3 +1316,713 @@
     padding: 0 !important;
   }
 }
+
+/* --- Dedicated 'Compact' vs 'Full-Page' print density styles --- */
+
+/* 1. Compact Density Layout Styles */
+.print-layout-compact,
+.print-layout-compact .report-card-print-container,
+.print-layout-compact .bulk-report-card-print-page,
+.print-layout-compact .transcript-print-page,
+#sms-print-section.print-layout-compact,
+#sms-print-section.print-layout-compact .report-card-print-container,
+#sms-print-section.print-layout-compact .bulk-report-card-print-page,
+#sms-print-section.print-layout-compact .transcript-print-page {
+  padding: 4mm 6mm !important;
+}
+
+.print-layout-compact table,
+.print-layout-compact td,
+.print-layout-compact th,
+#sms-print-section.print-layout-compact table,
+#sms-print-section.print-layout-compact td,
+#sms-print-section.print-layout-compact th {
+  padding: 1px 3px !important;
+  font-size: 7pt !important;
+  line-height: 1.05 !important;
+}
+
+.print-layout-compact h1,
+.print-layout-compact h2,
+.print-layout-compact h3,
+#sms-print-section.print-layout-compact h1,
+#sms-print-section.print-layout-compact h2,
+#sms-print-section.print-layout-compact h3 {
+  font-size: 9.5pt !important;
+  margin-top: 0.5px !important;
+  margin-bottom: 0.5px !important;
+  line-height: 1.05 !important;
+}
+
+.print-layout-compact p,
+.print-layout-compact span,
+#sms-print-section.print-layout-compact p,
+#sms-print-section.print-layout-compact span {
+  font-size: 7pt !important;
+  margin-top: 0.25px !important;
+  margin-bottom: 0.25px !important;
+  line-height: 1.05 !important;
+}
+
+.print-layout-compact .grid,
+#sms-print-section.print-layout-compact .grid {
+  gap: 0.75mm !important;
+  margin-top: 0.75mm !important;
+  margin-bottom: 0.75mm !important;
+}
+
+.print-layout-compact img[alt="School Logo"],
+.print-layout-compact img[alt="Logo"],
+.print-layout-compact .school-logo,
+#sms-print-section.print-layout-compact img[alt="School Logo"] {
+  max-height: 8mm !important;
+  width: auto !important;
+}
+
+/* 2. Full-Page Density Layout Styles */
+.print-layout-full,
+.print-layout-full .report-card-print-container,
+.print-layout-full .bulk-report-card-print-page,
+.print-layout-full .transcript-print-page,
+#sms-print-section.print-layout-full,
+#sms-print-section.print-layout-full .report-card-print-container,
+#sms-print-section.print-layout-full .bulk-report-card-print-page,
+#sms-print-section.print-layout-full .transcript-print-page {
+  padding: 15mm 12mm !important;
+}
+
+.print-layout-full table,
+.print-layout-full td,
+.print-layout-full th,
+#sms-print-section.print-layout-full table,
+#sms-print-section.print-layout-full td,
+#sms-print-section.print-layout-full th {
+  padding: 6px 10px !important;
+  font-size: 9pt !important;
+  line-height: 1.3 !important;
+}
+
+.print-layout-full h1,
+.print-layout-full h2,
+.print-layout-full h3,
+#sms-print-section.print-layout-full h1,
+#sms-print-section.print-layout-full h2,
+#sms-print-section.print-layout-full h3 {
+  font-size: 14pt !important;
+  margin-top: 4px !important;
+  margin-bottom: 4px !important;
+  line-height: 1.25 !important;
+}
+
+.print-layout-full p,
+.print-layout-full span,
+#sms-print-section.print-layout-full p,
+#sms-print-section.print-layout-full span {
+  font-size: 8.5pt !important;
+  margin-top: 2px !important;
+  margin-bottom: 2px !important;
+  line-height: 1.3 !important;
+}
+
+.print-layout-full .grid,
+#sms-print-section.print-layout-full .grid {
+  gap: 2.5mm !important;
+  margin-top: 2.5mm !important;
+  margin-bottom: 2.5mm !important;
+}
+
+.print-layout-full img[alt="School Logo"],
+.print-layout-full img[alt="Logo"],
+.print-layout-full .school-logo,
+#sms-print-section.print-layout-full img[alt="School Logo"] {
+  max-height: 15mm !important;
+  width: auto !important;
+}
+
+/* Global CSS-Based Autofit Scaling based on subject counts (Screen View) */
+
+/* Moderate (9-12 subjects) */
+.subject-count-moderate {
+  padding: 5mm 8mm 5mm 8mm !important;
+}
+.subject-count-moderate h2 {
+  font-size: 11pt !important;
+}
+.subject-count-moderate p {
+  font-size: 7pt !important;
+}
+.subject-count-moderate .border-b-2 {
+  padding-bottom: 1.2mm !important;
+  margin-bottom: 1.5mm !important;
+}
+.subject-count-moderate table {
+  margin-top: 1.2mm !important;
+  margin-bottom: 1.2mm !important;
+  font-size: 7.2pt !important;
+}
+.subject-count-moderate th,
+.subject-count-moderate td {
+  padding: 0.4mm 1.2mm !important;
+  font-size: 7.2pt !important;
+}
+.subject-count-moderate .grid {
+  gap: 1.2mm !important;
+  margin-top: 1.2mm !important;
+  margin-bottom: 1.2mm !important;
+}
+.subject-count-moderate .bg-slate-50.p-5,
+.subject-count-moderate .bg-slate-50.p-4 {
+  padding: 1.5mm !important;
+  margin-bottom: 1.5mm !important;
+}
+.subject-count-moderate p.italic {
+  font-size: 7.2pt !important;
+  min-height: 8mm !important;
+  padding: 1.2mm !important;
+}
+.subject-count-moderate .relative.w-full.h-8,
+.subject-count-moderate .relative.w-52.h-16 {
+  height: 6mm !important;
+}
+
+/* High (13-16 subjects) */
+.subject-count-high {
+  padding: 4mm 7mm 4mm 7mm !important;
+}
+.subject-count-high h2 {
+  font-size: 10pt !important;
+}
+.subject-count-high p {
+  font-size: 6.8pt !important;
+}
+.subject-count-high .border-b-2 {
+  padding-bottom: 1mm !important;
+  margin-bottom: 1.2mm !important;
+}
+.subject-count-high img[alt="School Logo"],
+.subject-count-high img[alt="Logo"] {
+  max-height: 10mm !important;
+}
+.subject-count-high img.student-report-photo,
+.subject-count-high .student-report-photo-placeholder {
+  width: 10mm !important;
+  height: 10mm !important;
+}
+.subject-count-high table {
+  margin-top: 1mm !important;
+  margin-bottom: 1mm !important;
+  font-size: 6.8pt !important;
+}
+.subject-count-high th,
+.subject-count-high td {
+  padding: 0.3mm 1mm !important;
+  font-size: 6.8pt !important;
+}
+.subject-count-high .grid {
+  gap: 1mm !important;
+  margin-top: 1mm !important;
+  margin-bottom: 1mm !important;
+}
+.subject-count-high .bg-slate-50.p-5,
+.subject-count-high .bg-slate-50.p-4 {
+  padding: 1.2mm !important;
+  margin-bottom: 1.2mm !important;
+}
+.subject-count-high p.italic {
+  font-size: 6.8pt !important;
+  min-height: 6mm !important;
+  padding: 1mm !important;
+}
+.subject-count-high .relative.w-full.h-8,
+.subject-count-high .relative.w-52.h-16 {
+  height: 5mm !important;
+}
+.subject-count-high img[alt="School Stamp"],
+.subject-count-high img[alt="Stamp"] {
+  max-height: 6mm !important;
+}
+.subject-count-high img[alt="Headteacher Signature"],
+.subject-count-high img[alt="Signature"] {
+  max-height: 4mm !important;
+}
+
+/* Extra High (17-20 subjects) */
+.subject-count-extra-high {
+  padding: 3mm 6mm 3mm 6mm !important;
+}
+.subject-count-extra-high h2 {
+  font-size: 9pt !important;
+}
+.subject-count-extra-high p {
+  font-size: 6.5pt !important;
+}
+.subject-count-extra-high .border-b-2 {
+  padding-bottom: 0.8mm !important;
+  margin-bottom: 1mm !important;
+}
+.subject-count-extra-high img[alt="School Logo"],
+.subject-count-extra-high img[alt="Logo"] {
+  max-height: 8mm !important;
+}
+.subject-count-extra-high img.student-report-photo,
+.subject-count-extra-high .student-report-photo-placeholder {
+  width: 8mm !important;
+  height: 8mm !important;
+}
+.subject-count-extra-high table {
+  margin-top: 0.8mm !important;
+  margin-bottom: 0.8mm !important;
+  font-size: 6.2pt !important;
+}
+.subject-count-extra-high th,
+.subject-count-extra-high td {
+  padding: 0.2mm 0.8mm !important;
+  font-size: 6.2pt !important;
+}
+.subject-count-extra-high .grid {
+  gap: 0.8mm !important;
+  margin-top: 0.8mm !important;
+  margin-bottom: 0.8mm !important;
+}
+.subject-count-extra-high .bg-slate-50.p-5,
+.subject-count-extra-high .bg-slate-50.p-4 {
+  padding: 1mm !important;
+  margin-bottom: 1mm !important;
+}
+.subject-count-extra-high p.italic {
+  font-size: 6.2pt !important;
+  min-height: 5mm !important;
+  padding: 0.8mm !important;
+}
+.subject-count-extra-high .relative.w-full.h-8,
+.subject-count-extra-high .relative.w-52.h-16 {
+  height: 4mm !important;
+}
+.subject-count-extra-high img[alt="School Stamp"],
+.subject-count-extra-high img[alt="Stamp"] {
+  max-height: 5mm !important;
+}
+.subject-count-extra-high img[alt="Headteacher Signature"],
+.subject-count-extra-high img[alt="Signature"] {
+  max-height: 3mm !important;
+}
+
+/* Extreme (21-24 subjects) */
+.subject-count-extreme {
+  padding: 2.2mm 5mm 2.2mm 5mm !important;
+}
+.subject-count-extreme h2 {
+  font-size: 8pt !important;
+}
+.subject-count-extreme p {
+  font-size: 6pt !important;
+}
+.subject-count-extreme .border-b-2 {
+  padding-bottom: 0.6mm !important;
+  margin-bottom: 0.8mm !important;
+}
+.subject-count-extreme img[alt="School Logo"],
+.subject-count-extreme img[alt="Logo"] {
+  max-height: 7mm !important;
+}
+.subject-count-extreme img.student-report-photo,
+.subject-count-extreme .student-report-photo-placeholder {
+  width: 7mm !important;
+  height: 7mm !important;
+}
+.subject-count-extreme table {
+  margin-top: 0.6mm !important;
+  margin-bottom: 0.6mm !important;
+  font-size: 5.6pt !important;
+}
+.subject-count-extreme th,
+.subject-count-extreme td {
+  padding: 0.15mm 0.6mm !important;
+  font-size: 5.6pt !important;
+}
+.subject-count-extreme .grid {
+  gap: 0.6mm !important;
+  margin-top: 0.6mm !important;
+  margin-bottom: 0.6mm !important;
+}
+.subject-count-extreme .bg-slate-50.p-5,
+.subject-count-extreme .bg-slate-50.p-4 {
+  padding: 0.8mm !important;
+  margin-bottom: 0.8mm !important;
+}
+.subject-count-extreme p.italic {
+  font-size: 5.6pt !important;
+  min-height: 4mm !important;
+  padding: 0.6mm !important;
+}
+.subject-count-extreme .relative.w-full.h-8,
+.subject-count-extreme .relative.w-52.h-16 {
+  height: 3.5mm !important;
+}
+.subject-count-extreme img[alt="School Stamp"],
+.subject-count-extreme img[alt="Stamp"] {
+  max-height: 4mm !important;
+}
+.subject-count-extreme img[alt="Headteacher Signature"],
+.subject-count-extreme img[alt="Signature"] {
+  max-height: 2.5mm !important;
+}
+
+/* Critical (> 24 subjects) */
+.subject-count-critical {
+  padding: 1.5mm 4mm 1.5mm 4mm !important;
+}
+.subject-count-critical h2 {
+  font-size: 7.5pt !important;
+}
+.subject-count-critical p {
+  font-size: 5.5pt !important;
+}
+.subject-count-critical .border-b-2 {
+  padding-bottom: 0.4mm !important;
+  margin-bottom: 0.6mm !important;
+}
+.subject-count-critical img[alt="School Logo"],
+.subject-count-critical img[alt="Logo"] {
+  max-height: 6mm !important;
+}
+.subject-count-critical img.student-report-photo,
+.subject-count-critical .student-report-photo-placeholder {
+  width: 6mm !important;
+  height: 6mm !important;
+}
+.subject-count-critical table {
+  margin-top: 0.4mm !important;
+  margin-bottom: 0.4mm !important;
+  font-size: 5pt !important;
+}
+.subject-count-critical th,
+.subject-count-critical td {
+  padding: 0.1mm 0.4mm !important;
+  font-size: 5pt !important;
+}
+.subject-count-critical .grid {
+  gap: 0.4mm !important;
+  margin-top: 0.4mm !important;
+  margin-bottom: 0.4mm !important;
+}
+.subject-count-critical .bg-slate-50.p-5,
+.subject-count-critical .bg-slate-50.p-4 {
+  padding: 0.5mm !important;
+  margin-bottom: 0.5mm !important;
+}
+.subject-count-critical p.italic {
+  font-size: 5pt !important;
+  min-height: 3mm !important;
+  padding: 0.4mm !important;
+}
+.subject-count-critical .relative.w-full.h-8,
+.subject-count-critical .relative.w-52.h-16 {
+  height: 3mm !important;
+}
+.subject-count-critical img[alt="School Stamp"],
+.subject-count-critical img[alt="Stamp"] {
+  max-height: 3mm !important;
+}
+.subject-count-critical img[alt="Headteacher Signature"],
+.subject-count-critical img[alt="Signature"] {
+  max-height: 2mm !important;
+}
+
+/* STUDENT TRANSCRIPT MOBILE & TABLET RESPONSIVE STACKING FIX */
+@media (max-width: 1024px) {
+  #pristine-transcript-preview {
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 1rem !important;
+    border-width: 3px !important;
+  }
+  
+  .transcript-print-page {
+    width: 100% !important;
+    padding: 0.75rem !important;
+  }
+
+  .transcript-bio-grid {
+    grid-template-columns: repeat(1, minmax(0, 1fr)) !important;
+  }
+
+  .transcript-header-flex {
+    flex-direction: column !important;
+    align-items: center !important;
+    text-align: center !important;
+  }
+
+  .transcript-table-container {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    width: 100% !important;
+    display: block !important;
+  }
+}
+
+@media (min-width: 640px) and (max-width: 1024px) {
+  .transcript-bio-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+/* Assessment Gradebook Table Row Hover Highlighting Effect */
+.assessment-grade-row {
+  transition: background-color 0.15s ease-in-out, transform 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+}
+
+.assessment-grade-row:hover {
+  background-color: rgba(238, 242, 255, 0.75);
+  box-shadow: inset 3px 0 0 0 #6366f1;
+}
+
+.dark .assessment-grade-row:hover,
+.theme-sophisticated-dark .assessment-grade-row:hover {
+  background-color: rgba(30, 41, 59, 0.7);
+  box-shadow: inset 3px 0 0 0 #818cf8;
+}
+
+/* View Density Modes: Compact Display Overrides */
+.density-compact td,
+.density-compact th {
+  padding-top: 0.35rem !important;
+  padding-bottom: 0.35rem !important;
+  font-size: 0.8125rem;
+}
+
+.density-compact table {
+  font-size: 0.8125rem;
+}
+
+.density-compact tr {
+  line-height: 1.25;
+}
+
+.density-compact .density-card-spacing {
+  padding: 0.75rem !important;
+  gap: 0.5rem !important;
+}
+
+/* --- Elegant Global Table Zebra-Striping & Hover Animations --- */
+/* Target tables that are not part of any print area or print layout */
+table:not([id*="print"]):not([class*="print"]):not(.no-zebra) {
+  border-spacing: 0;
+  width: 100%;
+}
+
+/* Zebra Striping: Light grey/slate for even rows in standard theme */
+table:not([id*="print"]):not([class*="print"]):not(.no-zebra) tbody tr:nth-child(even) {
+  background-color: rgba(248, 250, 252, 0.7) !important; /* slate-50/70 */
+}
+
+/* Zebra Striping: Darker, subtle theme-appropriate tint for dark modes */
+.dark table:not([id*="print"]):not([class*="print"]):not(.no-zebra) tbody tr:nth-child(even),
+.theme-sophisticated-dark table:not([id*="print"]):not([class*="print"]):not(.no-zebra) tbody tr:nth-child(even) {
+  background-color: rgba(30, 41, 59, 0.45) !important; /* Slate-800 equivalent */
+}
+
+/* Base row transition setup for hover animations */
+table:not([id*="print"]):not([class*="print"]):not(.no-zebra) tbody tr {
+  transition: background-color 0.18s cubic-bezier(0.4, 0, 0.2, 1), transform 0.18s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.18s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+/* Smooth Interactive Hover State */
+table:not([id*="print"]):not([class*="print"]):not(.no-zebra) tbody tr:hover {
+  background-color: #f1f5f9 !important; /* slate-100 */
+  transform: translateX(3px); /* Subtle playful shift */
+  box-shadow: inset 3px 0 0 0 #6366f1, 0 4px 6px -1px rgba(15, 23, 42, 0.05), 0 2px 4px -1px rgba(15, 23, 42, 0.03);
+}
+
+/* Hover State for dark modes */
+.dark table:not([id*="print"]):not([class*="print"]):not(.no-zebra) tbody tr:hover,
+.theme-sophisticated-dark table:not([id*="print"]):not([class*="print"]):not(.no-zebra) tbody tr:hover {
+  background-color: rgba(51, 65, 85, 0.6) !important; /* Slate-700 equivalent */
+  box-shadow: inset 3px 0 0 0 #818cf8, 0 4px 6px -1px rgba(0, 0, 0, 0.2), 0 2px 4px -1px rgba(0, 0, 0, 0.1);
+}
+
+/* Retain high contrast on Selected Rows during hover/zebra */
+table:not([id*="print"]):not([class*="print"]):not(.no-zebra) tbody tr.bg-indigo-50\/10,
+table:not([id*="print"]):not([class*="print"]):not(.no-zebra) tbody tr[class*="selected"],
+table:not([id*="print"]):not([class*="print"]):not(.no-zebra) tbody tr[class*="bg-indigo"] {
+  background-color: rgba(99, 102, 241, 0.08) !important;
+}
+
+table:not([id*="print"]):not([class*="print"]):not(.no-zebra) tbody tr.bg-indigo-50\/10:hover,
+table:not([id*="print"]):not([class*="print"]):not(.no-zebra) tbody tr[class*="selected"]:hover,
+table:not([id*="print"]):not([class*="print"]):not(.no-zebra) tbody tr[class*="bg-indigo"]:hover {
+  background-color: rgba(99, 102, 241, 0.15) !important;
+}
+
+/* --- Custom Visible Vertical & Horizontal Scrollbar Styles --- */
+html, body {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(99, 102, 241, 0.4) rgba(15, 23, 42, 0.05);
+  -webkit-overflow-scrolling: touch;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.05);
+  border-radius: 9999px;
+}
+
+.dark ::-webkit-scrollbar-track,
+.theme-sophisticated-dark ::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.35);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.7);
+  background-clip: padding-box;
+}
+
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(99, 102, 241, 0.4) rgba(15, 23, 42, 0.05);
+  -webkit-overflow-scrolling: touch;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.05);
+  border-radius: 9999px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgba(99, 102, 241, 0.4);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(99, 102, 241, 0.75);
+}
+
+/* Mobile responsive view helper classes */
+@media (max-width: 640px) {
+  .modal-responsive-container {
+    max-height: 92vh !important;
+    margin-top: auto;
+    margin-bottom: auto;
+  }
+
+  .table-responsive-wrapper {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    margin-bottom: 1rem;
+  }
+}
+
+/* Enhanced easily accessible scrollbars for mobile and tablet print preview options and document canvas */
+.custom-scrollbar-visible {
+  scrollbar-width: auto;
+  scrollbar-color: rgba(99, 102, 241, 0.6) rgba(15, 23, 42, 0.3);
+  -webkit-overflow-scrolling: touch;
+}
+
+.custom-scrollbar-visible::-webkit-scrollbar {
+  width: 10px !important;
+  height: 10px !important;
+  display: block !important;
+}
+
+.custom-scrollbar-visible::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.35) !important;
+  border-radius: 9999px !important;
+}
+
+.custom-scrollbar-visible::-webkit-scrollbar-thumb {
+  background-color: rgba(99, 102, 241, 0.6) !important;
+  border-radius: 9999px !important;
+  border: 1px solid rgba(15, 23, 42, 0.2) !important;
+}
+
+.custom-scrollbar-visible::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(99, 102, 241, 0.95) !important;
+}
+
+/* ==========================================================================
+   MOBILE PERFORMANCE & VELOCITY OPTIMIZATIONS
+   ========================================================================== */
+
+/* Eliminate 300ms double-tap delay and tap-flicker on mobile touchscreens */
+button, 
+a, 
+input, 
+select, 
+textarea, 
+[role="button"], 
+label {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.touch-manipulation {
+  touch-action: manipulation;
+}
+
+/* Native smooth momentum scrolling on mobile WebKit/Blink */
+.scroll-touch {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+/* Fast mobile viewport performance adjustments */
+@media (max-width: 768px) {
+  /* Prevent horizontal layout jitter */
+  html, body {
+    overflow-x: hidden;
+    position: relative;
+    width: 100%;
+  }
+
+  /* GPU-accelerate fixed mobile nav bars and modal drawers */
+  nav[aria-label="Mobile Bottom Navigation"],
+  nav#module-tabs-ribbon {
+    transform: translateZ(0);
+    will-change: transform;
+    backface-visibility: hidden;
+  }
+
+  /* Reduce costly composite filters on mobile processors */
+  .backdrop-blur-xs,
+  .backdrop-blur-sm,
+  .backdrop-blur-md {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  /* Streamline modal entrance speeds */
+  .modal-responsive-container {
+    max-height: 94vh !important;
+  }
+
+  /* Optimize offscreen rendering for long tables on mobile */
+  table tbody tr {
+    content-visibility: auto;
+    contain-intrinsic-size: 1px 44px;
+  }
+}
+
+
+
+

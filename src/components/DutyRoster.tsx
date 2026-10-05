@@ -5,8 +5,9 @@ import { ThemeStyles } from './ThemeWrapper';
 import { 
   Plus, Trash2, Calendar, User, ClipboardList, CheckCircle2, Clock, AlertCircle, ChevronLeft, ChevronRight, Filter, Download, Bell, Printer, BarChart2, ShieldAlert
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { triggerToast } from '../utils';
+import SmartTextarea from './SmartTextarea';
 
 interface Props {
   theme: ThemeStyles;
@@ -529,10 +530,10 @@ export default function DutyRoster({ theme, teachers, onRefresh, isAdminOrHead }
 
                 <div className="space-y-1.5">
                   <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest ml-1">Special Remarks</label>
-                  <textarea
+                  <SmartTextarea
                     placeholder="e.g. Extra focus on morning traffic..."
                     value={newAssignment.remarks || ''}
-                    onChange={(e) => setNewAssignment({ ...newAssignment, remarks: e.target.value })}
+                    onChange={(e: any) => setNewAssignment({ ...newAssignment, remarks: e.target.value })}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-medium text-slate-700 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition shadow-xs min-h-[80px]"
                   />
                 </div>

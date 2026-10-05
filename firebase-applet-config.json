@@ -3,7 +3,10 @@
   "appId": "1:775289531181:web:1973dce88c579d3f5e01a4",
   "apiKey": "AIzaSyD5D25Ty0hRHxujO4Zr6-3cHMlfj8fmZdc",
   "authDomain": "basic-abode-lb34d.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-schoolmanagement-a2d8d304-855b-466a-8f1a-47e69bbb165b",
   "storageBucket": "basic-abode-lb34d.firebasestorage.app",
   "messagingSenderId": "775289531181",
-  "measurementId": ""
+  "measurementId": "",
+  "oAuthClientId": "775289531181-s8aha2rbvdun935eere2vfjm105epoj6.apps.googleusercontent.com",
+  "recaptchaSiteKey": ""
 }

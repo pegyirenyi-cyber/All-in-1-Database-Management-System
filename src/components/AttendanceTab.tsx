@@ -1,14 +1,16 @@
 import { useState, useEffect, useMemo } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { AttendanceRecord, ClassType, CLASSES, AttendanceStatus, StaffAttendanceRecord, StaffAttendanceStatus, UserRole, SubjectType } from '../types';
 import { DbController, getStorageItem, setStorageItem } from '../db';
 import { ThemeStyles } from './ThemeWrapper';
-import { CalendarCheck, Users, ToggleLeft, ToggleRight, CheckSquare, Coffee, ClipboardList, CalendarDays, Printer, FileDown, ShieldAlert, Trash2, RotateCcw, Eraser, Eye, Clock, LogIn, LogOut, MessageSquare, Briefcase, ChevronLeft, ChevronRight, Activity } from 'lucide-react';
+import { CalendarCheck, Users, ToggleLeft, ToggleRight, CheckSquare, Coffee, ClipboardList, CalendarDays, Printer, FileDown, ShieldAlert, Trash2, RotateCcw, Eraser, Eye, Clock, LogIn, LogOut, MessageSquare, Briefcase, ChevronLeft, ChevronRight, Activity, QrCode } from 'lucide-react';
 import { DefaultCrest } from './SchoolProfileTab';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 import { generatePdfFromHtml, downloadBlobLocally } from '../pdfHelper';
-import { getWatermarkHtml } from '../utils';
+import { getWatermarkHtml, formatIdentifiableFilename } from '../utils';
 import AttendanceSummaryView from './AttendanceSummaryView';
+import StudentQRScanner from './StudentQRScanner';
+import { evaluateSubscription } from '../subscription';
 
 const GHANA_CREST_SVG_SIMPLE = `
 <svg viewBox="0 0 100 100" width="100%" height="100%" style="width: 250px; height: 250px; color: #000;">
@@ -74,8 +76,43 @@ export default function AttendanceTab({
   teacherPermissions 
 }: Props) {
   const schoolInfo = DbController.getSchoolInfo();
+  const currentUser = DbController.getCurrentUser();
+  const subscriptionStatus = currentUser ? evaluateSubscription(currentUser) : null;
+  const isSubscriptionLocked = subscriptionStatus?.isLocked || false;
   const [printBlocked, setPrintBlocked] = useState(false);
   const [showPdfGuide, setShowPdfGuide] = useState(false);
+  const [generatingMonthlyPdf, setGeneratingMonthlyPdf] = useState(false);
+
+  const handlePrintMonthlyRoster = async () => {
+    const studentsInClass = DbController.getStudents().filter(s => s.class === selectedClass);
+    if (studentsInClass.length === 0) {
+      alert(`There are no students enrolled in ${selectedClass} to print a roster.`);
+      return;
+    }
+    if (visibleDates.length === 0) {
+      alert("No active school days fall in the selected academic term date range for this month. Please adjust 'Term Start' and 'Term End' dates above.");
+      return;
+    }
+    
+    if (generatingMonthlyPdf) return;
+    setGeneratingMonthlyPdf(true);
+    try {
+      const monthName = getMonthName(reportMonth);
+      const filename = formatIdentifiableFilename({
+        docType: 'Student Monthly Roster',
+        className: selectedClass,
+        term: `${monthName}_${reportYear}`,
+        extension: 'pdf'
+      });
+      const result = await generatePdfFromHtml('student-monthly-roster-printable', filename, true);
+      downloadBlobLocally(result.blob, result.filename);
+    } catch (e) {
+      console.error(e);
+      alert("Could not generate Monthly Student Roster PDF: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setGeneratingMonthlyPdf(false);
+    }
+  };
 
   const handlePrintRegister = () => {
     try {
@@ -90,6 +127,14 @@ export default function AttendanceTab({
     // Default to current system date (2026-06-12 as per context)
     return '2026-06-12';
   });
+
+  const [autoCloudSync, setAutoCloudSync] = useState<boolean>(() => {
+    return getStorageItem('sms_auto_cloud_sync_attendance', true);
+  });
+
+  useEffect(() => {
+    setStorageItem('sms_auto_cloud_sync_attendance', autoCloudSync);
+  }, [autoCloudSync]);
 
   const [termStartDate, setTermStartDate] = useState<string>(() => {
     return getStorageItem('sms_term_start_date', '2026-05-20');
@@ -183,7 +228,8 @@ export default function AttendanceTab({
   }, [allRangeDates, activeMonthTab]);
   const [selectedClass, setSelectedClass] = useState<ClassType>(() => {
     if (userRole === 'Teacher') {
-      return assignedClasses.length > 0 ? assignedClasses[0] : (assignedClass || 'Basic 1');
+      const fallback = (assignedClass && assignedClass !== 'None') ? assignedClass : 'Basic 1';
+      return assignedClasses.length > 0 ? assignedClasses[0] : fallback;
     }
     return 'Basic 1';
   });
@@ -211,6 +257,7 @@ export default function AttendanceTab({
   const [attendanceSheet, setAttendanceSheet] = useState<AttendanceRecord[]>([]);
   const [staffAttendanceSheet, setStaffAttendanceSheet] = useState<StaffAttendanceRecord[]>([]);
   const [saveStatus, setSaveStatus] = useState<string>('');
+  const [showQRScanner, setShowQRScanner] = useState<boolean>(false);
   const [showMonthlyReportMode, setShowMonthlyReportMode] = useState<boolean>(false);
   const [reportMonth, setReportMonth] = useState<string>('06');
   const [reportYear, setReportYear] = useState<string>('2026');
@@ -253,17 +300,23 @@ export default function AttendanceTab({
     URL.revokeObjectURL(url);
   };
 
-  // Fetch student or staff roll roster whenever selections change
+  // Fetch student or staff roll roster whenever selections change or real-time sync occurs
   useEffect(() => {
-    if (attendanceView === 'staff') {
-      const sheet = DbController.getStaffAttendance(selectedDate);
-      setStaffAttendanceSheet(sheet);
-      setSaveStatus('');
-    } else {
-      const sheet = DbController.getAttendance(selectedDate, selectedClass);
-      setAttendanceSheet(sheet);
-      setSaveStatus('');
-    }
+    const reloadRoster = () => {
+      if (attendanceView === 'staff') {
+        const sheet = DbController.getStaffAttendance(selectedDate);
+        setStaffAttendanceSheet(sheet);
+      } else {
+        const sheet = DbController.getAttendance(selectedDate, selectedClass);
+        setAttendanceSheet(sheet);
+      }
+    };
+
+    reloadRoster();
+    setSaveStatus('');
+
+    window.addEventListener('school-system-sync', reloadRoster);
+    return () => window.removeEventListener('school-system-sync', reloadRoster);
   }, [selectedDate, selectedClass, attendanceView]);
 
   const handleStatusChange = (studentId: string, newStatus: AttendanceStatus) => {
@@ -279,13 +332,109 @@ export default function AttendanceTab({
     });
     setAttendanceSheet(updated);
 
-    if (isAutoSave) {
+    if (isAutoSave || autoCloudSync) {
       DbController.saveAttendanceBatch(updated);
-      setSaveStatus('Auto-saved successfully!');
+      setSaveStatus(autoCloudSync ? 'Cloud Syncing...' : 'Auto-saved successfully!');
       setTimeout(() => setSaveStatus(''), 2000);
     } else {
       setSaveStatus('Modified - Click Save Session');
     }
+  };
+
+  const handleQRScanSuccess = (studentId: string) => {
+    if (teacherPermissions?.canApproveAttendance === false) {
+      window.dispatchEvent(new CustomEvent('app-toast', {
+        detail: {
+          text: "Permission to approve/modify attendance has been suspended by the Headteacher.",
+          type: 'error'
+        }
+      }));
+      return;
+    }
+
+    const studentRecord = attendanceSheet.find(item => item.studentId === studentId);
+    if (studentRecord) {
+      const updated = attendanceSheet.map(item => {
+        if (item.studentId === studentId) {
+          return { ...item, status: 'Present' as AttendanceStatus };
+        }
+        return item;
+      });
+      setAttendanceSheet(updated);
+
+      if (isAutoSave || autoCloudSync) {
+        DbController.saveAttendanceBatch(updated);
+        setSaveStatus(autoCloudSync ? 'Cloud Syncing...' : 'Auto-saved successfully!');
+        setTimeout(() => setSaveStatus(''), 2000);
+      } else {
+        setSaveStatus('Modified - Click Save Session');
+      }
+
+      window.dispatchEvent(new CustomEvent('app-toast', {
+        detail: {
+          text: `QR Scan Success: Marked ${studentRecord.studentName} as Present!`,
+          type: 'success'
+        }
+      }));
+    } else {
+      const allStudents = DbController.getStudents();
+      const existingStudent = allStudents.find(s => s.id === studentId);
+      if (existingStudent) {
+        window.dispatchEvent(new CustomEvent('app-toast', {
+          detail: {
+            text: `QR Scan Error: Student ${existingStudent.firstName} ${existingStudent.lastName} belongs to class ${existingStudent.class} (Selected: ${selectedClass})`,
+            type: 'error'
+          }
+        }));
+      } else {
+        window.dispatchEvent(new CustomEvent('app-toast', {
+          detail: {
+            text: `QR Scan Error: Student with ID "${studentId}" not found in system.`,
+            type: 'error'
+          }
+        }));
+      }
+    }
+  };
+
+  const handleQRBatchScanSuccess = (studentIds: string[]) => {
+    if (teacherPermissions?.canApproveAttendance === false) {
+      window.dispatchEvent(new CustomEvent('app-toast', {
+        detail: {
+          text: "Permission to approve/modify attendance has been suspended by the Headteacher.",
+          type: 'error'
+        }
+      }));
+      return;
+    }
+
+    let markedCount = 0;
+    const updated = attendanceSheet.map(item => {
+      if (studentIds.includes(item.studentId)) {
+        if (item.status !== 'Present') {
+          markedCount++;
+        }
+        return { ...item, status: 'Present' as AttendanceStatus };
+      }
+      return item;
+    });
+
+    setAttendanceSheet(updated);
+
+    if (isAutoSave || autoCloudSync) {
+      DbController.saveAttendanceBatch(updated);
+      setSaveStatus(autoCloudSync ? 'Cloud Syncing...' : 'Auto-saved successfully!');
+      setTimeout(() => setSaveStatus(''), 2000);
+    } else {
+      setSaveStatus('Modified - Click Save Session');
+    }
+
+    window.dispatchEvent(new CustomEvent('app-toast', {
+      detail: {
+        text: `Successfully marked ${markedCount} student(s) as Present via batch scan!`,
+        type: 'success'
+      }
+    }));
   };
 
   const handleSaveAll = () => {
@@ -307,9 +456,9 @@ export default function AttendanceTab({
     const updated = attendanceSheet.map(item => ({ ...item, status }));
     setAttendanceSheet(updated);
 
-    if (isAutoSave) {
+    if (isAutoSave || autoCloudSync) {
       DbController.saveAttendanceBatch(updated);
-      setSaveStatus('Auto-saved all as ' + status);
+      setSaveStatus(autoCloudSync ? 'Cloud Syncing...' : 'Auto-saved all as ' + status);
       setTimeout(() => setSaveStatus(''), 2000);
     } else {
       setSaveStatus('All status set - Click Save');
@@ -335,9 +484,9 @@ export default function AttendanceTab({
     });
     setStaffAttendanceSheet(updated);
 
-    if (isAutoSave) {
+    if (isAutoSave || autoCloudSync) {
       DbController.saveStaffAttendanceBatch(updated);
-      setSaveStatus('Auto-saved successfully!');
+      setSaveStatus(autoCloudSync ? 'Cloud Syncing...' : 'Auto-saved successfully!');
       setTimeout(() => setSaveStatus(''), 2000);
     } else {
       setSaveStatus('Modified - Click Save Session');
@@ -353,9 +502,9 @@ export default function AttendanceTab({
     });
     setStaffAttendanceSheet(updated);
 
-    if (isAutoSave) {
+    if (isAutoSave || autoCloudSync) {
       DbController.saveStaffAttendanceBatch(updated);
-      setSaveStatus('Auto-saved successfully!');
+      setSaveStatus(autoCloudSync ? 'Cloud Syncing...' : 'Auto-saved successfully!');
       setTimeout(() => setSaveStatus(''), 2000);
     } else {
       setSaveStatus('Modified - Click Save Session');
@@ -402,9 +551,9 @@ export default function AttendanceTab({
     });
     setStaffAttendanceSheet(updated);
 
-    if (isAutoSave) {
+    if (isAutoSave || autoCloudSync) {
       DbController.saveStaffAttendanceBatch(updated);
-      setSaveStatus('Auto-saved all as ' + status);
+      setSaveStatus(autoCloudSync ? 'Cloud Syncing...' : 'Auto-saved all as ' + status);
       setTimeout(() => setSaveStatus(''), 2000);
     } else {
       setSaveStatus('All status set - Click Save');
@@ -504,7 +653,7 @@ export default function AttendanceTab({
         confirmText: "Purge Database",
         danger: true,
         onConfirm: () => {
-          localStorage.setItem('sms_staff_attendance', JSON.stringify([]));
+          DbController.clearAllStaffAttendance();
           setStaffAttendanceSheet([]);
           onManualSave();
           window.dispatchEvent(new CustomEvent('app-toast', { detail: { text: "Successfully purged all staff attendance records.", type: 'success' } }));
@@ -518,7 +667,7 @@ export default function AttendanceTab({
         confirmText: "Purge Database",
         danger: true,
         onConfirm: () => {
-          localStorage.setItem('sms_attendance', JSON.stringify([]));
+          DbController.clearAllAttendance();
           setAttendanceSheet([]);
           onManualSave();
           window.dispatchEvent(new CustomEvent('app-toast', { detail: { text: "Successfully purged all student attendance records.", type: 'success' } }));
@@ -792,6 +941,24 @@ export default function AttendanceTab({
               </select>
             </div>
           )}
+
+          <div className="flex items-center gap-3 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">
+            <div className="flex flex-col">
+              <span className="text-[9px] font-black uppercase text-slate-400 tracking-tighter leading-none">Cloud Sync</span>
+              <span className="text-[10px] font-bold text-slate-700">Auto-Sync</span>
+            </div>
+            <button
+              onClick={() => setAutoCloudSync(!autoCloudSync)}
+              className="cursor-pointer transition-colors"
+              title="Toggle automatic cloud synchronization for attendance"
+            >
+              {autoCloudSync ? (
+                <ToggleRight className="text-emerald-500" size={24} />
+              ) : (
+                <ToggleLeft className="text-slate-300" size={24} />
+              )}
+            </button>
+          </div>
         </div>
 
         {/* Global Setter controls and Print button */}
@@ -816,6 +983,25 @@ export default function AttendanceTab({
                 className="px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-800 border border-red-200 rounded text-xs font-semibold cursor-pointer transition"
               >
                 All Absent
+              </button>
+              <button
+                onClick={() => {
+                  if (isSubscriptionLocked) {
+                    alert("Scan QR Badge is inactive for expired accounts. Please renew your school license.");
+                    return;
+                  }
+                  setShowQRScanner(true);
+                }}
+                disabled={isSubscriptionLocked}
+                className={`px-3 py-1 rounded text-xs font-bold transition shadow-xs flex items-center gap-1 ${
+                  isSubscriptionLocked
+                    ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 border border-slate-300 dark:border-slate-700 opacity-60 cursor-not-allowed'
+                    : 'bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer'
+                }`}
+                title={isSubscriptionLocked ? "Scan QR Badge is inactive for expired users" : "Scan student's QR badge with camera to automatically mark them as present"}
+              >
+                <QrCode size={13} className={isSubscriptionLocked ? "text-slate-400" : ""} />
+                <span>{isSubscriptionLocked ? "Scan Student QR (Inactive)" : "Scan Student QR"}</span>
               </button>
             </div>
           )}
@@ -844,6 +1030,22 @@ export default function AttendanceTab({
           )}
 
           <div className="hidden sm:block h-6 w-px bg-slate-200 mx-1" />
+
+          {(attendanceView === 'student' || attendanceView === 'roster') && (
+            <button
+              onClick={handlePrintMonthlyRoster}
+              disabled={generatingMonthlyPdf || teacherPermissions?.canExportReports === false}
+              className={`flex items-center gap-1.5 px-3 py-1.5 border border-transparent rounded-lg font-bold text-xs cursor-pointer transition select-none ${theme.primaryBg} text-white hover:brightness-110 active:translate-y-0.5 disabled:opacity-50`}
+              title="Compile and print entire month's student attendance as PDF"
+            >
+              {generatingMonthlyPdf ? (
+                <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <CalendarCheck size={14} />
+              )}
+              <span>{generatingMonthlyPdf ? 'Generating...' : 'Print Monthly Roster'}</span>
+            </button>
+          )}
 
           <button
             onClick={() => setShowPdfGuide(!showPdfGuide)}
@@ -1162,7 +1364,12 @@ export default function AttendanceTab({
                     onClick={async () => {
                       try {
                         const monthName = getMonthName(reportMonth);
-                        const result = await generatePdfFromHtml('staff-monthly-report-printable', `Staff_Attendance_Report_${monthName}_${reportYear}`, false);
+                        const fname = formatIdentifiableFilename({
+                          docType: 'Staff Attendance Report',
+                          term: `${monthName}_${reportYear}`,
+                          extension: 'pdf'
+                        });
+                        const result = await generatePdfFromHtml('staff-monthly-report-printable', fname, false);
                         downloadBlobLocally(result.blob, result.filename);
                       } catch (e) {
                         console.error(e);
@@ -1314,12 +1521,26 @@ export default function AttendanceTab({
                         Class roster for {selectedDate}. Print this grid to manually record daily attendance.
                       </p>
                     </div>
-                    <button
-                      onClick={() => window.print()}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 text-white font-bold text-xs rounded-lg cursor-pointer hover:bg-slate-800 transition"
-                    >
-                      <Printer size={14} /> Print Grid
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={() => window.print()}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-lg cursor-pointer transition"
+                      >
+                        <Printer size={14} /> Print Grid
+                      </button>
+                      <button
+                        onClick={handlePrintMonthlyRoster}
+                        disabled={generatingMonthlyPdf || teacherPermissions?.canExportReports === false}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 ${theme.primaryBg} text-white font-bold text-xs rounded-lg cursor-pointer hover:brightness-110 transition disabled:opacity-50`}
+                      >
+                        {generatingMonthlyPdf ? (
+                          <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <CalendarCheck size={14} />
+                        )}
+                        <span>{generatingMonthlyPdf ? 'Generating...' : 'Print Monthly Roster'}</span>
+                      </button>
+                    </div>
                   </div>
                   
                   <div id="attendance-roster-print-area" className="w-full">
@@ -1712,7 +1933,7 @@ export default function AttendanceTab({
                 </span>
               </div>
               
-              <div id="attendance-register-preview-card" className="relative w-full max-w-[450px] aspect-[1/1.414] bg-white p-8 text-black border-4 border-double border-slate-800 shadow-2xl text-[9px] space-y-3 font-serif rounded-none overflow-y-auto">
+              <div id="attendance-register-preview-card" className="relative w-full max-w-[450px] min-h-[636px] bg-white p-8 text-black border-4 border-double border-slate-800 shadow-2xl text-[9px] space-y-3 font-serif rounded-none overflow-y-auto">
                 {/* Transparent School Crest Watermark */}
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none opacity-[0.045] z-0">
                   {schoolInfo?.crestUrl ? (
@@ -1870,7 +2091,7 @@ export default function AttendanceTab({
             </div>
 
             {/* Right: Setup Manual & Control */}
-            <div className="w-full md:w-[400px] p-6 bg-white flex flex-col justify-between overflow-y-auto max-h-none md:max-h-[90vh]">
+            <div className="w-full md:w-[400px] p-6 bg-white flex flex-col justify-between overflow-y-auto max-h-none md:max-h-[90vh] no-print">
               <div className="space-y-4">
                 <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
                   <div className="w-10 h-10 bg-indigo-50 rounded-lg flex items-center justify-center text-indigo-600 flex-shrink-0">
@@ -1996,7 +2217,7 @@ export default function AttendanceTab({
     </div>
 
     {/* OFF-SCREEN PRINT TEMPLATE FOR MONTHLY STAFF ATTENDANCE SUMMARY */}
-    <div id="staff-monthly-report-printable" className="absolute -top-[9999px] -left-[9999px] w-[800px] p-10 bg-white font-sans text-slate-900 border-12 border-double border-slate-400">
+    <div id="staff-monthly-report-printable" className="fixed left-0 top-0 -z-[999999] opacity-0 pointer-events-none w-[800px] p-10 bg-white font-sans text-slate-900 border-12 border-double border-slate-400">
       <div className="flex items-center justify-between border-b-2 border-slate-500 pb-4 mb-6">
         <div className="flex items-center gap-4">
           <div className="w-16 h-16 bg-slate-900 rounded-lg flex items-center justify-center text-white font-bold text-2xl shadow-sm">
@@ -2149,49 +2370,260 @@ export default function AttendanceTab({
       </div>
     </div>
 
-    {confirmModal && confirmModal.isOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[110] p-4 no-print animate-fade-in">
-          <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden text-left p-6 space-y-4 animate-scale-up">
-            <div className="flex items-start gap-3">
-              <div className={`p-2 rounded-xl shrink-0 ${confirmModal.danger ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>
-                <ShieldAlert size={24} className="animate-bounce-slow" />
+    {/* OFF-SCREEN PRINT TEMPLATE FOR MONTHLY STUDENT ATTENDANCE ROSTER */}
+    <div id="student-monthly-roster-printable" className="fixed left-0 top-0 -z-[999999] opacity-0 pointer-events-none w-[1120px] p-8 bg-white font-sans text-slate-900 border-12 border-double border-slate-400">
+      <div className="flex items-center justify-between border-b-2 border-slate-500 pb-4 mb-4">
+        <div className="flex items-center gap-4">
+          <div className="w-16 h-16 bg-slate-900 rounded-lg flex items-center justify-center text-white font-bold text-2xl shadow-sm">
+            {schoolInfo.name ? schoolInfo.name.charAt(0) : 'S'}
+          </div>
+          <div>
+            <h1 className="text-xl font-extrabold uppercase tracking-widest text-slate-800 font-serif">{schoolInfo.name}</h1>
+            <p className="text-[10px] text-slate-550 font-semibold uppercase font-sans tracking-wider">Motto: "{schoolInfo.motto}"</p>
+            <p className="text-[10px] text-slate-400 font-mono mt-0.5">
+              EMIS: {schoolInfo.emisCode} | REG NO: {schoolInfo.schoolNumber}
+            </p>
+          </div>
+        </div>
+        <div className="text-right text-[10px] font-mono text-slate-500">
+          <div>CONSOLIDATED STUDENT ATTENDANCE REGISTER</div>
+          <div className="font-bold text-slate-800 text-xs">CLASS: {selectedClass.toUpperCase()}</div>
+          <div className="font-bold text-indigo-700 text-xs">{getMonthName(reportMonth).toUpperCase()} {reportYear}</div>
+          <div>GENERATED: {new Date().toLocaleDateString()}</div>
+        </div>
+      </div>
+
+      <h2 className="text-center text-xs font-black uppercase tracking-widest border-b border-slate-200 pb-2 mb-4 text-slate-900">
+        Monthly Student Attendance Ledger & Roster Sheet
+      </h2>
+
+      {(() => {
+        const studentsInClass = DbController.getStudents().filter(s => s.class === selectedClass);
+        const sortedStudents = [...studentsInClass].sort((a, b) => 
+          `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`)
+        );
+        const allSaved = DbController.getAllAttendance();
+
+        // Calculate class metrics
+        let totalPresentAll = 0;
+        let totalAbsentAll = 0;
+
+        const studentRowsData = sortedStudents.map(student => {
+          let pCount = 0;
+          let aCount = 0;
+          let hCount = 0;
+          let uCount = 0;
+
+          const daysData = visibleDates.map(d => {
+            const idKey = `${d.dateStr}_${student.id}`;
+            const found = allSaved.find(r => r.id === idKey);
+            const status = found ? found.status : 'Unmarked';
+            
+            if (status === 'Present') pCount++;
+            else if (status === 'Absent') aCount++;
+            else if (status === 'Holiday') hCount++;
+            else uCount++;
+
+            return {
+              dateStr: d.dateStr,
+              dayNum: d.dayNum,
+              dayName: d.dayName,
+              status
+            };
+          });
+
+          const totalTracked = pCount + aCount;
+          const ratio = totalTracked > 0 ? Math.round((pCount / totalTracked) * 100) : 0;
+
+          totalPresentAll += pCount;
+          totalAbsentAll += aCount;
+
+          return {
+            student,
+            daysData,
+            pCount,
+            aCount,
+            hCount,
+            ratio
+          };
+        });
+
+        const overallTotalTracked = totalPresentAll + totalAbsentAll;
+        const overallAvgAttendance = overallTotalTracked > 0 ? Math.round((totalPresentAll / overallTotalTracked) * 100) : 0;
+
+        return (
+          <>
+            {/* Top Stats summary row */}
+            <div className="grid grid-cols-4 gap-4 mb-4 text-center">
+              <div className="border border-slate-200 p-2 bg-slate-50 rounded-lg">
+                <div className="text-[8px] text-slate-500 font-bold uppercase">Class Level</div>
+                <div className="text-sm font-black text-slate-800 font-serif">{selectedClass}</div>
               </div>
-              <div>
-                <h3 className="text-base font-bold text-slate-900 font-sans tracking-tight">
-                  {confirmModal.title}
-                </h3>
-                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                  {confirmModal.message}
-                </p>
+              <div className="border border-slate-200 p-2 bg-slate-50 rounded-lg">
+                <div className="text-[8px] text-slate-505 font-bold uppercase">Enrolled Profiles</div>
+                <div className="text-sm font-black text-slate-800 font-serif">{studentsInClass.length} Students</div>
+              </div>
+              <div className="border border-slate-200 p-2 bg-slate-50 rounded-lg">
+                <div className="text-[8px] text-slate-505 font-bold uppercase">Average Attendance Rate</div>
+                <div className="text-sm font-black text-emerald-700 font-serif">{overallAvgAttendance}%</div>
+              </div>
+              <div className="border border-slate-200 p-2 bg-slate-50 rounded-lg">
+                <div className="text-[8px] text-slate-550 font-bold uppercase">School Days Tracked</div>
+                <div className="text-sm font-black text-indigo-705 font-serif">{visibleDates.length} Days</div>
               </div>
             </div>
 
-            <div className="flex gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => setConfirmModal(null)}
-                className="flex-1 py-2 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-xl transition cursor-pointer select-none text-center"
-              >
-                {confirmModal.cancelText || 'Cancel'}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  confirmModal.onConfirm();
-                  setConfirmModal(null);
-                }}
-                className={`flex-1 py-2 px-4 text-white font-bold text-xs rounded-xl transition cursor-pointer select-none text-center ${
-                  confirmModal.danger 
-                    ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800' 
-                    : 'bg-amber-600 hover:bg-amber-700 active:bg-amber-800'
-                }`}
-              >
-                {confirmModal.confirmText || 'Confirm'}
-              </button>
+            {/* Roster Sheet Table */}
+            <div className="overflow-x-auto border border-slate-200 rounded-lg">
+              <table className="w-full text-left text-[9px] border-collapse border border-slate-300">
+                <thead>
+                  <tr className="bg-slate-100 text-slate-700 font-bold uppercase text-[8px] border-b border-slate-300">
+                    <th className="p-1 border border-slate-300 text-center w-8">No.</th>
+                    <th className="p-1 border border-slate-300 w-44">Student Profile</th>
+                    <th className="p-1 border border-slate-300 w-20">Student ID</th>
+                    {visibleDates.map(d => (
+                      <th key={d.dateStr} className={`p-1 border border-slate-300 text-center min-w-[20px] font-mono text-[7px] leading-none ${d.isWeekend ? 'bg-slate-200 text-slate-500' : ''}`}>
+                        <div>{d.dayNum}</div>
+                        <div className="text-[6px] text-slate-400 mt-0.5">{d.dayName.charAt(0)}</div>
+                      </th>
+                    ))}
+                    <th className="p-1 border border-slate-300 text-center w-10 text-emerald-800 font-bold">P</th>
+                    <th className="p-1 border border-slate-300 text-center w-10 text-rose-800 font-bold">A</th>
+                    <th className="p-1 border border-slate-300 text-center w-10 text-amber-800 font-bold">H</th>
+                    <th className="p-1 border border-slate-300 text-center w-12 font-bold bg-slate-50">%</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {studentRowsData.length === 0 ? (
+                    <tr>
+                      <td colSpan={visibleDates.length + 7} className="p-4 text-center text-slate-400 italic">
+                        No students enrolled in this class.
+                      </td>
+                    </tr>
+                  ) : (
+                    studentRowsData.map(({ student, daysData, pCount, aCount, hCount, ratio }, idx) => (
+                      <tr key={student.id} className="hover:bg-slate-50/50">
+                        <td className="p-1 border border-slate-300 text-center font-mono text-slate-400">{idx + 1}</td>
+                        <td className="p-1 border border-slate-300 font-bold text-slate-900 truncate max-w-[176px]">
+                          {student.firstName} {student.lastName}
+                        </td>
+                        <td className="p-1 border border-slate-300 font-mono text-slate-500 text-[8px]">{student.id}</td>
+                        {daysData.map(d => {
+                          let statusChar = '-';
+                          let cellClass = 'text-slate-400';
+                          if (d.status === 'Present') {
+                            statusChar = '✔';
+                            cellClass = 'bg-emerald-50 text-emerald-700 font-black';
+                          } else if (d.status === 'Absent') {
+                            statusChar = '✘';
+                            cellClass = 'bg-rose-50 text-rose-700 font-black';
+                          } else if (d.status === 'Holiday') {
+                            statusChar = 'H';
+                            cellClass = 'bg-amber-50 text-amber-700 font-semibold';
+                          }
+                          return (
+                            <td key={d.dateStr} className={`p-0.5 border border-slate-200 text-center font-mono text-[8px] ${cellClass}`}>
+                              {statusChar}
+                            </td>
+                          );
+                        })}
+                        <td className="p-1 border border-slate-300 text-center font-bold text-emerald-800 font-mono">{pCount}</td>
+                        <td className="p-1 border border-slate-300 text-center font-bold text-rose-800 font-mono">{aCount}</td>
+                        <td className="p-1 border border-slate-300 text-center font-bold text-amber-800 font-mono">{hCount}</td>
+                        <td className="p-1 border border-slate-300 text-center font-extrabold font-mono text-slate-850 bg-slate-50">{ratio}%</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
+        );
+      })()}
+
+      {/* Legend Block */}
+      <div className="mt-4 p-2 bg-slate-50 rounded border border-slate-100 flex items-center justify-between text-[7.5px] font-mono text-slate-500">
+        <div>
+          <span className="font-bold uppercase text-slate-600 mr-2">Status Key:</span>
+          <span className="inline-flex items-center gap-0.5 mr-3"><span className="text-emerald-600 font-bold">✔</span> Present</span>
+          <span className="inline-flex items-center gap-0.5 mr-3"><span className="text-rose-600 font-bold">✘</span> Absent</span>
+          <span className="inline-flex items-center gap-0.5 mr-3"><span className="text-amber-600 font-bold">H</span> Holiday</span>
+          <span className="inline-flex items-center gap-0.5"><span className="text-slate-400">-</span> Unmarked / No Session</span>
+        </div>
+        <div className="italic">
+          * Attendance rate is computed as: [Present Days / (Present Days + Absent Days)] × 100%
+        </div>
+      </div>
+
+      {/* Signature blocks */}
+      <div className="mt-8 flex justify-between text-[10px] font-serif pt-4 border-t border-slate-200">
+        <div className="text-center w-48">
+          <div className="h-8 border-b border-slate-300 mb-1" />
+          <div className="font-bold">Class Teacher Signature</div>
+          <div className="text-[8px] text-slate-400">Date: ____/____/20__</div>
+        </div>
+        <div className="text-center w-48">
+          <div className="h-8 border-b border-slate-300 mb-1" />
+          <div className="font-bold">Headteacher Approval</div>
+          <div className="text-[8px] text-slate-400">Signature & Stamp</div>
+        </div>
+      </div>
+    </div>
+
+    {confirmModal && confirmModal.isOpen && (
+      <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[110] p-4 no-print animate-fade-in">
+        <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden text-left p-6 space-y-4 animate-scale-up">
+          <div className="flex items-start gap-3">
+            <div className={`p-2 rounded-xl shrink-0 ${confirmModal.danger ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>
+              <ShieldAlert size={24} className="animate-bounce-slow" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-slate-900 font-sans tracking-tight">
+                {confirmModal.title}
+              </h3>
+              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                {confirmModal.message}
+              </p>
             </div>
           </div>
+
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => setConfirmModal(null)}
+              className="flex-1 py-2 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-xl transition cursor-pointer select-none text-center"
+            >
+              {confirmModal.cancelText || 'Cancel'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                confirmModal.onConfirm();
+                setConfirmModal(null);
+              }}
+              className={`flex-1 py-2 px-4 text-white font-bold text-xs rounded-xl transition cursor-pointer select-none text-center ${
+                confirmModal.danger 
+                  ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800' 
+                  : 'bg-amber-600 hover:bg-amber-700 active:bg-amber-800'
+              }`}
+            >
+              {confirmModal.confirmText || 'Confirm'}
+            </button>
+          </div>
         </div>
-      )}
+      </div>
+    )}
+
+    {showQRScanner && (
+      <StudentQRScanner
+        selectedClass={selectedClass}
+        onScanSuccess={handleQRScanSuccess}
+        onBatchScanSuccess={handleQRBatchScanSuccess}
+        onClose={() => setShowQRScanner(false)}
+        theme={theme}
+        isSubscriptionLocked={isSubscriptionLocked}
+      />
+    )}
 
     </div>
   );

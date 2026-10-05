@@ -1,0 +1,20 @@
+{
+  "name": "School Management and Assessment System",
+  "short_name": "GEETECH SMS",
+  "description": "A professional All-in-One School Database & Assessment Center with dynamic printing, real-time analytics, and report card builders.",
+  "start_url": "/",
+  "display": "standalone",
+  "id": "/index.html",
+  "orientation": "any",
+  "background_color": "#0f172a",
+  "theme_color": "#4f46e5",
+  "categories": ["education", "productivity"],
+  "icons": [
+    {
+      "src": "/logo.jpg",
+      "sizes": "192x192 512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,5 +1,6 @@
-import { useState, useMemo, useRef, ChangeEvent, FormEvent, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import React, { useState, useMemo, useRef, ChangeEvent, FormEvent, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import CreateBillCategoryModal from './finances/CreateBillCategoryModal';
 import { 
   Student, 
   ClassType, 
@@ -17,8 +18,9 @@ import { QRCodeSVG } from 'qrcode.react';
 import PaystackPaymentTrigger from './PaystackPaymentTrigger';
 import { generatePdfFromHtml, downloadBlobLocally } from '../pdfHelper';
 import { ThemeStyles } from './ThemeWrapper';
-import { generateSecureToken } from '../utils';
-import { getWatermarkHtml } from '../utils';
+import { generateSecureToken, getWatermarkHtml, formatIdentifiableFilename } from '../utils';
+import { isGoogleAuthenticated, sendGmailMessage } from '../googleDriveService';
+import SmartTextarea from './SmartTextarea';
 import { 
   DollarSign, 
   Plus, 
@@ -45,8 +47,22 @@ import {
   Bell,
   Mail,
   Send,
-  MessageSquare
+  MessageSquare,
+  PieChart as PieChartIcon,
+  CheckCircle2,
+  Clock,
+  XCircle,
+  TrendingUp,
+  Percent
 } from 'lucide-react';
+import { 
+  ResponsiveContainer, 
+  PieChart, 
+  Pie, 
+  Cell, 
+  Tooltip, 
+  Legend 
+} from 'recharts';
 
 interface Props {
   theme: ThemeStyles;
@@ -98,6 +114,8 @@ export default function SchoolFeesTab({
   const [paymentMethod, setPaymentMethod] = useState<FeePayment['method']>('Cash');
   const [paymentRemarks, setPaymentRemarks] = useState('');
   const [paymentDate, setPaymentDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [isCreateCategoryModalOpen, setIsCreateCategoryModalOpen] = useState(false);
+  const [customBillComponents, setCustomBillComponents] = useState(() => DbController.getCustomBillComponents());
 
   // Selected payment for receipt viewing/generation
   const [activeReceiptPayment, setActiveReceiptPayment] = useState<{ bill: StudentFeeBill; payment: FeePayment } | null>(null);
@@ -160,6 +178,13 @@ export default function SchoolFeesTab({
     danger?: boolean;
     onConfirm: () => void;
   } | null>(null);
+
+  const [showBulkBillingModal, setShowBulkBillingModal] = useState(false);
+  const [bulkSchoolFeesAmount, setBulkSchoolFeesAmount] = useState('400');
+
+  // Fee Distribution Pie Chart Filter & Metric Toggle States
+  const [chartMetricType, setChartMetricType] = useState<'students' | 'amount'>('students');
+  const [chartClassFilter, setChartClassFilter] = useState<ClassType | 'All'>('All');
 
   // Initialize Report Center student when modal opens
   useEffect(() => {
@@ -266,54 +291,24 @@ export default function SchoolFeesTab({
   }, [students, feeBills, selectedAcademicYear, selectedTerm]);
 
   const handlePrintReportCenter = () => {
-    const printWindow = window.open('about:blank', '_blank');
-    if (!printWindow) {
-      showToast("Popups are blocked by your browser container. Please enable popups to print.", "error");
-      return;
+    let title = 'School Ledger Summary';
+    if (reportCenterType === 'student') {
+      title = `Student Fee Ledger - ${reportCenterSelectedStudent?.firstName || ''} ${reportCenterSelectedStudent?.lastName || ''}`;
+    } else if (reportCenterType === 'class') {
+      title = `Class Fee Ledger - ${reportCenterSelectedClass}`;
     }
-
-    const previewElement = document.getElementById('report-center-preview-content');
-    if (!previewElement) {
-      showToast("Report preview content could not be located.", "error");
-      return;
-    }
-
-    printWindow.document.write(`
-      <html>
-        <head>
-          <title>${schoolInfo.name} - Termly Fees Report</title>
-          <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap">
-          <script src="https://cdn.tailwindcss.com"></script>
-          <style>
-            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;850;900&display=swap');
-            body { font-family: 'Inter', sans-serif; background-color: #ffffff; color: #1e293b; padding: 40px; position: relative; }
-            .font-mono { font-family: 'JetBrains Mono', monospace; }
-            @media print {
-              body { padding: 0; }
-              .no-print { display: none; }
-              @page { size: A4; margin: 15mm 15mm 15mm 15mm; }
-            }
-          </style>
-        </head>
-        <body onload="window.print(); window.close();">
-          ${getWatermarkHtml(schoolInfo.crestUrl)}
-          <div class="max-w-4xl mx-auto">${previewElement.innerHTML}</div>
-        </body>
-      </html>
-    `);
-    printWindow.document.close();
-    showToast("Report sent to print gateway!");
+    handlePrintStandard('report-center-preview-content', title);
   };
 
   const handleDownloadReportCenterPDF = () => {
     let filename = '';
-    const cleanFn = (str: string) => str.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+    const cleanFn = (str: string) => str.replace(/[^a-zA-Z0-9]/g, '_');
     if (reportCenterType === 'student') {
-      filename = `fees_ledger_${cleanFn(reportCenterSelectedStudent?.firstName || 'student')}_${selectedAcademicYear.replace('/', '_')}_${selectedTerm.toLowerCase().replace(' ', '_')}`;
+      filename = `Fees_Ledger_${cleanFn(reportCenterSelectedStudent?.firstName || 'Student')}_${selectedAcademicYear.replace('/', '_')}_${selectedTerm.replace(' ', '_')}`;
     } else if (reportCenterType === 'class') {
-      filename = `class_ledger_${cleanFn(reportCenterSelectedClass)}_${selectedAcademicYear.replace('/', '_')}_${selectedTerm.toLowerCase().replace(' ', '_')}`;
+      filename = `Class_Ledger_${cleanFn(reportCenterSelectedClass)}_${selectedAcademicYear.replace('/', '_')}_${selectedTerm.replace(' ', '_')}`;
     } else {
-      filename = `school_ledger_summary_${selectedAcademicYear.replace('/', '_')}_${selectedTerm.toLowerCase().replace(' ', '_')}`;
+      filename = `School_Ledger_Summary_${selectedAcademicYear.replace('/', '_')}_${selectedTerm.replace(' ', '_')}`;
     }
     handleExportFeesPDF('report-center-preview-content', filename);
   };
@@ -330,7 +325,7 @@ export default function SchoolFeesTab({
 
     let csvContent = "";
     let filename = "";
-    const cleanFn = (str: string) => str.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+    const cleanFn = (str: string) => str.replace(/[^a-zA-Z0-9]/g, '_');
 
     if (reportCenterType === 'student') {
       if (!reportCenterSelectedStudent || !reportCenterSelectedStudentBill) {
@@ -339,7 +334,7 @@ export default function SchoolFeesTab({
       }
       const s = reportCenterSelectedStudent;
       const b = reportCenterSelectedStudentBill;
-      filename = `fees_ledger_${cleanFn(s.firstName)}_${cleanFn(s.lastName)}_${cleanFn(selectedAcademicYear)}_${cleanFn(selectedTerm)}.csv`;
+      filename = `Fees_Ledger_${cleanFn(s.firstName)}_${cleanFn(s.lastName)}_${cleanFn(selectedAcademicYear)}_${cleanFn(selectedTerm)}.csv`;
 
       csvContent += `STUDENT FEES LEDGER STATEMENT\n`;
       csvContent += `School Name,${escapeCSV(schoolInfo.name || 'GeeTech Academy')}\n`;
@@ -372,7 +367,7 @@ export default function SchoolFeesTab({
       csvContent += `OUTSTANDING ARREARS BALANCE,,,,${reportCenterSelectedStudentStats.bal.toFixed(2)}\n`;
 
     } else if (reportCenterType === 'class') {
-      filename = `class_ledger_${cleanFn(reportCenterSelectedClass)}_${cleanFn(selectedAcademicYear)}_${cleanFn(selectedTerm)}.csv`;
+      filename = `Class_Ledger_${cleanFn(reportCenterSelectedClass)}_${cleanFn(selectedAcademicYear)}_${cleanFn(selectedTerm)}.csv`;
 
       csvContent += `CLASS FEES COMPLIANCE LEDGER\n`;
       csvContent += `School Name,${escapeCSV(schoolInfo.name || 'GeeTech Academy')}\n`;
@@ -393,7 +388,7 @@ export default function SchoolFeesTab({
       csvContent += `\nCUMULATIVE TOTALS,,,,,,,,,,,${reportCenterClassData.totalExpected.toFixed(2)},${reportCenterClassData.totalPaid.toFixed(2)},${reportCenterClassData.totalOwed.toFixed(2)},${reportCenterClassData.totalExpected > 0 ? Math.round((reportCenterClassData.totalPaid / reportCenterClassData.totalExpected) * 100) : 0}% Coll.\n`;
 
     } else if (reportCenterType === 'school') {
-      filename = `school_ledger_summary_${cleanFn(selectedAcademicYear)}_${cleanFn(selectedTerm)}.csv`;
+      filename = `School_Ledger_Summary_${cleanFn(selectedAcademicYear)}_${cleanFn(selectedTerm)}.csv`;
 
       csvContent += `CAMPUS-WIDE FEES DIRECTORY STATUS\n`;
       csvContent += `School Name,${escapeCSV(schoolInfo.name || 'GeeTech Academy')}\n`;
@@ -856,6 +851,140 @@ export default function SchoolFeesTab({
     };
   }, [feeBills, selectedAcademicYear, selectedTerm]);
 
+  // Fee Distribution & Status Pie Chart Calculations
+  const feeDistributionStats = useMemo(() => {
+    const targetStudents = chartClassFilter === 'All'
+      ? students
+      : students.filter(s => s.class === chartClassFilter);
+
+    let fullyPaidCount = 0;
+    let fullyPaidExpected = 0;
+    let fullyPaidPaid = 0;
+
+    let partiallyPaidCount = 0;
+    let partiallyPaidExpected = 0;
+    let partiallyPaidPaid = 0;
+    let partiallyPaidArrears = 0;
+
+    let unpaidCount = 0;
+    let unpaidExpected = 0;
+    let unpaidPaid = 0;
+
+    let unbilledCount = 0;
+
+    targetStudents.forEach(student => {
+      const bill = getStudentBill(student);
+      const expected = (bill.schoolFees || 0) + 
+                       (bill.utilityBill || 0) + 
+                       (bill.sportsFees || 0) + 
+                       (bill.ptaDues || 0) + 
+                       (bill.transportationBill || 0) + 
+                       (bill.otherFee || 0);
+      const paid = bill.payments ? bill.payments.reduce((sum, p) => sum + p.amount, 0) : 0;
+      const owed = expected - paid;
+
+      if (expected === 0) {
+        unbilledCount++;
+      } else if (owed <= 0) {
+        fullyPaidCount++;
+        fullyPaidExpected += expected;
+        fullyPaidPaid += paid;
+      } else if (paid > 0) {
+        partiallyPaidCount++;
+        partiallyPaidExpected += expected;
+        partiallyPaidPaid += paid;
+        partiallyPaidArrears += owed;
+      } else {
+        unpaidCount++;
+        unpaidExpected += expected;
+        unpaidPaid += paid;
+      }
+    });
+
+    const totalBilledStudents = fullyPaidCount + partiallyPaidCount + unpaidCount;
+    const totalStudents = targetStudents.length;
+
+    const totalTermExpected = fullyPaidExpected + partiallyPaidExpected + unpaidExpected;
+    const totalTermPaid = fullyPaidPaid + partiallyPaidPaid + unpaidPaid;
+    const totalTermArrears = totalTermExpected - totalTermPaid;
+
+    // Data formatted for Recharts
+    const pieDataStudents = [
+      {
+        name: 'Fully Paid',
+        value: fullyPaidCount,
+        amount: fullyPaidPaid,
+        expected: fullyPaidExpected,
+        arrears: 0,
+        color: '#10b981',
+        description: 'Fee cleared in full'
+      },
+      {
+        name: 'Partially Paid',
+        value: partiallyPaidCount,
+        amount: partiallyPaidPaid,
+        expected: partiallyPaidExpected,
+        arrears: partiallyPaidArrears,
+        color: '#f59e0b',
+        description: 'Installment payments made'
+      },
+      {
+        name: 'Unpaid',
+        value: unpaidCount,
+        amount: unpaidPaid,
+        expected: unpaidExpected,
+        arrears: unpaidExpected,
+        color: '#f43f5e',
+        description: 'Zero payments made'
+      }
+    ];
+
+    const pieDataAmount = [
+      {
+        name: 'Fully Paid (Collected)',
+        value: fullyPaidPaid,
+        studentCount: fullyPaidCount,
+        color: '#10b981',
+        description: 'From cleared accounts'
+      },
+      {
+        name: 'Partially Paid (Collected)',
+        value: partiallyPaidPaid,
+        studentCount: partiallyPaidCount,
+        color: '#3b82f6',
+        description: 'Installment collections'
+      },
+      {
+        name: 'Outstanding Arrears',
+        value: totalTermArrears,
+        studentCount: partiallyPaidCount + unpaidCount,
+        color: '#f43f5e',
+        description: 'Uncollected balances'
+      }
+    ];
+
+    return {
+      fullyPaidCount,
+      fullyPaidExpected,
+      fullyPaidPaid,
+      partiallyPaidCount,
+      partiallyPaidExpected,
+      partiallyPaidPaid,
+      partiallyPaidArrears,
+      unpaidCount,
+      unpaidExpected,
+      unpaidPaid,
+      unbilledCount,
+      totalBilledStudents,
+      totalStudents,
+      totalTermExpected,
+      totalTermPaid,
+      totalTermArrears,
+      pieDataStudents,
+      pieDataAmount
+    };
+  }, [students, feeBills, selectedAcademicYear, selectedTerm, chartClassFilter]);
+
   // Handle bill details modification
   const handleEditBillComponent = (field: keyof Omit<StudentFeeBill, 'payments' | 'id'>, value: any) => {
     if (!activeBill) return;
@@ -943,20 +1072,18 @@ export default function SchoolFeesTab({
     setBulkReceiptData(data);
     showToast(`Generating bulk receipts for ${data.length} students...`, "success");
     
-    // Give it a bit of time to render the hidden print area then trigger print
+    // Trigger print preview for the bulk receipts
     setTimeout(() => {
-      handlePrintStandard('bulk-receipts-print-area');
-      // We don't clear immediately to allow print window to read it
-      setTimeout(() => setBulkReceiptData([]), 2000);
-    }, 1000);
+      handlePrintStandard('bulk-receipts-print-area', `Bulk Payment Receipts (${data.length} Students)`);
+    }, 250);
   };
 
-  const filenameFriendly = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  const filenameFriendly = (name: string) => name.replace(/[^a-zA-Z0-9]+/g, '_');
 
   const handleExportFeesPDF = async (elementId: string, filename: string) => {
     try {
-      const isReceipt = elementId === 'fee-receipt-print-area' || elementId === 'bulk-receipts-print-area';
-      const result = await generatePdfFromHtml(elementId, filename, isReceipt); // Use landscape (isReceipt) for DL
+      const isLandscape = false;
+      const result = await generatePdfFromHtml(elementId, filename, isLandscape);
       downloadBlobLocally(result.blob, result.filename);
       showToast("PDF report generated successfully!");
     } catch (e: any) {
@@ -964,62 +1091,18 @@ export default function SchoolFeesTab({
     }
   };
 
-  const handlePrintStandard = (elementId: string) => {
-    const printContent = document.getElementById(elementId);
-    if (!printContent) return;
+  const handlePrintStandard = (elementId: string, title = 'Official Fee Document') => {
     try {
-      const isReceipt = elementId === 'fee-receipt-print-area' || elementId === 'bulk-receipts-print-area';
-      const windowUrl = 'about:blank';
-      const uniqueName = new Date().getTime().toString();
-      const printWindow = window.open(windowUrl, uniqueName, 'left=100,top=100,width=900,height=900');
-      if (!printWindow) {
-        showToast("Popups are blocked by your browser container. Please export PDF or enable popups in settings to print.", "error");
-        return;
+      const el = document.getElementById(elementId);
+      const contentHtml = el ? el.innerHTML : undefined;
+      if (typeof (window as any).printTarget === 'function') {
+        (window as any).printTarget(elementId, title, false, contentHtml);
+      } else {
+        window.print();
       }
-      
-      // Build beautiful offsite styles to accompany printout
-      printWindow.document.write(`
-        <html>
-          <head>
-            <title>${filenameFriendly(schoolInfo.name) || 'Printout'}</title>
-            <script src="https://cdn.tailwindcss.com"></script>
-            <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
-            <style>
-              body { font-family: 'Inter', sans-serif; background-color: #ffffff; color: #1e293b; padding: 24px; position: relative; }
-              .font-mono { font-family: 'JetBrains Mono', monospace; }
-              .receipt-container { margin-bottom: 20px; page-break-after: always; }
-              @media print {
-                body { padding: 0; }
-                button { display: none; }
-                @page { 
-                  size: ${isReceipt ? '220mm 110mm' : 'A4'}; 
-                  margin: 0; 
-                }
-                #fee-receipt-print-area, .bulk-receipt-item {
-                  width: 220mm !important;
-                  height: 110mm !important;
-                  padding: 8mm 10mm !important;
-                  overflow: hidden !important;
-                  page-break-after: always;
-                }
-              }
-            </style>
-          </head>
-          <body>
-            ${getWatermarkHtml(schoolInfo.crestUrl)}
-            <div class="${isReceipt ? 'w-[220mm]' : 'max-w-4xl'} mx-auto">${printContent.innerHTML}</div>
-            <script>
-              window.onload = function() {
-                setTimeout(function(){ window.print(); window.close(); }, 800);
-              }
-            </script>
-          </body>
-        </html>
-      `);
-      printWindow.document.close();
     } catch (err: any) {
       console.error("Window print exception: ", err);
-      showToast("Browser sandboxing blocks direct print popups. Please export PDF.", "error");
+      showToast("Direct print restriction. Please export PDF.", "error");
     }
   };
 
@@ -1032,28 +1115,78 @@ export default function SchoolFeesTab({
 
     setIsSendingEmail(true);
     try {
-      const response = await fetch('/api/communications/send-email', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          to: receiptEmailOverride.trim(),
-          studentName: activeReceiptPayment.bill.studentName,
-          studentId: activeReceiptPayment.bill.studentId,
-          receiptNo: activeReceiptPayment.payment.receiptNo,
-          amount: activeReceiptPayment.payment.amount,
-          component: activeReceiptPayment.payment.component,
-          method: activeReceiptPayment.payment.method,
-          date: activeReceiptPayment.payment.date
-        })
-      });
-
-      const result = await response.json();
-      if (response.ok && result.success) {
-        showToast(`Digital copy of receipt ${activeReceiptPayment.payment.receiptNo} successfully sent to ${receiptEmailOverride.trim()}`, "success");
+      if (isGoogleAuthenticated()) {
+        const mailSubject = `Digital Payment Receipt #${activeReceiptPayment.payment.receiptNo} - ${activeReceiptPayment.bill.studentName}`;
+        const htmlBody = `
+          <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; rounded-lg; background-color: #ffffff;">
+            <div style="text-align: center; margin-bottom: 25px; border-bottom: 2px solid #6366f1; padding-bottom: 15px;">
+              <h2 style="color: #4f46e5; margin: 0; text-transform: uppercase; font-size: 20px; tracking: 0.05em;">Digital Payment Receipt</h2>
+              <p style="color: #64748b; font-size: 11px; margin: 5px 0 0 0;">GEETECH HIGH-SCHOOL MANAGEMENT PLATFORM</p>
+            </div>
+            
+            <p style="font-size: 14px; color: #334155;">Dear Parent/Guardian,</p>
+            <p style="font-size: 14px; color: #334155; line-height: 1.5;">
+              We have successfully received and processed your payment for <strong>${activeReceiptPayment.bill.studentName}</strong>. 
+              Please find the complete transaction summary detailed below:
+            </p>
+            
+            <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; margin: 20px 0;">
+              <table style="width: 100%; font-size: 13px; color: #334155; border-collapse: collapse;">
+                <tr>
+                  <td style="padding: 8px 0; font-weight: bold; color: #64748b; border-bottom: 1px solid #f1f5f9;">Receipt Number</td>
+                  <td style="padding: 8px 0; text-align: right; font-weight: bold; color: #0f172a; border-bottom: 1px solid #f1f5f9; font-family: monospace;">${activeReceiptPayment.payment.receiptNo}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px 0; font-weight: bold; color: #64748b; border-bottom: 1px solid #f1f5f9;">Amount Paid</td>
+                  <td style="padding: 8px 0; text-align: right; font-weight: 800; color: #16a34a; border-bottom: 1px solid #f1f5f9; font-size: 14px; font-family: monospace;">GHS ${activeReceiptPayment.payment.amount}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px 0; font-weight: bold; color: #64748b; border-bottom: 1px solid #f1f5f9;">Fee Component</td>
+                  <td style="padding: 8px 0; text-align: right; font-weight: 600; color: #0f172a; border-bottom: 1px solid #f1f5f9;">${activeReceiptPayment.payment.component}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px 0; font-weight: bold; color: #64748b; border-bottom: 1px solid #f1f5f9;">Payment Method</td>
+                  <td style="padding: 8px 0; text-align: right; font-weight: bold; color: #0f172a; border-bottom: 1px solid #f1f5f9; text-transform: uppercase;">${activeReceiptPayment.payment.method}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px 0; font-weight: bold; color: #64748b;">Transaction Date</td>
+                  <td style="padding: 8px 0; text-align: right; font-weight: 600; color: #0f172a;">${activeReceiptPayment.payment.date}</td>
+                </tr>
+              </table>
+            </div>
+            
+            <p style="font-size: 13px; color: #64748b; text-align: center; margin-top: 30px; border-top: 1px dashed #cbd5e1; padding-top: 15px;">
+              Thank you for your valuable partnership in your child's educational journey.<br/>
+              <em>This is a secure electronic receipt dispatched directly from our administration portal.</em>
+            </p>
+          </div>
+        `;
+        await sendGmailMessage(receiptEmailOverride.trim(), mailSubject, htmlBody);
+        showToast(`Digital receipt copy successfully delivered using your connected Gmail to ${receiptEmailOverride.trim()}`, "success");
       } else {
-        showToast(result.message || "Failed to dispatch digital receipt copy.", "error");
+        const response = await fetch('/api/communications/send-email', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            to: receiptEmailOverride.trim(),
+            studentName: activeReceiptPayment.bill.studentName,
+            studentId: activeReceiptPayment.bill.studentId,
+            receiptNo: activeReceiptPayment.payment.receiptNo,
+            amount: activeReceiptPayment.payment.amount,
+            component: activeReceiptPayment.payment.component,
+            method: activeReceiptPayment.payment.method,
+            date: activeReceiptPayment.payment.date
+          })
+        });
+
+        const result = await response.json();
+        if (response.ok && result.success) {
+          showToast(`Digital copy of receipt ${activeReceiptPayment.payment.receiptNo} successfully sent to ${receiptEmailOverride.trim()}`, "success");
+        } else {
+          showToast(result.message || "Failed to dispatch digital receipt copy.", "error");
+        }
       }
     } catch (err: any) {
       console.error("Failed to send receipt email:", err);
@@ -1152,7 +1285,7 @@ export default function SchoolFeesTab({
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
-    const filename = `ledger_${filenameFriendly(student.studentName || student.studentId)}.csv`;
+    const filename = `Ledger_${filenameFriendly(student.studentName || student.studentId)}.csv`;
     
     link.setAttribute("href", url);
     link.setAttribute("download", filename);
@@ -1166,11 +1299,6 @@ export default function SchoolFeesTab({
 
   const handlePrintDebtors = () => {
     const minAmt = parseFloat(debtorMinAmount) || 0;
-    const printWindow = window.open('about:blank', '_blank');
-    if (!printWindow) {
-      showToast("Popups are blocked by your browser container. Please enable popups to print.", "error");
-      return;
-    }
     
     // Generate class summation rows
     const classRowsHtml = debtorData.classSummaries.map(s => `
@@ -1195,91 +1323,78 @@ export default function SchoolFeesTab({
       </tr>
     `).join('');
 
-    printWindow.document.write(`
-      <html>
-        <head>
-          <title>OFFICIAL DEBTORS SUMMARY & DETAILS REPORT</title>
-          <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap">
-          <style>
-            body { font-family: 'Inter', sans-serif; padding: 40px; color: #1e293b; background-color: #ffffff; }
-            h1 { font-size: 20px; text-transform: uppercase; margin: 0; color: #0f172a; font-weight: 800; letter-spacing: -0.025em; }
-            h2 { font-size: 13px; text-transform: uppercase; margin-top: 35px; margin-bottom: 12px; border-bottom: 2px solid #0f172a; padding-bottom: 6px; color: #1e3a8a; font-weight: 700; letter-spacing: 0.05em; }
-            table { width: 100%; border-collapse: collapse; margin-bottom: 25px; font-size: 12px; }
-            th { background-color: #f8fafc; padding: 12px 10px; text-align: left; font-weight: 700; border-bottom: 2px solid #cbd5e1; text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; color: #475569; }
-            td { padding: 12px 10px; border-bottom: 1px solid #e2e8f0; }
-            .total-row { font-weight: bold; background-color: #f8fafc; }
-            .text-center { text-align: center; }
-            .text-right { text-align: right; }
-          </style>
-        </head>
-        <body onload="window.print(); window.close();">
-          <div style="text-align: center; margin-bottom: 30px;">
-            <h1 style="margin: 0; font-size: 24px;">${schoolInfo.name || 'GeeTech Academy'}</h1>
-            <p style="margin: 6px 0 0 0; font-size: 13px; font-style: italic; color: #475569; font-weight: 500;">Motto: "${schoolInfo.motto || 'Excellence and Dignity'}"</p>
-            <p style="margin: 6px 0 0 0; font-size: 11px; color: #64748b; font-weight: 500;">${schoolInfo.gpsAddress || 'Digital Address GPS'} • TEL: ${schoolInfo.telephone || '+233 24 556 7780'}</p>
+    const debtorHtmlContent = `
+      <div style="padding: 24px;">
+        <div style="text-align: center; margin-bottom: 30px;">
+          <h1 style="margin: 0; font-size: 24px; font-weight: bold;">${schoolInfo.name || 'GeeTech Academy'}</h1>
+          <p style="margin: 6px 0 0 0; font-size: 13px; font-style: italic; color: #475569; font-weight: 500;">Motto: "${schoolInfo.motto || 'Excellence and Dignity'}"</p>
+          <p style="margin: 6px 0 0 0; font-size: 11px; color: #64748b; font-weight: 500;">${schoolInfo.gpsAddress || 'Digital Address GPS'} • TEL: ${schoolInfo.telephone || '+233 24 556 7780'}</p>
+        </div>
+        
+        <hr style="border: 0; border-top: 2px solid #0f172a; margin-bottom: 25px;" />
+
+        <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 30px;">
+          <div>
+            <h2 style="margin: 0; border: none; padding: 0; color: #0f172a; font-size: 16px; font-weight: 800; text-transform: uppercase; letter-spacing: -0.01em;">OFFICIAL DEBTOR ACCOUNTS ANALYSIS REPORT</h2>
+            <p style="margin: 6px 0 0 0; font-size: 13px; color: #475569;">Academic Cycle: <strong>${selectedTerm} (${selectedAcademicYear})</strong></p>
           </div>
-          
-          <hr style="border: 0; border-top: 2px solid #0f172a; margin-bottom: 25px;" />
-
-          <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 30px;">
-            <div>
-              <h2 style="margin: 0; border: none; padding: 0; color: #0f172a; font-size: 16px; font-weight: 800; text-transform: uppercase; letter-spacing: -0.01em;">OFFICIAL DEBTOR ACCOUNTS ANALYSIS REPORT</h2>
-              <p style="margin: 6px 0 0 0; font-size: 13px; color: #475569;">Academic Cycle: <strong>${selectedTerm} (${selectedAcademicYear})</strong></p>
-            </div>
-            <div style="text-align: right; font-size: 11px; font-family: monospace; color: #64748b; line-height: 1.5;">
-              Generated: ${new Date().toLocaleString()}<br/>
-              Owed Threshold Limit: <strong>GHS ${minAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</strong>
-            </div>
+          <div style="text-align: right; font-size: 11px; font-family: monospace; color: #64748b; line-height: 1.5;">
+            Generated: ${new Date().toLocaleString()}<br/>
+            Owed Threshold Limit: <strong>GHS ${minAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</strong>
           </div>
+        </div>
 
-          <h2>I. Class Summation Summary</h2>
-          <table>
-            <thead>
-              <tr>
-                <th style="text-align: left; width: 40%;">Class / Division Name</th>
-                <th style="text-align: center; width: 25%;">Registered Debtor Count</th>
-                <th style="text-align: right; width: 35%;">Total Outstanding Arrears Balance</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${classRowsHtml || '<tr><td colspan="3" style="text-align: center; color: #64748b; padding: 20px;">No class debtors found matching criteria.</td></tr>'}
-              <tr class="total-row" style="border-top: 2px solid #0f172a; background-color: #f1f5f9; font-size: 13px;">
-                <td style="padding: 12px 10px; text-align: left; font-weight: 800;">TOTAL SUMMARY SUMMATION</td>
-                <td style="padding: 12px 10px; text-align: center; font-weight: 800; color: #1e3a8a;">${debtorData.overallDebtorCount} Students</td>
-                <td style="padding: 12px 10px; text-align: right; font-weight: 900; color: #dc2626; font-family: monospace;">GHS ${debtorData.overallTotalOwed.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-              </tr>
-            </tbody>
-          </table>
+        <h2 style="font-size: 13px; text-transform: uppercase; margin-top: 35px; margin-bottom: 12px; border-bottom: 2px solid #0f172a; padding-bottom: 6px; color: #1e3a8a; font-weight: 700;">I. Class Summation Summary</h2>
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 25px; font-size: 12px;">
+          <thead>
+            <tr style="border-bottom: 2px solid #cbd5e1; background-color: #f8fafc;">
+              <th style="padding: 10px; text-align: left; font-weight: bold; width: 40%;">Class / Division Name</th>
+              <th style="padding: 10px; text-align: center; font-weight: bold; width: 25%;">Registered Debtor Count</th>
+              <th style="padding: 10px; text-align: right; font-weight: bold; width: 35%;">Total Outstanding Arrears Balance</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${classRowsHtml || '<tr><td colspan="3" style="text-align: center; color: #64748b; padding: 20px;">No class debtors found matching criteria.</td></tr>'}
+            <tr style="border-top: 2px solid #0f172a; background-color: #f1f5f9; font-size: 13px; font-weight: bold;">
+              <td style="padding: 12px 10px; text-align: left; font-weight: 800;">TOTAL SUMMARY SUMMATION</td>
+              <td style="padding: 12px 10px; text-align: center; font-weight: 800; color: #1e3a8a;">${debtorData.overallDebtorCount} Students</td>
+              <td style="padding: 12px 10px; text-align: right; font-weight: 900; color: #dc2626; font-family: monospace;">GHS ${debtorData.overallTotalOwed.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+            </tr>
+          </tbody>
+        </table>
 
-          <h2>II. Itemized Debtor Students Registry (Class Filter: ${debtorSelectedClassFilter})</h2>
-          <table>
-            <thead>
-              <tr>
-                <th style="text-align: left; width: 35%;">Student Particulars</th>
-                <th style="text-align: left; width: 15%;">Class</th>
-                <th style="text-align: right; width: 16%;">Expected Fees</th>
-                <th style="text-align: right; width: 16%;">Paid Installments</th>
-                <th style="text-align: right; width: 18%;">Outstanding Arrears</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${detailRowsHtml || '<tr><td colspan="5" style="text-align: center; color: #64748b; padding: 20px;">No detailed debtor records found matching selections.</td></tr>'}
-            </tbody>
-          </table>
+        <h2 style="font-size: 13px; text-transform: uppercase; margin-top: 35px; margin-bottom: 12px; border-bottom: 2px solid #0f172a; padding-bottom: 6px; color: #1e3a8a; font-weight: 700;">II. Itemized Debtor Students Registry (Class Filter: ${debtorSelectedClassFilter})</h2>
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 25px; font-size: 12px;">
+          <thead>
+            <tr style="border-bottom: 2px solid #cbd5e1; background-color: #f8fafc;">
+              <th style="padding: 10px; text-align: left; font-weight: bold; width: 35%;">Student Particulars</th>
+              <th style="padding: 10px; text-align: left; font-weight: bold; width: 15%;">Class</th>
+              <th style="padding: 10px; text-align: right; font-weight: bold; width: 16%;">Expected Fees</th>
+              <th style="padding: 10px; text-align: right; font-weight: bold; width: 16%;">Paid Installments</th>
+              <th style="padding: 10px; text-align: right; font-weight: bold; width: 18%;">Outstanding Arrears</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${detailRowsHtml || '<tr><td colspan="5" style="text-align: center; color: #64748b; padding: 20px;">No detailed debtor records found matching selections.</td></tr>'}
+          </tbody>
+        </table>
 
-          <div style="margin-top: 70px; display: flex; justify-content: space-between; font-size: 11px; font-weight: 600;">
-            <div style="width: 220px; border-top: 1.5px solid #475569; text-align: center; padding-top: 6px; color: #475569;">
-              Accounts / Billing Desk Officer
-            </div>
-            <div style="width: 220px; border-top: 1.5px solid #475569; text-align: center; padding-top: 6px; color: #475569;">
-              Bursar / Authorized Signature Seal
-            </div>
+        <div style="margin-top: 70px; display: flex; justify-content: space-between; font-size: 11px; font-weight: 600;">
+          <div style="width: 220px; border-top: 1.5px solid #475569; text-align: center; padding-top: 6px; color: #475569;">
+            Accounts / Billing Desk Officer
           </div>
-        </body>
-      </html>
-    `);
-    printWindow.document.close();
-    showToast("Debtors analysis dispatch sent to print gateway!");
+          <div style="width: 220px; border-top: 1.5px solid #475569; text-align: center; padding-top: 6px; color: #475569;">
+            Bursar / Authorized Signature Seal
+          </div>
+        </div>
+      </div>
+    `;
+
+    if (typeof (window as any).printTarget === 'function') {
+      (window as any).printTarget('', 'Termly Debtors Registry Report', false, debtorHtmlContent);
+    } else {
+      window.print();
+    }
   };
 
   const handleExportDebtorsCSV = () => {
@@ -1330,7 +1445,7 @@ export default function SchoolFeesTab({
     const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
     link.setAttribute("href", url);
-    link.setAttribute("download", `debtors_report_${selectedAcademicYear.replace('/', '_')}_${selectedTerm.toLowerCase().replace(' ', '_')}.csv`);
+    link.setAttribute("download", `Debtors_Report_${selectedAcademicYear.replace('/', '_')}_${selectedTerm.toLowerCase().replace(' ', '_')}.csv`);
     link.style.visibility = "hidden";
     document.body.appendChild(link);
     link.click();
@@ -1418,7 +1533,7 @@ export default function SchoolFeesTab({
       
       {/* Dynamic Feedback Toast */}
       {toastMessage && (
-        <div className={`fixed bottom-5 right-5 z-50 flex items-center gap-3 px-4 py-3 rounded-lg shadow-xl text-white transition-all duration-300 transform translate-y-0 ${
+        <div className={`fixed bottom-4 right-4 sm:bottom-5 sm:right-5 left-4 sm:left-auto max-w-sm z-50 flex items-center gap-3 px-4 py-3 rounded-lg shadow-xl text-white transition-all duration-300 transform translate-y-0 ${
           toastMessage.type === 'success' ? 'bg-emerald-600' : 'bg-rose-600'
         }`}>
           <Check className="h-5 w-5 shrink-0" />
@@ -1427,7 +1542,7 @@ export default function SchoolFeesTab({
       )}
 
       {/* Main Stats Header Ribbon */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))' }}>
         <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-5 flex items-center gap-4">
           <div className="p-3 bg-blue-50 text-blue-600 rounded-lg">
             <BookOpen className="h-6 w-6" />
@@ -1483,9 +1598,327 @@ export default function SchoolFeesTab({
         </div>
       </div>
 
+      {/* FEE COLLECTION DISTRIBUTION & STATUS PIE CHART ANALYTICS */}
+      <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm p-5 md:p-6 space-y-6 no-print">
+        {/* Header & Controls */}
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-indigo-50 border border-indigo-100 text-indigo-600 rounded-xl flex items-center justify-center flex-shrink-0">
+              <PieChartIcon size={20} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-black text-slate-900 uppercase tracking-wide">
+                  Fee Collection & Payment Status Distribution
+                </h3>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-indigo-100 text-indigo-800 border border-indigo-200 font-mono">
+                  {selectedTerm}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5 font-medium">
+                Visual breakdown of fully paid, partially paid, and unpaid fees across {selectedAcademicYear} • {selectedTerm}
+              </p>
+            </div>
+          </div>
+
+          {/* Metric Mode Toggle & Class Selector */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center p-1 bg-slate-100/90 rounded-xl border border-slate-200 text-xs font-bold">
+              <button
+                type="button"
+                onClick={() => setChartMetricType('students')}
+                className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                  chartMetricType === 'students'
+                    ? 'bg-white text-indigo-950 shadow-xs border border-slate-200'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <User size={13} />
+                <span>Student Count</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setChartMetricType('amount')}
+                className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                  chartMetricType === 'amount'
+                    ? 'bg-white text-indigo-950 shadow-xs border border-slate-200'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Coins size={13} />
+                <span>Value (GHS)</span>
+              </button>
+            </div>
+
+            <select
+              value={chartClassFilter}
+              onChange={(e) => setChartClassFilter(e.target.value as any)}
+              className="text-xs font-bold bg-slate-50 border border-slate-200 hover:border-indigo-400 rounded-xl px-3 py-2 text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 transition cursor-pointer"
+            >
+              <option value="All">All Classes ({students.length} students)</option>
+              {CLASSES.map(cls => (
+                <option key={cls} value={cls}>{cls}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* Main Chart & Metric Cards Layout */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
+          
+          {/* Left Column: Recharts Donut Pie Chart (lg:col-span-5) */}
+          <div className="lg:col-span-5 flex flex-col items-center justify-center relative bg-slate-50/60 rounded-2xl border border-slate-200/70 p-4 min-h-[300px]">
+            {feeDistributionStats.totalBilledStudents === 0 ? (
+              <div className="text-center py-12 space-y-2">
+                <PieChartIcon className="mx-auto text-slate-300" size={38} />
+                <p className="text-xs font-bold text-slate-500">No billed students found for this context.</p>
+                <p className="text-[11px] text-slate-400">Initialize standard billing to populate the distribution chart.</p>
+              </div>
+            ) : (
+              <>
+                <div className="w-full h-[250px] relative">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={chartMetricType === 'students' ? feeDistributionStats.pieDataStudents : feeDistributionStats.pieDataAmount}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={62}
+                        outerRadius={95}
+                        paddingAngle={4}
+                        dataKey="value"
+                        animationDuration={800}
+                      >
+                        {(chartMetricType === 'students' ? feeDistributionStats.pieDataStudents : feeDistributionStats.pieDataAmount).map((entry, index) => (
+                          <Cell 
+                            key={`cell-${index}`} 
+                            fill={entry.color} 
+                            stroke="#ffffff"
+                            strokeWidth={2}
+                            className="transition-all hover:opacity-85 cursor-pointer"
+                          />
+                        ))}
+                      </Pie>
+                      <Tooltip 
+                        content={({ active, payload }) => {
+                          if (active && payload && payload.length) {
+                            const data = payload[0].payload;
+                            const totalCount = feeDistributionStats.totalBilledStudents || 1;
+                            const totalExp = feeDistributionStats.totalTermExpected || 1;
+                            const pct = ((data.value / (chartMetricType === 'students' ? totalCount : totalExp)) * 100).toFixed(1);
+
+                            return (
+                              <div className="bg-slate-900/95 text-white p-3.5 rounded-xl border border-slate-700 shadow-xl text-xs space-y-1.5 min-w-[200px]">
+                                <div className="flex items-center justify-between gap-3 border-b border-slate-700/80 pb-1.5">
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-2.5 h-2.5 rounded-full inline-block shrink-0" style={{ backgroundColor: data.color }} />
+                                    <span className="font-black text-white">{data.name}</span>
+                                  </div>
+                                  <span className="font-mono font-bold text-amber-300">{pct}%</span>
+                                </div>
+
+                                {chartMetricType === 'students' ? (
+                                  <div className="space-y-1 pt-1 font-mono">
+                                    <div className="flex justify-between text-[11px] text-slate-300 gap-3">
+                                      <span>Student Count:</span>
+                                      <span className="font-bold text-white">{data.value} student{data.value === 1 ? '' : 's'}</span>
+                                    </div>
+                                    <div className="flex justify-between text-[11px] text-slate-300 gap-3">
+                                      <span>Total Paid:</span>
+                                      <span className="font-bold text-emerald-400">GHS {data.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                    </div>
+                                    <div className="flex justify-between text-[11px] text-slate-300 gap-3">
+                                      <span>Total Arrears:</span>
+                                      <span className="font-bold text-rose-400">GHS {data.arrears.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="space-y-1 pt-1 font-mono">
+                                    <div className="flex justify-between text-[11px] text-slate-300 gap-3">
+                                      <span>Amount Value:</span>
+                                      <span className="font-bold text-emerald-400">GHS {data.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                                    </div>
+                                    {data.studentCount !== undefined && (
+                                      <div className="flex justify-between text-[11px] text-slate-300 gap-3">
+                                        <span>Affected Students:</span>
+                                        <span className="font-bold text-white">{data.studentCount}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }
+                          return null;
+                        }} 
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+
+                  {/* Center Donut Overlay Stat */}
+                  <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                    <span className="text-2xl font-black text-slate-900 font-mono tracking-tight">
+                      {chartMetricType === 'students' 
+                        ? `${feeDistributionStats.fullyPaidCount + feeDistributionStats.partiallyPaidCount}/${feeDistributionStats.totalBilledStudents}`
+                        : `${((feeDistributionStats.totalTermPaid / (feeDistributionStats.totalTermExpected || 1)) * 100).toFixed(0)}%`
+                      }
+                    </span>
+                    <span className="text-[10px] font-extrabold uppercase text-slate-400 tracking-wider">
+                      {chartMetricType === 'students' ? 'Paid / Billed' : 'Collection Rate'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Quick Legend Pills below chart */}
+                <div className="flex flex-wrap items-center justify-center gap-2 pt-2 text-[11px] font-bold">
+                  {(chartMetricType === 'students' ? feeDistributionStats.pieDataStudents : feeDistributionStats.pieDataAmount).map((item, idx) => (
+                    <div key={idx} className="flex items-center gap-1.5 bg-white px-2.5 py-1 rounded-lg border border-slate-200/80 shadow-2xs">
+                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
+                      <span className="text-slate-700">{item.name}:</span>
+                      <span className="font-mono text-slate-950">
+                        {chartMetricType === 'students' ? `${item.value} stds` : `GHS ${item.value.toLocaleString()}`}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Right Column: Detailed Breakdown Cards (lg:col-span-7) */}
+          <div className="lg:col-span-7 space-y-3.5">
+            {/* 1. Fully Paid Card */}
+            <div className="p-4 rounded-2xl bg-emerald-50/70 border border-emerald-200/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+              <div className="flex items-start gap-3">
+                <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs mt-0.5">
+                  <CheckCircle2 size={20} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-xs font-black uppercase text-emerald-950 tracking-wider">Fully Paid Fees</h4>
+                    <span className="px-2 py-0.2 rounded-full text-[10px] font-black uppercase bg-emerald-200/80 text-emerald-900">
+                      {feeDistributionStats.totalBilledStudents > 0 ? Math.round((feeDistributionStats.fullyPaidCount / feeDistributionStats.totalBilledStudents) * 100) : 0}% of Students
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-emerald-800 font-medium mt-0.5">
+                    Students who have completely cleared all term fee obligations.
+                  </p>
+                </div>
+              </div>
+
+              <div className="text-left sm:text-right shrink-0 border-t sm:border-t-0 border-emerald-200/60 pt-2 sm:pt-0">
+                <span className="text-lg font-black text-emerald-900 font-mono block">
+                  {feeDistributionStats.fullyPaidCount} <span className="text-xs font-normal text-emerald-700">Student{feeDistributionStats.fullyPaidCount === 1 ? '' : 's'}</span>
+                </span>
+                <span className="text-[11px] font-bold text-emerald-700 font-mono block">
+                  GHS {feeDistributionStats.fullyPaidPaid.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Collected
+                </span>
+              </div>
+            </div>
+
+            {/* 2. Partially Paid Card */}
+            <div className="p-4 rounded-2xl bg-amber-50/70 border border-amber-200/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+              <div className="flex items-start gap-3">
+                <div className="w-9 h-9 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs mt-0.5">
+                  <Clock size={20} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-xs font-black uppercase text-amber-950 tracking-wider">Partially Paid Fees</h4>
+                    <span className="px-2 py-0.2 rounded-full text-[10px] font-black uppercase bg-amber-200/80 text-amber-900">
+                      {feeDistributionStats.totalBilledStudents > 0 ? Math.round((feeDistributionStats.partiallyPaidCount / feeDistributionStats.totalBilledStudents) * 100) : 0}% of Students
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-amber-800 font-medium mt-0.5">
+                    Active installment payments made; pending balance remaining.
+                  </p>
+                </div>
+              </div>
+
+              <div className="text-left sm:text-right shrink-0 border-t sm:border-t-0 border-amber-200/60 pt-2 sm:pt-0">
+                <span className="text-lg font-black text-amber-900 font-mono block">
+                  {feeDistributionStats.partiallyPaidCount} <span className="text-xs font-normal text-amber-700">Student{feeDistributionStats.partiallyPaidCount === 1 ? '' : 's'}</span>
+                </span>
+                <div className="text-[11px] font-bold font-mono space-x-1.5">
+                  <span className="text-emerald-700">Paid: GHS {feeDistributionStats.partiallyPaidPaid.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                  <span className="text-rose-700">| Bal: GHS {feeDistributionStats.partiallyPaidArrears.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* 3. Unpaid Fees Card */}
+            <div className="p-4 rounded-2xl bg-rose-50/70 border border-rose-200/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+              <div className="flex items-start gap-3">
+                <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-xs mt-0.5">
+                  <XCircle size={20} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-xs font-black uppercase text-rose-950 tracking-wider">Unpaid Fees (Zero Payment)</h4>
+                    <span className="px-2 py-0.2 rounded-full text-[10px] font-black uppercase bg-rose-200/80 text-rose-900">
+                      {feeDistributionStats.totalBilledStudents > 0 ? Math.round((feeDistributionStats.unpaidCount / feeDistributionStats.totalBilledStudents) * 100) : 0}% of Students
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-rose-800 font-medium mt-0.5">
+                    No payments recorded against expected fee bill for this term.
+                  </p>
+                </div>
+              </div>
+
+              <div className="text-left sm:text-right shrink-0 border-t sm:border-t-0 border-rose-200/60 pt-2 sm:pt-0">
+                <span className="text-lg font-black text-rose-900 font-mono block">
+                  {feeDistributionStats.unpaidCount} <span className="text-xs font-normal text-rose-700">Student{feeDistributionStats.unpaidCount === 1 ? '' : 's'}</span>
+                </span>
+                <span className="text-[11px] font-black text-rose-700 font-mono block">
+                  GHS {feeDistributionStats.unpaidExpected.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Arrears
+                </span>
+              </div>
+            </div>
+
+            {/* Overall Progress Bar */}
+            <div className="bg-slate-100/90 p-3.5 rounded-2xl border border-slate-200/80 space-y-1.5">
+              <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                <span className="flex items-center gap-1">
+                  <TrendingUp size={14} className="text-indigo-600" />
+                  Overall Term Collection Progress:
+                </span>
+                <span className="font-mono text-indigo-950">
+                  GHS {feeDistributionStats.totalTermPaid.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / GHS {feeDistributionStats.totalTermExpected.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({feeDistributionStats.totalTermExpected > 0 ? Math.round((feeDistributionStats.totalTermPaid / feeDistributionStats.totalTermExpected) * 100) : 0}%)
+                </span>
+              </div>
+
+              <div className="w-full bg-slate-200/80 rounded-full h-2.5 overflow-hidden flex">
+                <div 
+                  className="bg-emerald-500 h-full transition-all duration-500"
+                  style={{ 
+                    width: `${feeDistributionStats.totalTermExpected > 0 ? (feeDistributionStats.fullyPaidPaid / feeDistributionStats.totalTermExpected) * 100 : 0}%` 
+                  }}
+                  title="Fully Paid"
+                />
+                <div 
+                  className="bg-amber-400 h-full transition-all duration-500"
+                  style={{ 
+                    width: `${feeDistributionStats.totalTermExpected > 0 ? (feeDistributionStats.partiallyPaidPaid / feeDistributionStats.totalTermExpected) * 100 : 0}%` 
+                  }}
+                  title="Partially Paid"
+                />
+                <div 
+                  className="bg-rose-500/30 h-full transition-all duration-500"
+                  style={{ 
+                    width: `${feeDistributionStats.totalTermExpected > 0 ? (feeDistributionStats.totalTermArrears / feeDistributionStats.totalTermExpected) * 100 : 0}%` 
+                  }}
+                  title="Outstanding Arrears"
+                />
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
       {/* SMS Delivery Summary Stats */}
       {smsLogs.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+        <div className="grid gap-4 mt-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
           <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4 flex items-center justify-between">
             <div>
               <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">Delivered SMS</p>
@@ -1523,18 +1956,18 @@ export default function SchoolFeesTab({
       )}
 
       {/* Control Utility bar */}
-      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 flex flex-col lg:flex-row gap-4 items-start lg:items-center justify-between no-print">
-        <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
+      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100 flex flex-col xl:flex-row gap-4 items-start xl:items-center justify-between no-print">
+        <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto">
           <div className="flex items-center gap-1 text-slate-800 font-semibold shrink-0">
             <Filter className="h-4 w-4" />
             <span className="text-sm">Manage Context:</span>
           </div>
           
-          <div className="flex gap-2 flex-1 sm:flex-none">
+          <div className="flex flex-wrap items-center gap-2">
             <select 
               value={selectedAcademicYear}
               onChange={(e) => setSelectedAcademicYear(e.target.value as AcademicYearType)}
-              className="text-xs border-slate-200 rounded-lg bg-slate-50 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 py-1.5 px-3 flex-1 sm:flex-none"
+              className="text-xs border-slate-200 rounded-lg bg-slate-50 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 py-1.5 px-3"
             >
               {ACADEMIC_YEARS.map(y => <option key={y} value={y}>{y}</option>)}
             </select>
@@ -1542,60 +1975,55 @@ export default function SchoolFeesTab({
             <select 
               value={selectedTerm}
               onChange={(e) => setSelectedTerm(e.target.value as TermType)}
-              className="text-xs border-slate-200 rounded-lg bg-slate-50 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 py-1.5 px-3 flex-1 sm:flex-none"
+              className="text-xs border-slate-200 rounded-lg bg-slate-50 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 py-1.5 px-3"
             >
               {TERMS.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+        <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto">
+          {/* Create New Bill Category Button */}
+          <button
+            onClick={() => setIsCreateCategoryModalOpen(true)}
+            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white py-1.5 px-3 rounded-lg font-bold transition shadow-sm shrink-0 whitespace-nowrap cursor-pointer active:scale-95"
+            title="Create and add another bill category if not listed"
+          >
+            <Plus className="h-3.5 w-3.5 stroke-[2.5]" /> Create New Category
+          </button>
+
           {/* Bulk Fee Applicator template */}
           <button
-            onClick={() => {
-              const cap = window.prompt("Apply default standard bills to ALL students? Enter base GHS amount for School Fees:\n(Leave blank to cancel)", "400");
-              if (cap !== null) {
-                const sAmt = parseFloat(cap) || 0;
-                handleBulkSetup('All', {
-                  schoolFees: sAmt,
-                  utilityBill: 50,
-                  sportsFees: 20,
-                  ptaDues: 30,
-                  transportationBill: 0,
-                  otherFee: 0,
-                  otherFeeDescription: 'Excursion'
-                });
-              }
-            }}
-            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-slate-800 hover:bg-slate-900 text-white py-1.5 px-3 rounded-lg font-medium transition flex-1 sm:flex-none"
+            onClick={() => setShowBulkBillingModal(true)}
+            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-slate-800 hover:bg-slate-900 text-white py-1.5 px-3 rounded-lg font-medium transition shrink-0 whitespace-nowrap shadow-2xs"
           >
             <Plus className="h-3.5 w-3.5" /> Initialize Standard Billing
           </button>
 
           <button
             onClick={handleBulkPrintReceipts}
-            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 py-1.5 px-3 rounded-lg font-medium transition border border-indigo-200 flex-1 sm:flex-none"
+            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 py-1.5 px-3 rounded-lg font-medium transition border border-indigo-200 shrink-0 whitespace-nowrap"
           >
             <Printer className="h-3.5 w-3.5" /> Bulk Receipts
           </button>
 
           <button
             onClick={() => setShowDebtorsModal(true)}
-            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white py-1.5 px-3 rounded-lg font-medium transition shadow-sm flex-1 sm:flex-none"
+            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white py-1.5 px-3 rounded-lg font-medium transition shadow-sm shrink-0 whitespace-nowrap"
           >
             <AlertTriangle className="h-3.5 w-3.5 animate-bounce-slow" /> Debtors
           </button>
 
           <button
             onClick={() => setShowReportCenterModal(true)}
-            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-violet-600 hover:bg-violet-700 text-white py-1.5 px-3 rounded-lg font-medium transition shadow-sm select-none flex-1 sm:flex-none"
+            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-violet-600 hover:bg-violet-700 text-white py-1.5 px-3 rounded-lg font-medium transition shadow-sm select-none shrink-0 whitespace-nowrap"
           >
             <FileDown className="h-3.5 w-3.5" /> PDF Center
           </button>
 
           <button
             onClick={handleClearAllFees}
-            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 py-1.5 px-3 rounded-lg font-medium transition border border-rose-200 flex-1 sm:flex-none"
+            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 py-1.5 px-3 rounded-lg font-medium transition border border-rose-200 shrink-0 whitespace-nowrap"
           >
             <Trash2 className="h-3.5 w-3.5" /> Reset
           </button>
@@ -1763,14 +2191,14 @@ export default function SchoolFeesTab({
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 space-y-6">
               
               {/* Active Student Card Header */}
-              <div className="flex flex-col md:flex-row justify-between items-start md:items-center pb-4 border-b border-slate-100 gap-4">
-                <div>
+              <div className="flex flex-col 2xl:flex-row justify-between items-start 2xl:items-center pb-4 border-b border-slate-100 gap-3">
+                <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-bold uppercase py-0.5 px-2 rounded bg-amber-50 text-amber-800 border border-amber-200">
                       BILLING & LEDGER {selectedTerm}
                     </span>
                   </div>
-                  <h2 className="text-lg font-bold text-slate-800 mt-1 capitalize leading-snug">
+                  <h2 className="text-lg font-bold text-slate-800 mt-1 capitalize leading-snug truncate">
                     {activeStudent.firstName} {activeStudent.middleName ? activeStudent.middleName + ' ' : ''}{activeStudent.lastName}
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5">
@@ -1778,37 +2206,37 @@ export default function SchoolFeesTab({
                   </p>
                 </div>
 
-                <div className="flex flex-wrap gap-2 shrink-0 w-full md:w-auto">
+                <div className="flex flex-wrap items-center gap-2 w-full 2xl:w-auto">
                   {activeExpectedAndPaid.bal > 0 && (
                     <button
                       onClick={handleOpenReminderModal}
-                      className="text-[11px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white py-2 px-3 rounded-lg font-semibold transition shadow-md select-none active:translate-y-0.5 flex-1 md:flex-none"
+                      className="text-xs inline-flex items-center justify-center gap-1.5 bg-amber-500 hover:bg-amber-600 text-white py-2 px-3 rounded-lg font-semibold transition shadow-sm select-none active:translate-y-0.5 shrink-0 whitespace-nowrap"
                     >
-                      <Bell className="h-3.5 w-3.5 animate-bounce-slow" /> <span className="hidden sm:inline">Notice &</span> SMS Reminder
+                      <Bell className="h-3.5 w-3.5 animate-bounce-slow" /> <span>Notice & SMS Reminder</span>
                     </button>
                   )}
 
                   <button
                     onClick={handleOpenInvoice}
-                    className="text-[11px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white py-2 px-3 rounded-lg font-semibold transition shadow-md select-none active:translate-y-0.5 flex-1 md:flex-none"
+                    className="text-xs inline-flex items-center justify-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white py-2 px-3 rounded-lg font-semibold transition shadow-sm select-none active:translate-y-0.5 shrink-0 whitespace-nowrap"
                   >
-                    <Receipt className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Generate</span> Invoice
+                    <Receipt className="h-3.5 w-3.5" /> <span>Generate Invoice</span>
                   </button>
 
                   <button
                     onClick={() => {
                       setActiveLedgerStudent(activeBill);
                     }}
-                    className="text-[11px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 py-2 px-3 rounded-lg font-medium transition flex-1 md:flex-none"
+                    className="text-xs inline-flex items-center justify-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 py-2 px-3 rounded-lg font-medium transition shrink-0 whitespace-nowrap"
                   >
-                    <Printer className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Full</span> Ledger
+                    <Printer className="h-3.5 w-3.5" /> <span>Full Ledger</span>
                   </button>
 
                   <button
                     onClick={() => setShowPaymentModal(true)}
-                    className="text-[11px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white py-2 px-3 rounded-lg font-medium transition shadow-sm flex-1 md:flex-none"
+                    className="text-xs inline-flex items-center justify-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white py-2 px-3 rounded-lg font-medium transition shadow-sm shrink-0 whitespace-nowrap"
                   >
-                    <Plus className="h-3.5 w-3.5" /> Record <span className="hidden sm:inline">Installment</span>
+                    <Plus className="h-3.5 w-3.5" /> <span>Record Installment</span>
                   </button>
                 </div>
               </div>
@@ -2137,18 +2565,39 @@ export default function SchoolFeesTab({
               <div className="p-6 md:p-8 space-y-5 text-xs text-left bg-white">
                 {/* Form fields that are shared between both manual and online payments */}
                 <div>
-                  <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">Component allocation</label>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider">Component allocation</label>
+                    <button
+                      type="button"
+                      onClick={() => setIsCreateCategoryModalOpen(true)}
+                      className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 transition cursor-pointer select-none flex items-center gap-1"
+                    >
+                      <Plus size={12} className="stroke-[2.5]" />
+                      <span>Not listed? Create New</span>
+                    </button>
+                  </div>
                   <select
                     value={paymentComponent}
                     onChange={(e) => setPaymentComponent(e.target.value as FeePayment['component'])}
                     className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-[13px] text-slate-700 bg-slate-50/15 hover:bg-slate-50/30 transition duration-150 focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-none"
                   >
-                    <option value="School Fees">School Fees (Standard tuition)</option>
-                    <option value="Utility Bill">Utility Bill</option>
-                    <option value="Sports Fees">Sports Fees</option>
-                    <option value="PTA dues">PTA Dues</option>
-                    <option value="Transportation Bill">Transportation Bill</option>
-                    <option value="Other Fee">Other Fee (Excursions/Misc)</option>
+                    <optgroup label="Standard School Fees">
+                      <option value="School Fees">School Fees (Standard tuition)</option>
+                      <option value="Utility Bill">Utility Bill</option>
+                      <option value="Sports Fees">Sports Fees</option>
+                      <option value="PTA dues">PTA Dues</option>
+                      <option value="Transportation Bill">Transportation Bill</option>
+                      <option value="Other Fee">Other Fee (Excursions/Misc)</option>
+                    </optgroup>
+                    {customBillComponents.length > 0 && (
+                      <optgroup label="Custom Bill Categories &amp; Levies">
+                        {customBillComponents.map(comp => (
+                          <option key={comp.id} value={comp.name}>
+                            {comp.name} ({comp.category})
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
                   </select>
                 </div>
 
@@ -2232,6 +2681,7 @@ export default function SchoolFeesTab({
                 ) : (
                   <div className="pt-2">
                     <PaystackPaymentTrigger
+                      paymentType="fees"
                       studentId={activeStudent.id}
                       studentName={`${activeStudent.firstName} ${activeStudent.lastName}`}
                       email={activeStudent.email || ''}
@@ -2307,13 +2757,24 @@ export default function SchoolFeesTab({
                 </div>
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => handlePrintStandard('fee-receipt-print-area')}
+                    onClick={() => handlePrintStandard('fee-receipt-print-area', `Official Payment Receipt - ${activeReceiptPayment.payment.receiptNo}`)}
                     className="px-3.5 py-2 hover:bg-slate-50 border border-slate-200 text-slate-500 font-semibold rounded-xl text-xs transition cursor-pointer bg-white"
                   >
                     <Printer className="h-3.5 w-3.5 inline mr-1" /> Print
                   </button>
                   <button
-                    onClick={() => handleExportFeesPDF('fee-receipt-print-area', `receipt_${activeReceiptPayment.payment.receiptNo}`)}
+                    onClick={() => {
+                      const fname = formatIdentifiableFilename({
+                        docType: 'Fee Receipt',
+                        studentName: activeReceiptPayment.bill.studentName,
+                        studentId: activeReceiptPayment.bill.studentId,
+                        receiptNo: activeReceiptPayment.payment.receiptNo,
+                        term: selectedTerm,
+                        academicYear: selectedAcademicYear,
+                        extension: 'pdf'
+                      });
+                      handleExportFeesPDF('fee-receipt-print-area', fname);
+                    }}
                     className="px-3.5 py-2 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl text-xs shadow-xs transition cursor-pointer"
                   >
                     <Eye className="h-3.5 w-3.5 inline mr-1" /> Toggle Preview Mode
@@ -2501,7 +2962,7 @@ export default function SchoolFeesTab({
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <button
-                    onClick={() => handlePrintStandard('fee-ledger-print-area')}
+                    onClick={() => handlePrintStandard('fee-ledger-print-area', `Student Fee Ledger - ${activeLedgerStudent.studentName}`)}
                     className="flex-1 sm:flex-none px-3 py-2 hover:bg-slate-50 border border-slate-200 text-slate-500 font-semibold rounded-xl text-[10px] sm:text-xs transition cursor-pointer bg-white"
                   >
                     <Printer className="h-3.5 w-3.5 inline mr-1" /> Print
@@ -2513,7 +2974,17 @@ export default function SchoolFeesTab({
                     <FileSpreadsheet className="h-3.5 w-3.5 inline mr-1 text-[#059669]" /> CSV
                   </button>
                   <button
-                    onClick={() => handleExportFeesPDF('fee-ledger-print-area', `ledger_${activeLedgerStudent.studentId}`)}
+                    onClick={() => {
+                      const fname = formatIdentifiableFilename({
+                        docType: 'Fee Ledger',
+                        studentName: activeLedgerStudent.studentName,
+                        studentId: activeLedgerStudent.studentId,
+                        term: selectedTerm,
+                        academicYear: selectedAcademicYear,
+                        extension: 'pdf'
+                      });
+                      handleExportFeesPDF('fee-ledger-print-area', fname);
+                    }}
                     className="flex-1 sm:flex-none px-3 py-2 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl text-[10px] sm:text-xs shadow-xs transition cursor-pointer"
                   >
                     <Eye className="h-3.5 w-3.5 inline mr-1" /> PDF
@@ -2752,10 +3223,10 @@ export default function SchoolFeesTab({
                       Chars: {reminderCustomMessage.length}
                     </span>
                   </div>
-                  <textarea
+                  <SmartTextarea
                     rows={4}
                     value={reminderCustomMessage}
-                    onChange={(e) => {
+                    onChange={(e: any) => {
                       setReminderCustomMessage(e.target.value);
                       setReminderSmsSuccess(null);
                     }}
@@ -2813,7 +3284,7 @@ export default function SchoolFeesTab({
                 <div className="flex gap-2">
                   <button
                     type="button"
-                    onClick={() => handleExportFeesPDF('fees-reminder-notice-canvas', `payment_reminder_${activeStudent.id}`)}
+                    onClick={() => handleExportFeesPDF('fees-reminder-notice-canvas', `Payment_Reminder_${activeStudent.firstName}_${activeStudent.lastName}`)}
                     className="flex-1 flex items-center justify-center gap-1.5 py-2 hover:bg-slate-200 border border-slate-200 text-slate-700 font-semibold bg-white rounded-lg text-xs transition"
                   >
                     <FileDown size={12} /> Save PDF
@@ -2821,33 +3292,7 @@ export default function SchoolFeesTab({
                   <button
                     type="button"
                     onClick={() => {
-                      const printContents = document.getElementById('fees-reminder-notice-canvas')?.innerHTML;
-                      if (printContents) {
-                        const w = window.open('', '_blank');
-                        if (w) {
-                          w.document.write(`
-                            <html>
-                              <head>
-                                <title>Payment Reminder Notice - ${activeStudent.firstName} ${activeStudent.lastName}</title>
-                                <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-                                <style>
-                                  @media print {
-                                    body { padding: 2cm; }
-                                    .no-print { display: none; }
-                                  }
-                                  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
-                                  body { font-family: 'Inter', sans-serif; }
-                                </style>
-                              </head>
-                              <body onload="window.print(); window.close();" style="position: relative;">
-                                ${getWatermarkHtml(schoolInfo.crestUrl)}
-                                ${printContents}
-                              </body>
-                            </html>
-                          `);
-                          w.document.close();
-                        }
-                      }
+                      handlePrintStandard('fees-reminder-notice-canvas', `Fee Payment Reminder - ${activeStudent.firstName} ${activeStudent.lastName}`);
                     }}
                     className="flex-1 flex items-center justify-center gap-1.5 py-2 bg-slate-800 hover:bg-slate-900 text-white font-semibold rounded-lg text-xs transition"
                   >
@@ -3138,10 +3583,10 @@ export default function SchoolFeesTab({
 
                     <div>
                       <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">Custom Notes / Payment Terms</label>
-                      <textarea
+                      <SmartTextarea
                         rows={5}
                         value={invoiceNotes}
-                        onChange={(e) => setInvoiceNotes(e.target.value)}
+                        onChange={(e: any) => setInvoiceNotes(e.target.value)}
                         className="w-full text-xs p-3 border border-slate-200 rounded-xl bg-white font-medium focus:outline-none focus:ring-1 focus:ring-indigo-500 text-slate-700 leading-relaxed resize-none"
                         placeholder="Specify payment details, bank accounts, or MOMO merchant info..."
                       />
@@ -3176,7 +3621,7 @@ export default function SchoolFeesTab({
                 <div className="flex gap-2">
                   <button
                     type="button"
-                    onClick={() => handleExportFeesPDF('fees-invoice-notice-canvas', `fee_invoice_${activeStudent.id}`)}
+                    onClick={() => handleExportFeesPDF('fees-invoice-notice-canvas', `Fee_Invoice_${activeStudent.firstName}_${activeStudent.lastName}`)}
                     className="flex-1 flex items-center justify-center gap-1.5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl text-xs shadow-md transition transform active:translate-y-0.5 select-none"
                   >
                     <FileDown size={14} /> Save Invoice PDF
@@ -3184,33 +3629,7 @@ export default function SchoolFeesTab({
                   <button
                     type="button"
                     onClick={() => {
-                      const printContents = document.getElementById('fees-invoice-notice-canvas')?.innerHTML;
-                      if (printContents) {
-                        const w = window.open('', '_blank');
-                        if (w) {
-                          w.document.write(`
-                            <html>
-                              <head>
-                                <title>Official Student Fee Invoice - ${activeStudent.firstName} ${activeStudent.lastName}</title>
-                                <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-                                <style>
-                                  @media print {
-                                    body { padding: 1.5cm; }
-                                    .no-print { display: none; }
-                                  }
-                                  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
-                                  body { font-family: 'Inter', sans-serif; background-color: #ffffff; color: #1e293b; }
-                                </style>
-                              </head>
-                              <body onload="window.print(); window.close();" style="position: relative;">
-                                ${getWatermarkHtml(schoolInfo.crestUrl)}
-                                <div class="max-w-4xl mx-auto">${printContents}</div>
-                              </body>
-                            </html>
-                          `);
-                          w.document.close();
-                        }
-                      }
+                      handlePrintStandard('fees-invoice-notice-canvas', `Student Fee Invoice - ${activeStudent.firstName} ${activeStudent.lastName}`);
                     }}
                     className="flex-1 flex items-center justify-center gap-1.5 py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-semibold rounded-xl text-xs transition"
                   >
@@ -4484,122 +4903,167 @@ export default function SchoolFeesTab({
       </div>
     </div>
 
-    {/* BULK RECEIPTS PRINT AREA (HIDDEN) */}
+    {/* BULK RECEIPTS PRINT AREA (HIDDEN) - 3 RECEIPTS PER A4 PORTRAIT SHEET */}
     <div id="bulk-receipts-print-area" className="hidden">
-      {bulkReceiptData.map((data, idx) => (
-        <div key={`${data.payment.id}-${idx}`} className="bulk-receipt-item relative bg-white text-slate-900 text-left border-[2px] border-double border-slate-800 p-4 space-y-3 flex flex-col justify-between mb-8 overflow-hidden" style={{ width: '220mm', height: '110mm', overflow: 'hidden', pageBreakAfter: 'always' }}>
-          {/* Watermark */}
-          <div className="absolute inset-0 pointer-events-none" dangerouslySetInnerHTML={{ __html: getWatermarkHtml(schoolInfo.crestUrl) }} />
-          
-          <div className="relative z-10 flex flex-col h-full justify-between">
-          {/* Official Crest & School metadata */}
-          <div className="flex justify-between items-center pb-2 border-b border-slate-800">
-            <div className="space-y-0.5">
-              <h1 className="text-sm font-bold tracking-tight text-slate-950 uppercase leading-tight">{schoolInfo.name}</h1>
-              <p className="text-[9px] font-semibold text-slate-500 tracking-wider">Motto: "{schoolInfo.motto}"</p>
-              <p className="text-[9px] text-slate-700 leading-tight">{schoolInfo.gpsAddress} • Tel: {schoolInfo.telephone}</p>
-            </div>
-            {schoolInfo.logoUrl ? (
-              <img referrerPolicy="no-referrer" src={schoolInfo.logoUrl} className="h-10 w-10 object-contain" alt="School Crest" />
-            ) : (
-              <div className="p-1 border border-slate-200 rounded bg-slate-50 text-slate-400">
-                <Receipt className="h-6 w-6" />
-              </div>
-            )}
-          </div>
+      {(() => {
+        // Chunk into groups of 3 receipts per A4 Portrait sheet
+        const pages: typeof bulkReceiptData[] = [];
+        for (let i = 0; i < bulkReceiptData.length; i += 3) {
+          pages.push(bulkReceiptData.slice(i, i + 3));
+        }
 
-          {/* Receipt Title */}
-          <div className="text-center py-1 bg-slate-50 border-b border-slate-200">
-            <h2 className="text-[10px] font-bold uppercase tracking-widest text-slate-950">OFFICIAL PAYMENT RECEIPT</h2>
-          </div>
+        return pages.map((pageGroup, pageIdx) => (
+          <div 
+            key={`bulk-receipt-page-${pageIdx}`} 
+            className="bulk-receipts-print-page w-[210mm] min-h-[297mm] p-[6mm] bg-white text-slate-900 mx-auto flex flex-col justify-between"
+            style={{ 
+              pageBreakAfter: 'always', 
+              breakAfter: 'page', 
+              pageBreakInside: 'avoid',
+              boxSizing: 'border-box' 
+            }}
+          >
+            {pageGroup.map((data, itemIdx) => (
+              <React.Fragment key={`${data.payment.id}-${itemIdx}`}>
+                <div 
+                  className="bulk-receipt-slip relative bg-white text-slate-900 text-left border-[2px] border-double border-slate-800 p-3 flex flex-col justify-between rounded-none overflow-hidden"
+                  style={{
+                    height: '88mm',
+                    maxHeight: '90mm',
+                    boxSizing: 'border-box',
+                    pageBreakInside: 'avoid'
+                  }}
+                >
+                  {/* Watermark */}
+                  <div 
+                    className="absolute inset-0 pointer-events-none opacity-5" 
+                    dangerouslySetInnerHTML={{ __html: getWatermarkHtml(schoolInfo.crestUrl) }} 
+                  />
+                  
+                  <div className="relative z-10 flex flex-col h-full justify-between">
+                    {/* Header */}
+                    <div className="flex justify-between items-center pb-1.5 border-b border-slate-800">
+                      <div className="space-y-0.5">
+                        <h1 className="text-xs font-bold tracking-tight text-slate-950 uppercase leading-tight">{schoolInfo.name}</h1>
+                        <p className="text-[8px] font-semibold text-slate-500 tracking-wider">Motto: "{schoolInfo.motto}"</p>
+                        <p className="text-[8px] text-slate-700 leading-tight">{schoolInfo.gpsAddress} • Tel: {schoolInfo.telephone}</p>
+                      </div>
+                      {schoolInfo.logoUrl ? (
+                        <img referrerPolicy="no-referrer" src={schoolInfo.logoUrl} className="h-8 w-8 object-contain" alt="School Crest" />
+                      ) : (
+                        <div className="p-0.5 border border-slate-200 rounded bg-slate-50 text-slate-400">
+                          <Receipt className="h-5 w-5" />
+                        </div>
+                      )}
+                    </div>
 
-          <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-[10px] font-sans">
-            <div className="space-y-1">
-              <p><span className="text-slate-500">CODE:</span> <span className="font-mono font-bold">{data.payment.receiptNo}</span></p>
-              <p><span className="text-slate-500">STUDENT:</span> <span className="font-bold uppercase">{data.bill.studentName}</span></p>
-              <p><span className="text-slate-500">ID:</span> <span className="font-semibold font-mono">{data.bill.studentId}</span></p>
-            </div>
+                    {/* Receipt Title */}
+                    <div className="text-center py-0.5 bg-slate-50 border-b border-slate-200">
+                      <h2 className="text-[9px] font-bold uppercase tracking-widest text-slate-950">OFFICIAL PAYMENT RECEIPT</h2>
+                    </div>
 
-            <div className="space-y-1 text-right">
-              <p><span className="text-slate-500">DATE:</span> <span className="font-semibold font-mono">{data.payment.date}</span></p>
-              <p><span className="text-slate-500">TERM:</span> <span className="font-semibold">{data.bill.academicYear} • {data.bill.term}</span></p>
-              <p><span className="text-slate-500">METHOD:</span> <span className="font-bold">{data.payment.method}</span></p>
-            </div>
-          </div>
+                    {/* Info Grid */}
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[8.5px] font-sans">
+                      <div className="space-y-0.5">
+                        <p><span className="text-slate-500">CODE:</span> <span className="font-mono font-bold">{data.payment.receiptNo}</span></p>
+                        <p><span className="text-slate-500">STUDENT:</span> <span className="font-bold uppercase truncate">{data.bill.studentName}</span></p>
+                        <p><span className="text-slate-500">ID:</span> <span className="font-semibold font-mono">{data.bill.studentId}</span></p>
+                      </div>
 
-          {/* Main receipt ledger breakdown */}
-          <div className="border border-slate-800 rounded overflow-hidden">
-            <table className="w-full text-[10px]">
-              <thead>
-                <tr className="bg-slate-100 text-slate-700 font-bold uppercase border-b border-slate-800 text-[9px]">
-                  <th className="p-1.5 text-left pl-3">Description</th>
-                  <th className="p-1.5 text-right pr-3">Amount (GHS)</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td className="p-2 pl-3">
-                    <p className="font-bold text-slate-900 uppercase">{data.payment.component}</p>
-                  </td>
-                  <td className="p-2 text-right pr-3 font-mono font-bold text-slate-900 bg-slate-50">
-                    {data.payment.amount.toFixed(2)}
-                  </td>
-                </tr>
-                {data.payment.remarks && (
-                  <tr>
-                    <td colSpan={2} className="p-1.5 pl-3 bg-slate-50/50 italic text-[9px] text-slate-500 border-t border-slate-200">
-                      Note: {data.payment.remarks}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+                      <div className="space-y-0.5 text-right">
+                        <p><span className="text-slate-500">DATE:</span> <span className="font-semibold font-mono">{data.payment.date}</span></p>
+                        <p><span className="text-slate-500">TERM:</span> <span className="font-semibold">{data.bill.academicYear} • {data.bill.term}</span></p>
+                        <p><span className="text-slate-500">METHOD:</span> <span className="font-bold">{data.payment.method}</span></p>
+                      </div>
+                    </div>
 
-          {/* Totals */}
-          <div className="flex justify-between items-end text-[10px] border-t border-slate-300 pt-2">
-            <div className="flex items-center gap-2">
-              <div className="p-0.5 bg-white border border-slate-200 rounded-md shrink-0">
-                <QRCodeSVG 
-                  value={`${window.location.origin}/?tab=fees&studentId=${data.bill.studentId}&receiptNo=${data.payment.receiptNo}`}
-                  size={40} 
-                  level="M" 
-                />
-              </div>
-              <div className="text-left space-y-0.5">
-                <p className="text-slate-400 text-[8px] uppercase font-bold tracking-tighter">Verification</p>
-                <p className="text-[8px] text-slate-500 leading-tight">Scan to verify electronic ledger statement</p>
-              </div>
-            </div>
-            <div className="text-right space-y-1">
-              {(() => {
-                const bill = data.bill;
-                const expectedTotal = bill.schoolFees + bill.utilityBill + bill.sportsFees + bill.ptaDues + (bill.transportationBill || 0) + bill.otherFee;
-                const totalPaid = bill.payments.reduce((sum, p) => sum + p.amount, 0);
-                const outstanding = expectedTotal - totalPaid;
+                    {/* Main Receipt Breakdown */}
+                    <div className="border border-slate-800 rounded overflow-hidden">
+                      <table className="w-full text-[8.5px]">
+                        <thead>
+                          <tr className="bg-slate-100 text-slate-700 font-bold uppercase border-b border-slate-800 text-[8px]">
+                            <th className="p-1 text-left pl-2">Description</th>
+                            <th className="p-1 text-right pr-2">Amount (GHS)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td className="p-1 pl-2">
+                              <p className="font-bold text-slate-900 uppercase">{data.payment.component}</p>
+                            </td>
+                            <td className="p-1 text-right pr-2 font-mono font-bold text-slate-900 bg-slate-50">
+                              {data.payment.amount.toFixed(2)}
+                            </td>
+                          </tr>
+                          {data.payment.remarks && (
+                            <tr>
+                              <td colSpan={2} className="p-0.5 pl-2 bg-slate-50/50 italic text-[7.5px] text-slate-500 border-t border-slate-200">
+                                Note: {data.payment.remarks}
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
 
-                return (
-                  <div className="space-y-0.5">
-                    <p className="flex justify-between gap-6"><span className="text-slate-500">Paid to-date:</span> <span className="font-mono font-bold text-emerald-700">GHS {totalPaid.toFixed(2)}</span></p>
-                    <p className="flex justify-between gap-6 font-bold text-slate-950 border-t border-slate-300 pt-0.5 text-[11px]"><span className="font-bold">Balance:</span> <span className="font-mono">GHS {outstanding.toFixed(2)}</span></p>
+                    {/* Totals & QR Code */}
+                    <div className="flex justify-between items-end text-[8.5px] border-t border-slate-300 pt-1">
+                      <div className="flex items-center gap-1.5">
+                        <div className="p-0.5 bg-white border border-slate-200 rounded shrink-0">
+                          <QRCodeSVG 
+                            value={`${window.location.origin}/?tab=fees&studentId=${data.bill.studentId}&receiptNo=${data.payment.receiptNo}`}
+                            size={32} 
+                            level="M" 
+                          />
+                        </div>
+                        <div className="text-left space-y-0.5">
+                          <p className="text-slate-400 text-[7px] uppercase font-bold tracking-tighter">Verification</p>
+                          <p className="text-[7px] text-slate-500 leading-tight">Official electronic payment record</p>
+                        </div>
+                      </div>
+                      <div className="text-right space-y-0.5">
+                        {(() => {
+                          const bill = data.bill;
+                          const expectedTotal = bill.schoolFees + bill.utilityBill + bill.sportsFees + bill.ptaDues + (bill.transportationBill || 0) + bill.otherFee;
+                          const totalPaid = bill.payments.reduce((sum, p) => sum + p.amount, 0);
+                          const outstanding = expectedTotal - totalPaid;
+
+                          return (
+                            <div className="space-y-0.5">
+                              <p className="flex justify-between gap-4"><span className="text-slate-500">Paid to-date:</span> <span className="font-mono font-bold text-emerald-700">GHS {totalPaid.toFixed(2)}</span></p>
+                              <p className="flex justify-between gap-4 font-bold text-slate-950 border-t border-slate-300 pt-0.5 text-[9.5px]"><span className="font-bold">Balance:</span> <span className="font-mono">GHS {outstanding.toFixed(2)}</span></p>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    </div>
+
+                    {/* Signatures */}
+                    <div className="pt-1 grid grid-cols-2 gap-4 text-center text-[7.5px]">
+                      <div className="border-t border-dashed border-slate-400 pt-0.5">
+                        <p className="font-medium text-slate-700 uppercase tracking-tighter">Accounts Office</p>
+                      </div>
+                      <div className="border-t border-dashed border-slate-400 pt-0.5">
+                        <p className="font-medium text-slate-700 uppercase tracking-tighter">Bursar / Signature</p>
+                      </div>
+                    </div>
                   </div>
-                );
-              })()}
-            </div>
-          </div>
+                </div>
 
-          {/* Signature */}
-          <div className="pt-2 grid grid-cols-2 gap-4 text-center text-[9px]">
-            <div className="border-t border-dashed border-slate-400 pt-1">
-              <p className="font-medium text-slate-700 uppercase tracking-tighter">Accounts Office</p>
-            </div>
-            <div className="border-t border-dashed border-slate-400 pt-1">
-              <p className="font-medium text-slate-700 uppercase tracking-tighter">Bursar / Signature</p>
-            </div>
+                {/* Perforated / Scissor guide between receipts on the same sheet */}
+                {itemIdx < pageGroup.length - 1 && (
+                  <div className="perforated-cut-line relative flex items-center justify-center my-1 select-none pointer-events-none">
+                    <div className="w-full border-t border-dashed border-slate-400" />
+                    <span className="absolute bg-white px-2 text-[7.5px] text-slate-400 font-mono tracking-wider flex items-center gap-1">
+                      ✂ CUT HERE / TEAR SLIP
+                    </span>
+                  </div>
+                )}
+              </React.Fragment>
+            ))}
           </div>
-          </div>
-        </div>
-      ))}
+        ));
+      })()}
     </div>
 
     {confirmModal && confirmModal.isOpen && (
@@ -4645,6 +5109,79 @@ export default function SchoolFeesTab({
         </div>
       </div>
     )}
+
+    {showBulkBillingModal && (
+      <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 no-print animate-fade-in">
+        <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden text-left p-6 space-y-4 animate-scale-up">
+          <div className="flex items-start gap-3">
+            <div className="p-2 rounded-xl shrink-0 bg-indigo-50 text-indigo-600">
+              <Coins size={24} />
+            </div>
+            <div className="flex-1">
+              <h3 className="text-base font-bold text-slate-900 font-sans tracking-tight">
+                Initialize Standard Billing
+              </h3>
+              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                Apply default standard bills to ALL students? Enter base GHS amount for School Fees:
+              </p>
+              <div className="mt-3">
+                <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">Base School Fees Amount (GHS)</label>
+                <input
+                  type="number"
+                  value={bulkSchoolFeesAmount}
+                  onChange={(e) => setBulkSchoolFeesAmount(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 text-slate-800 font-semibold text-xs"
+                  placeholder="e.g. 400"
+                  min="0"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => setShowBulkBillingModal(false)}
+              className="flex-1 py-2 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-xl transition cursor-pointer select-none text-center"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const sAmt = parseFloat(bulkSchoolFeesAmount) || 0;
+                handleBulkSetup('All', {
+                  schoolFees: sAmt,
+                  utilityBill: 50,
+                  sportsFees: 20,
+                  ptaDues: 30,
+                  transportationBill: 0,
+                  otherFee: 0,
+                  otherFeeDescription: 'Excursion'
+                });
+                setShowBulkBillingModal(false);
+              }}
+              className="flex-1 py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition cursor-pointer select-none text-center"
+            >
+              Apply Billing
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* Create New Bill Category Modal */}
+    <CreateBillCategoryModal
+      isOpen={isCreateCategoryModalOpen}
+      onClose={() => {
+        setIsCreateCategoryModalOpen(false);
+        setCustomBillComponents(DbController.getCustomBillComponents());
+      }}
+      onSuccess={(newComp) => {
+        setCustomBillComponents(DbController.getCustomBillComponents());
+        setPaymentComponent(newComp.name);
+      }}
+    />
 
     </div>
   );

@@ -123,20 +123,32 @@
         "gradeLevel": { "type": "string", "enum": ["L1", "L2", "L3", "L4", "L5"] },
         "remarks": { "type": "string" },
         "position": { "type": "number" },
-        "teacherRemarks": { "type": "string" }
+        "teacherRemarks": { "type": "string" },
+        "isArchived": { "type": "boolean" },
+        "archivedAt": { "type": "string" }
       },
       "required": ["id", "studentId", "class", "academicYear", "term", "subject", "totalScore", "gradeLevel"]
     },
     "UserAccount": {
       "title": "UserAccount",
-      "description": "Role-assigned user profile mapping to login state",
+      "description": "Role-assigned user profile mapping to login state with subscription licensing",
       "type": "object",
       "properties": {
         "uid": { "type": "string" },
         "email": { "type": "string" },
         "name": { "type": "string" },
-        "role": { "type": "string", "enum": ["Admin", "Headteacher"] },
-        "createdAt": { "type": "string" }
+        "role": { "type": "string", "enum": ["Admin", "Headteacher", "Teacher"] },
+        "schoolId": { "type": "string" },
+        "staffId": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "licenseType": { "type": "string", "enum": ["trial", "activated", "unlimited"] },
+        "licensePeriod": { "type": "number" },
+        "registeredOn": { "type": "string" },
+        "trialEndDate": { "type": "string" },
+        "lastActivatedOn": { "type": "string" },
+        "activationCode": { "type": "string" },
+        "requestCode": { "type": "string" },
+        "isSuspended": { "type": "boolean" }
       },
       "required": ["uid", "email", "name", "role"]
     },
@@ -286,6 +298,40 @@
         "updatedAt": { "type": "string" }
       },
       "required": ["id", "academicYear", "censusDate", "emisCode"]
+    },
+    "CustomTask": {
+      "title": "CustomTask",
+      "description": "Custom administrator or teacher tasks to track daily activities",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "dueDate": { "type": "string" },
+        "priority": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+        "isCompleted": { "type": "boolean" },
+        "completedAt": { "type": "string" },
+        "isArchived": { "type": "boolean" },
+        "archivedAt": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string" }
+      },
+      "required": ["id", "title", "priority", "isCompleted", "isArchived", "createdAt"]
+    },
+    "CommunicationTemplate": {
+      "title": "CommunicationTemplate",
+      "description": "Custom administrator email and WhatsApp message templates",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string", "enum": ["email", "whatsapp"] },
+        "subject": { "type": "string" },
+        "text": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedBy": { "type": "string" }
+      },
+      "required": ["id", "name", "type", "text", "createdAt"]
     }
   },
   "firestore": {
@@ -336,6 +382,18 @@
     "/emis/{emisId}": {
       "schema": "EmisData",
       "description": "Ministry of Education / GES standard aligned EMIS school census documents"
+    },
+    "/tasks/{taskId}": {
+      "schema": "CustomTask",
+      "description": "Database registers of administrator and teacher tasks"
+    },
+    "/schools/{schoolId}/tasks/{taskId}": {
+      "schema": "CustomTask",
+      "description": "Multi-tenant database registers of administrator and teacher tasks"
+    },
+    "/schools/{schoolId}/communication_templates/{templateId}": {
+      "schema": "CommunicationTemplate",
+      "description": "Custom communication email and WhatsApp templates"
     }
   }
 }

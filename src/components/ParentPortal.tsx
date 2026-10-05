@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { DbController } from '../db';
-import { generateSecureToken, getWatermarkHtml } from '../utils';
+import { generateSecureToken, getWatermarkHtml, formatIdentifiableFilename } from '../utils';
 import PaystackPaymentTrigger from './PaystackPaymentTrigger';
 import { generatePdfFromHtml, downloadBlobLocally } from '../pdfHelper';
 import { AcademicYearType, TermType } from '../types';
@@ -74,6 +74,19 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
     if (!isTokenValid) return null;
     return DbController.getStudentTermReportCard(studentId, year as AcademicYearType, term as TermType);
   }, [isTokenValid, studentId, year, term]);
+
+  const [subjectSortMode, setSubjectSortMode] = useState<'alphabetical' | 'score'>('alphabetical');
+
+  // Sort grades based on toggle selection
+  const sortedGrades = useMemo(() => {
+    if (!compiledReport || !compiledReport.grades) return [];
+    const gradesCopy = [...compiledReport.grades];
+    if (subjectSortMode === 'alphabetical') {
+      return gradesCopy.sort((a, b) => (a.subject || '').localeCompare(b.subject || ''));
+    } else {
+      return gradesCopy.sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
+    }
+  }, [compiledReport, subjectSortMode]);
 
   useEffect(() => {
     if (compiledReport?.student) {
@@ -294,12 +307,16 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
     setDownloadingPdf(true);
     setDownloadError(null);
     try {
-      const studentName = compiledReport 
-        ? `${compiledReport.student.firstName}_${compiledReport.student.lastName}`
-        : 'Student';
-      const cleanYear = year.replace(/[\/\s]/g, '_');
-      const cleanTerm = term.replace(/[\s]/g, '_');
-      const filename = `${studentName}_Report_${cleanYear}_${cleanTerm}.pdf`;
+      const filename = compiledReport
+        ? formatIdentifiableFilename({
+            docType: 'Students Report Card',
+            studentName: `${compiledReport.student.firstName} ${compiledReport.student.lastName}`,
+            studentId: compiledReport.student.id,
+            term: term,
+            academicYear: year,
+            extension: 'pdf'
+          })
+        : 'Students Report Card.pdf';
       
       const result = await generatePdfFromHtml('parent-portal-report-card-render', filename);
       downloadBlobLocally(result.blob, result.filename);
@@ -580,7 +597,19 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
             <table className="w-full text-left border-collapse border border-slate-200 text-xs mt-6">
               <thead>
                 <tr className="bg-slate-100 border-b-2 border-slate-800">
-                  <th className="py-2.5 px-3 border border-slate-200 font-bold uppercase tracking-wider">Subject Course</th>
+                  <th className="py-2.5 px-3 border border-slate-200 font-bold uppercase tracking-wider">
+                    <div className="flex items-center justify-between gap-2 normal-case">
+                      <span>Subject Course</span>
+                      <button
+                        type="button"
+                        onClick={() => setSubjectSortMode(prev => prev === 'alphabetical' ? 'score' : 'alphabetical')}
+                        className="px-2 py-1 bg-white border border-slate-300 hover:bg-slate-50 rounded text-[9px] font-bold text-slate-600 flex items-center gap-1 transition cursor-pointer"
+                        title="Toggle between Alphabetical and Score-Based ranking"
+                      >
+                        <span>Sort: {subjectSortMode === 'alphabetical' ? 'A-Z' : 'Score 📊'}</span>
+                      </button>
+                    </div>
+                  </th>
                   <th className="py-2.5 px-2 border border-slate-200 font-bold text-center uppercase tracking-wider">Class 50%</th>
                   <th className="py-2.5 px-2 border border-slate-200 font-bold text-center uppercase tracking-wider">Exams 50%</th>
                   <th className="py-2.5 px-2 border border-slate-200 font-bold text-center uppercase tracking-wider">Total 100%</th>
@@ -589,14 +618,14 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {compiledReport.grades.map(item => (
+                {sortedGrades.map(item => (
                   <tr key={item.id} className="hover:bg-slate-50/40">
                     <td className="py-3 px-3 border border-slate-200 font-black text-slate-900 text-sm">{item.subject}</td>
                     <td className="py-3 px-2 border border-slate-200 text-center font-mono font-bold text-slate-700 text-sm">{item.classScore50}</td>
                     <td className="py-3 px-2 border border-slate-200 text-center font-mono font-bold text-slate-700 text-sm">{item.examScore50}</td>
                     <td className="py-3 px-2 border border-slate-200 text-center font-mono font-black text-rose-700 bg-rose-50/10 text-sm">{item.totalScore}%</td>
                     <td className="py-3 px-3 border border-slate-200 text-center">
-                      <span className={`inline-block px-2.5 py-1 rounded-full text-[10px] font-black ${item.gradeLevel === 'L1' ? 'bg-emerald-50 text-emerald-800' : item.gradeLevel === 'L2' ? 'bg-blue-50 text-blue-800' : item.gradeLevel === 'L3' ? 'bg-amber-50 text-amber-800' : 'bg-red-50 text-red-800'}`}>
+                      <span className={`text-[10px] font-black uppercase ${item.gradeLevel === 'L1' ? 'text-emerald-700' : item.gradeLevel === 'L2' ? 'text-blue-700' : item.gradeLevel === 'L3' ? 'text-amber-600' : 'text-rose-700'}`}>
                         {item.remarks} ({item.gradeLevel})
                       </span>
                     </td>
@@ -628,7 +657,7 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
 
             {/* Optional Financial ledger row for official printout */}
             {studentFinancials && (
-              <div className="mt-6 bg-slate-50 border border-slate-200/80 rounded-xl p-4 font-sans text-xs flex flex-row justify-between gap-4 leading-normal print:bg-white print:border-slate-300">
+              <div className="mt-6 bg-slate-50 border border-slate-200/80 rounded-xl p-4 font-sans text-xs flex flex-row justify-between gap-4 leading-normal print:bg-white print:border-slate-300 report-card-financial-ledger">
                 <div className="space-y-1">
                   <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Current Balance Status</div>
                   <div className="flex items-baseline gap-2">
@@ -659,7 +688,7 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
             )}
 
             {/* Remarks and Signatures Block */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-16 border-t border-slate-100 pt-8 text-xs font-sans">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-16 border-t border-slate-100 pt-8 text-xs font-sans report-card-remarks-signatures">
               <div className="space-y-2 text-left">
                 <span className="text-[10px] font-mono text-slate-500 uppercase font-black">Principal Headteacher Remarks</span>
                 <p className="text-[11px] italic text-slate-700 bg-slate-50 p-4 rounded-xl border border-slate-200/50 leading-relaxed min-h-[70px] print:bg-white print:border-none">
@@ -911,6 +940,7 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
                       academicYear={year}
                       term={term}
                       component={paymentComponent}
+                      paymentType="fees"
                       billId={fullBill?.id || `${studentId}_${year}_${term}`.replace(/\//g, '-')}
                       onSuccess={(verifiedData) => {
                         const finalReceipt = verifiedData.receiptNo || `GTIMS-PAY-${year.split('/')[0]}-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -1220,7 +1250,16 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
                       if (downloadingReceiptPdf) return;
                       setDownloadingReceiptPdf(true);
                       try {
-                        const res = await generatePdfFromHtml('parent-portal-recent-receipt-area', `Receipt_${activeReceipt.receiptNo}.pdf`);
+                        const filename = formatIdentifiableFilename({
+                          docType: 'Fee Receipt',
+                          studentName: compiledReport ? `${compiledReport.student.firstName} ${compiledReport.student.lastName}` : 'Student',
+                          studentId: compiledReport?.student.id,
+                          receiptNo: activeReceipt.receiptNo,
+                          term: term,
+                          academicYear: year,
+                          extension: 'pdf'
+                        });
+                        const res = await generatePdfFromHtml('parent-portal-recent-receipt-area', filename);
                         downloadBlobLocally(res.blob, res.filename);
                       } catch (err) {
                         console.error(err);

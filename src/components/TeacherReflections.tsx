@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { 
   BookOpen, 
   Plus, 
@@ -20,9 +20,17 @@ import {
 import { TeacherReflection, ClassType, Teacher, SchoolInfo, Student, StudentAssessment } from '../types';
 import { DbController } from '../db';
 import { generatePdfFromHtml, downloadBlobLocally } from '../pdfHelper';
-import { getWatermarkHtml } from '../utils';
+import { getWatermarkHtml, formatIdentifiableFilename } from '../utils';
+import SmartTextarea from './SmartTextarea';
 function RichTextEditor({ value, onChange, placeholder }: { value: string; onChange: (val: string) => void; placeholder?: string }) {
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+  const [isChecking, setIsChecking] = useState(false);
+  const [spellCheckResults, setSpellCheckResults] = useState<{
+    errors: Array<{ word: string; suggestions: string[] }>;
+    correctedText: string;
+  } | null>(null);
+  const [hasChecked, setHasChecked] = useState(false);
+  const [autoCheck, setAutoCheck] = useState(true);
 
   const insertTag = (openTag: string, closeTag: string) => {
     const textarea = textareaRef.current;
@@ -45,76 +53,243 @@ function RichTextEditor({ value, onChange, placeholder }: { value: string; onCha
     }, 0);
   };
 
+  const handleSpellCheck = async () => {
+    if (!value.trim()) {
+      setSpellCheckResults(null);
+      setHasChecked(false);
+      return;
+    }
+    setIsChecking(true);
+    try {
+      const res = await fetch('/api/spellcheck', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: value })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSpellCheckResults(data);
+        setHasChecked(true);
+      } else {
+        console.error("Failed to fetch spelling check");
+      }
+    } catch (e) {
+      console.error("Spelling check error", e);
+    } finally {
+      setIsChecking(false);
+    }
+  };
+
+  const applyCorrection = (word: string, replacement: string) => {
+    const regex = new RegExp(`\\b${word}\\b`, 'g');
+    const newValue = value.replace(regex, replacement);
+    onChange(newValue);
+    
+    if (spellCheckResults) {
+      setSpellCheckResults({
+        ...spellCheckResults,
+        errors: spellCheckResults.errors.filter(err => err.word !== word)
+      });
+    }
+  };
+
+  const applyAllCorrections = () => {
+    if (spellCheckResults?.correctedText) {
+      onChange(spellCheckResults.correctedText);
+      setSpellCheckResults({
+        errors: [],
+        correctedText: spellCheckResults.correctedText
+      });
+    }
+  };
+
+  React.useEffect(() => {
+    if (!autoCheck) {
+      setSpellCheckResults(null);
+      setHasChecked(false);
+      return;
+    }
+    
+    if (!value.trim()) {
+      setSpellCheckResults(null);
+      setHasChecked(false);
+      return;
+    }
+
+    const delayDebounceFn = setTimeout(() => {
+      handleSpellCheck();
+    }, 1200);
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [value, autoCheck]);
+
   return (
     <div className="bg-white border border-slate-200 rounded-xl overflow-hidden focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-100 transition-all font-sans">
-      <div className="bg-slate-50 border-b border-slate-200 p-2 flex flex-wrap gap-1.5 items-center">
-        <button
-          type="button"
-          onClick={() => insertTag('<b>', '</b>')}
-          className="p-1 px-2.5 rounded text-xs font-bold text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
-          title="Bold (<b>)"
-        >
-          B
-        </button>
-        <button
-          type="button"
-          onClick={() => insertTag('<i>', '</i>')}
-          className="p-1 px-2.5 rounded text-xs italic text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
-          title="Italic (<i>)"
-        >
-          I
-        </button>
-        <button
-          type="button"
-          onClick={() => insertTag('<u>', '</u>')}
-          className="p-1 px-2.5 rounded text-xs underline text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
-          title="Underline (<u>)"
-        >
-          U
-        </button>
-        <div className="h-4 w-px bg-slate-300 mx-1" />
-        <button
-          type="button"
-          onClick={() => insertTag('<h3>', '</h3>')}
-          className="p-1 px-1.5 rounded text-[10px] font-black uppercase tracking-wider text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
-          title="Header (<h3>)"
-        >
-          H3
-        </button>
-        <button
-          type="button"
-          onClick={() => insertTag('<ul>\n  <li>', '</li>\n</ul>')}
-          className="p-1 px-1.5 rounded text-xs text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
-          title="Bullet List (<ul><li>)"
-        >
-          • List
-        </button>
-        <button
-          type="button"
-          onClick={() => insertTag('<blockquote>', '</blockquote>')}
-          className="p-1 px-1.5 rounded text-xs text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
-          title="Blockquote (<blockquote>)"
-        >
-          " Quote
-        </button>
-        <button
-          type="button"
-          onClick={() => insertTag('<br />', '')}
-          className="p-1 px-1.5 rounded text-[10px] font-black uppercase tracking-wider text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
-          title="Line Break (<br />)"
-        >
-          Line Break
-        </button>
-        <div className="flex-1" />
-        <span className="text-[9px] font-mono text-slate-400 select-none pr-1">HTML Enabled</span>
+      <div className="bg-slate-50 border-b border-slate-200 p-2 flex flex-wrap gap-2 items-center justify-between">
+        <div className="flex flex-wrap gap-1.5 items-center">
+          <button
+            type="button"
+            onClick={() => insertTag('<b>', '</b>')}
+            className="p-1 px-2.5 rounded text-xs font-bold text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
+            title="Bold (<b>)"
+          >
+            B
+          </button>
+          <button
+            type="button"
+            onClick={() => insertTag('<i>', '</i>')}
+            className="p-1 px-2.5 rounded text-xs italic text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
+            title="Italic (<i>)"
+          >
+            I
+          </button>
+          <button
+            type="button"
+            onClick={() => insertTag('<u>', '</u>')}
+            className="p-1 px-2.5 rounded text-xs underline text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
+            title="Underline (<u>)"
+          >
+            U
+          </button>
+          <div className="h-4 w-px bg-slate-300 mx-1" />
+          <button
+            type="button"
+            onClick={() => insertTag('<h3>', '</h3>')}
+            className="p-1 px-1.5 rounded text-[10px] font-black uppercase tracking-wider text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
+            title="Header (<h3>)"
+          >
+            H3
+          </button>
+          <button
+            type="button"
+            onClick={() => insertTag('<ul>\n  <li>', '</li>\n</ul>')}
+            className="p-1 px-1.5 rounded text-xs text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
+            title="Bullet List (<ul><li>)"
+          >
+            • List
+          </button>
+          <button
+            type="button"
+            onClick={() => insertTag('<blockquote>', '</blockquote>')}
+            className="p-1 px-1.5 rounded text-xs text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
+            title="Blockquote (<blockquote>)"
+          >
+            " Quote
+          </button>
+          <button
+            type="button"
+            onClick={() => insertTag('<br />', '')}
+            className="p-1 px-1.5 rounded text-[10px] font-black uppercase tracking-wider text-slate-700 hover:bg-slate-200 transition-all cursor-pointer"
+            title="Line Break (<br />)"
+          >
+            Line Break
+          </button>
+        </div>
+
+        {/* Spelling Controls */}
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-1.5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={autoCheck}
+              onChange={(e) => setAutoCheck(e.target.checked)}
+              className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-3.5 h-3.5 cursor-pointer"
+            />
+            <span className="text-[10px] font-bold text-slate-650 tracking-tight">Auto Spellcheck</span>
+          </label>
+
+          <button
+            type="button"
+            onClick={handleSpellCheck}
+            disabled={isChecking}
+            className="text-[10px] font-black uppercase tracking-wider text-indigo-600 hover:text-indigo-800 transition disabled:opacity-50 flex items-center gap-1 cursor-pointer"
+          >
+            {isChecking ? (
+              <>
+                <svg className="animate-spin h-3 w-3 text-indigo-650" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                Checking...
+              </>
+            ) : (
+              "Check Now"
+            )}
+          </button>
+          <div className="h-4 w-px bg-slate-300 mx-1" />
+          <span className="text-[9px] font-mono text-slate-400 select-none pr-1">HTML Enabled</span>
+        </div>
       </div>
+      
       <textarea
         ref={textareaRef}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
+        spellCheck="true"
         className="w-full h-40 p-4 text-xs font-mono bg-white outline-none border-none resize-y leading-relaxed text-slate-800"
       />
+
+      {/* Spelling feedback panel */}
+      {(isChecking || (hasChecked && spellCheckResults)) && (
+        <div className="bg-slate-50 border-t border-slate-150 p-3 text-xs">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
+              Spelling Assistant Feedback
+            </span>
+            {spellCheckResults && spellCheckResults.errors && spellCheckResults.errors.length > 0 && (
+              <button
+                type="button"
+                onClick={applyAllCorrections}
+                className="text-[9px] bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-1 rounded-md font-bold transition flex items-center gap-1"
+              >
+                ✨ Apply All Auto-Corrections
+              </button>
+            )}
+          </div>
+
+          {isChecking && !spellCheckResults && (
+            <div className="text-slate-500 italic text-[11px] animate-pulse flex items-center gap-1.5 py-1">
+              Analyzing text spelling and grammar patterns...
+            </div>
+          )}
+
+          {spellCheckResults && (
+            <div>
+              {spellCheckResults.errors && spellCheckResults.errors.length > 0 ? (
+                <div className="space-y-1.5 max-h-24 overflow-y-auto pr-1">
+                  {spellCheckResults.errors.map((err, idx) => (
+                    <div key={idx} className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-700 bg-white p-1.5 rounded border border-slate-150 shadow-3xs">
+                      <span className="text-red-500 font-bold line-through px-1 bg-red-50 rounded">{err.word}</span>
+                      <span className="text-slate-400">→</span>
+                      <div className="flex flex-wrap gap-1">
+                        {err.suggestions.map((sug, sIdx) => (
+                          <button
+                            key={sIdx}
+                            type="button"
+                            onClick={() => applyCorrection(err.word, sug)}
+                            className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 px-1.5 py-0.5 rounded text-[10px] font-semibold transition cursor-pointer"
+                          >
+                            {sug}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-emerald-650 font-semibold text-[11px] flex items-center gap-1 py-1">
+                  <svg className="w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7" />
+                  </svg>
+                  Excellent! No spelling mistakes detected.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -232,7 +407,12 @@ export default function TeacherReflections({ teacher, reflections, schoolInfo, o
   const handleDownloadPdf = async () => {
     setIsGeneratingPdf(true);
     try {
-      const filename = `Reflections_Report_${teacher.lastName}_${new Date().toISOString().split('T')[0]}`;
+      const filename = formatIdentifiableFilename({
+        docType: 'Teacher Reflections Report',
+        studentName: `${teacher.firstName || ''} ${teacher.lastName}`,
+        date: new Date().toISOString().split('T')[0],
+        extension: 'pdf'
+      });
       const result = await generatePdfFromHtml('reflections-print-area', filename);
       downloadBlobLocally(result.blob, result.filename);
     } catch (error) {
@@ -446,9 +626,9 @@ export default function TeacherReflections({ teacher, reflections, schoolInfo, o
 
                         <div className="space-y-1">
                           <label className="text-[10px] font-black uppercase text-slate-400 tracking-widest font-mono">Performance Impact Summary</label>
-                          <textarea
+                          <SmartTextarea
                             value={performanceSummary}
-                            onChange={(e) => setPerformanceSummary(e.target.value)}
+                            onChange={(e: any) => setPerformanceSummary(e.target.value)}
                             placeholder="Briefly summarize how this reflection/strategy links to the data above..."
                             className="w-full h-20 bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs focus:ring-2 focus:ring-indigo-500 outline-none resize-none"
                           />
@@ -594,7 +774,7 @@ export default function TeacherReflections({ teacher, reflections, schoolInfo, o
       </div>
 
       {/* PRINT-ONLY AREA */}
-      <div id="reflections-print-area" className="hidden print:block fixed top-[-9999px] left-[-9999px] w-[210mm] bg-white text-black p-12 font-serif">
+      <div id="reflections-print-area" className="hidden print:block fixed left-0 top-0 -z-[999999] opacity-0 pointer-events-none w-[210mm] bg-white text-black p-12 font-serif">
         <div className="absolute inset-0 z-0 pointer-events-none opacity-5" dangerouslySetInnerHTML={{ __html: getWatermarkHtml(schoolInfo?.logoUrl) }} />
         
         <div className="relative z-10">

@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import { 
   UserPlus, Users, Trash2, Key, ShieldAlert, Check, Search, 
-  Lock, Shield, RefreshCw, UserCheck, Smartphone, Info, CalendarClock, Sparkles
+  Lock, Shield, RefreshCw, UserCheck, Smartphone, Info, CalendarClock, Sparkles, UserX 
 } from 'lucide-react';
 import { DbController, setStorageItem } from '../db';
 import { UserAccount, UserRole, WebAuthnCredential } from '../types';
-import { evaluateSubscription } from '../subscription';
+import { evaluateSubscription, generateActivationCode } from '../subscription';
 
 interface Props {
   theme: any;
@@ -25,6 +25,15 @@ export default function AdminDashboardTab({ theme }: Props) {
     cancelText?: string;
     danger?: boolean;
     onConfirm: () => void;
+  } | null>(null);
+
+  // License Authorization & Renewal State
+  const [licenseEditModal, setLicenseEditModal] = useState<{
+    isOpen: boolean;
+    user: UserAccount;
+    licenseType: 'trial' | 'activated' | 'unlimited';
+    licensePeriod: number;
+    lastActivatedOn: string;
   } | null>(null);
 
   // System Integrity State
@@ -337,31 +346,42 @@ export default function AdminDashboardTab({ theme }: Props) {
       confirmMsg = `CRITICAL WARNING: ${user.name} is a PAID SUBSCRIBER. Deleting this account will permanently revoke their access. Money is NOT refundable after license renewal. Proceed with PERMANENT deletion?`;
     }
 
-    const userInput = window.prompt(`${confirmMsg}\n\nType 'CONFIRM' to execute:`);
-    if (userInput === 'CONFIRM') {
-      try {
-        const allUsers = DbController.getRegisteredUsers();
-        const filtered = allUsers.filter(u => u.uid !== user.uid);
-        DbController.saveRegisteredUsers(filtered);
-        setUsers(filtered);
+    setConfirmModal({
+      isOpen: true,
+      title: isPaid ? "CRITICAL: Delete Paid Client?" : "Revoke Client Access?",
+      message: confirmMsg,
+      confirmText: "Revoke Access",
+      cancelText: "Keep Client",
+      danger: true,
+      onConfirm: async () => {
+        try {
+          // Properly delete the user locally & on Firestore
+          await DbController.deleteRegisteredUser(user.uid);
+          
+          // Retrieve the updated users list
+          const updatedUsers = DbController.getRegisteredUsers();
+          setUsers(updatedUsers);
 
-        // Also clean up WebAuthn biometrics mapping to this email
-        const creds = DbController.getWebAuthnCredentials();
-        const remainingCreds = creds.filter(c => c.userEmail.toLowerCase() !== user.email.toLowerCase());
-        setStorageItem('sms_webauthn_credentials', remainingCreds);
-        setCredentials(remainingCreds);
+          // Also clean up WebAuthn biometrics mapping to this email
+          const creds = DbController.getWebAuthnCredentials();
+          const remainingCreds = creds.filter(c => c.userEmail.toLowerCase() !== user.email.toLowerCase());
+          setStorageItem('sms_webauthn_credentials', remainingCreds);
+          setCredentials(remainingCreds);
 
-        triggerToast(`Sign-in authority revoked for ${user.name}.`, 'success');
+          triggerToast(`Sign-in authority revoked for ${user.name}.`, 'success');
 
-        DbController.writeActivityLog(
-          'Account Revoked',
-          `Admin deleted sign-in authority for ${user.name} (${user.email})`,
-          'high'
-        );
-      } catch (err) {
-        triggerToast('Failed to revoke access.', 'error');
+          DbController.writeActivityLog(
+            'Account Revoked',
+            `Admin deleted sign-in authority for ${user.name} (${user.email})`,
+            'high'
+          );
+        } catch (err) {
+          triggerToast('Failed to revoke access.', 'error');
+        } finally {
+          setConfirmModal(null);
+        }
       }
-    }
+    });
   };
 
   const handleResetPassword = (email: string) => {
@@ -378,6 +398,106 @@ export default function AdminDashboardTab({ theme }: Props) {
         } catch (err: any) {
           triggerToast(err.message || 'Error sending reset email.', 'error');
         }
+      }
+    });
+  };
+
+  const handleSaveUserLicense = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!licenseEditModal || !licenseEditModal.user) return;
+    
+    try {
+      const { user, licenseType, licensePeriod, lastActivatedOn } = licenseEditModal;
+      const sub = evaluateSubscription(user);
+      const reqCode = sub?.requestCode || user.requestCode || `REQ-${user.email.split('@')[0].substring(0, 4).toUpperCase()}-9401`;
+      const generatedCode = generateActivationCode(user.email, reqCode);
+      
+      // Record code as used
+      DbController.recordUsedCode(generatedCode, user.email);
+      // Generate rotated request code for next time
+      const emailPrefix = user.email ? user.email.split('@')[0].substring(0, 4).toUpperCase() : 'USER';
+      const freshReqCode = `REQ-${emailPrefix}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+      await DbController.updateUserLicense(
+        user.uid,
+        licenseType,
+        lastActivatedOn,
+        generatedCode,
+        freshReqCode,
+        licensePeriod
+      );
+      
+      const updatedUsers = DbController.getRegisteredUsers();
+      setUsers(updatedUsers);
+      
+      triggerToast(`License for ${user.name} successfully updated & synced across devices!`, 'success');
+      
+      DbController.writeActivityLog(
+        'License Authorized',
+        `Admin authorized ${licenseType} license (${licensePeriod} year(s)) for ${user.name} starting on ${new Date(lastActivatedOn).toLocaleDateString()}`,
+        'high'
+      );
+      
+      setLicenseEditModal(null);
+    } catch (err: any) {
+      console.error(err);
+      triggerToast(err.message || 'Failed to authorize license.', 'error');
+    }
+  };
+
+  const handleToggleSuspendUser = (targetUser: UserAccount) => {
+    if (targetUser.email.toLowerCase().trim() === 'pegyirenyi@gmail.com') {
+      triggerToast('System Admin cannot be suspended.', 'error');
+      return;
+    }
+    const newSuspended = !targetUser.isSuspended;
+    DbController.updateUserAccount(targetUser.uid, {
+      isSuspended: newSuspended,
+      licenseType: newSuspended ? 'trial' : targetUser.licenseType
+    });
+    setUsers(DbController.getRegisteredUsers());
+    triggerToast(
+      newSuspended ? `Suspended and expired ${targetUser.name}` : `Unsuspended ${targetUser.name}`,
+      newSuspended ? 'info' : 'success'
+    );
+  };
+
+  const handleSuspendAllNonAdmins = () => {
+    setConfirmModal({
+      isOpen: true,
+      title: "Suspend & Expire All Non-Admins?",
+      message: "Are you sure you want to suspend and expire all users in the system except the Admin (pegyirenyi@gmail.com)? They will be locked out until given a new single-use activation passcode.",
+      confirmText: "Suspend All Non-Admins",
+      danger: true,
+      onConfirm: () => {
+        const allUsers = DbController.getRegisteredUsers();
+        let suspendedCount = 0;
+        const expiredDate = '2026-01-01T00:00:00.000Z';
+
+        const updatedList = allUsers.map(u => {
+          if (u.email.toLowerCase().trim() === 'pegyirenyi@gmail.com') {
+            return u;
+          }
+          suspendedCount++;
+          return {
+            ...u,
+            isSuspended: true,
+            licenseType: 'trial' as const,
+            registeredOn: expiredDate,
+            createdAt: expiredDate
+          };
+        });
+
+        setStorageItem('sms_users_list', updatedList);
+        DbController.saveRegisteredUsers(updatedList).catch(e => console.warn(e));
+        setUsers(updatedList);
+        triggerToast(`Successfully suspended and expired ${suspendedCount} non-admin user(s).`, 'info');
+        
+        DbController.writeActivityLog(
+          'Mass Suspension Triggered',
+          `Admin suspended and expired all non-admin users in the system (${suspendedCount} users).`,
+          'high'
+        );
       }
     });
   };
@@ -442,7 +562,14 @@ export default function AdminDashboardTab({ theme }: Props) {
               Add new system operators, regulate account roles, and manage biometric key chains.
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={handleSuspendAllNonAdmins}
+              className="bg-rose-600/90 hover:bg-rose-600 text-white border border-rose-500/30 rounded-2xl px-3.5 py-2.5 text-xs font-bold transition flex items-center gap-2 shadow-sm cursor-pointer"
+              title="Suspend & expire all users except pegyirenyi@gmail.com"
+            >
+              <UserX size={14} /> Suspend All Non-Admins
+            </button>
             <button
               onClick={() => {
                 setUsers(DbController.getRegisteredUsers());
@@ -459,7 +586,7 @@ export default function AdminDashboardTab({ theme }: Props) {
       </div>
 
       {/* STATS SUMMARY GRID */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
         <div className="bg-white border border-slate-200/60 p-4.5 rounded-2xl flex items-center gap-4">
           <div className="w-10 h-10 rounded-xl bg-slate-50 flex items-center justify-center border border-slate-100 text-slate-700">
             <Users size={18} />
@@ -709,18 +836,36 @@ export default function AdminDashboardTab({ theme }: Props) {
                         </td>
                         <td className="py-3 px-3">
                           {subStatus ? (
-                            <div className="space-y-0.5">
-                              <div className="flex items-center gap-1">
-                                <span className={`w-1.5 h-1.5 rounded-full ${subStatus.isLocked ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'}`} />
-                                <span className={`text-[10px] font-bold ${subStatus.isLocked ? 'text-rose-600' : 'text-slate-700'}`}>
-                                  {subStatus.licenseType === 'trial' ? 'Free Trial' : 'Subscribed'}
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className={`w-2 h-2 rounded-full ${subStatus.isLocked ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'}`} />
+                                <span className={`text-[10px] font-black uppercase tracking-wider ${subStatus.isLocked ? 'text-rose-600' : 'text-slate-800'}`}>
+                                  {subStatus.licenseType === 'trial' ? 'Free Trial' : subStatus.licenseType === 'unlimited' ? 'Unlimited' : `${user.licensePeriod || 1}-Yr Subscription`}
                                 </span>
                               </div>
-                              <div className="text-[10px] font-semibold text-slate-500 font-mono">
+                              <div className="text-[10px] font-mono">
                                 {subStatus.isLocked ? (
-                                  <span className="text-rose-500 font-bold">Expired (Locked)</span>
+                                  <span className="text-rose-600 font-extrabold bg-rose-50 border border-rose-200/80 px-2 py-0.5 rounded inline-block">
+                                    {user.isSuspended ? 'Suspended' : 'Expired / Locked'}
+                                  </span>
                                 ) : (
-                                  <span className="text-slate-700 font-bold bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200/40">{subStatus.remainingDays} days left</span>
+                                  <div className="space-y-0.5">
+                                    <span className={`font-mono font-black px-2 py-0.5 rounded border text-[10px] inline-block shadow-2xs ${
+                                      subStatus.remainingDays <= 30 
+                                        ? 'bg-amber-50 text-amber-700 border-amber-200/90 animate-pulse' 
+                                        : 'bg-emerald-50 text-emerald-800 border-emerald-200/90'
+                                    }`}>
+                                      ⏱️ {subStatus.countdownString}
+                                    </span>
+                                    {subStatus.lastActivatedOnDate && (
+                                      <div className="text-[9px] text-slate-400 font-sans">
+                                        Activated: {subStatus.lastActivatedOnDate.toLocaleDateString()}
+                                      </div>
+                                    )}
+                                    <div className="text-[9px] text-slate-400 font-sans">
+                                      Expires: {subStatus.expiryDate.toLocaleDateString()}
+                                    </div>
+                                  </div>
                                 )}
                               </div>
                             </div>
@@ -731,11 +876,41 @@ export default function AdminDashboardTab({ theme }: Props) {
                         <td className="py-3 px-3 text-right">
                           <div className="flex items-center justify-end gap-2">
                             <button
+                              onClick={() => {
+                                const sub = evaluateSubscription(user);
+                                setLicenseEditModal({
+                                  isOpen: true,
+                                  user,
+                                  licenseType: sub?.licenseType || 'trial',
+                                  licensePeriod: user.licensePeriod || 1,
+                                  lastActivatedOn: user.lastActivatedOn || new Date().toISOString()
+                                });
+                              }}
+                              title="Authorize / Renew School Database License"
+                              className="p-1.5 rounded-lg border border-amber-100 hover:border-amber-200 text-amber-550 hover:bg-amber-50 cursor-pointer"
+                            >
+                              <CalendarClock size={13} />
+                            </button>
+                            <button
                               onClick={() => handleResetPassword(user.email)}
                               title="Send Password Reset Email"
                               className="p-1.5 rounded-lg border border-indigo-100 hover:border-indigo-200 text-indigo-500 hover:bg-indigo-50 cursor-pointer"
                             >
                               <Key size={13} />
+                            </button>
+                            <button
+                              onClick={() => handleToggleSuspendUser(user)}
+                              disabled={isSelf}
+                              title={isSelf ? "Cannot suspend system admin" : user.isSuspended ? "Unsuspend account" : "Suspend & expire account"}
+                              className={`p-1.5 rounded-lg border transition ${
+                                isSelf 
+                                  ? 'border-slate-100 text-slate-300 bg-slate-50 cursor-not-allowed' 
+                                  : user.isSuspended 
+                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-600 hover:bg-emerald-100 cursor-pointer' 
+                                    : 'border-orange-200 text-orange-600 hover:bg-orange-50 cursor-pointer'
+                              }`}
+                            >
+                              <UserX size={13} />
                             </button>
                             <button
                               onClick={() => handleRevokeUser(user)}
@@ -975,6 +1150,137 @@ export default function AdminDashboardTab({ theme }: Props) {
                 {confirmModal.confirmText || 'Confirm'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {licenseEditModal && licenseEditModal.isOpen && licenseEditModal.user && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[100] p-4 no-print animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-slate-100 overflow-hidden text-left p-6 sm:p-8 space-y-6 animate-scale-up">
+            <div className="flex items-center gap-3 border-b border-slate-100 pb-4">
+              <div className="p-2.5 bg-amber-50 rounded-2xl text-amber-500">
+                <CalendarClock size={24} />
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-slate-950 font-sans tracking-tight">
+                  License Authorization & Renewal
+                </h3>
+                <p className="text-[11px] text-slate-400 font-sans">
+                  Configure school database license for <strong>{licenseEditModal.user.name}</strong>
+                </p>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveUserLicense} className="space-y-4">
+              <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 space-y-2 text-xs">
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Email Address</span>
+                  <span className="font-mono font-bold text-slate-700">{licenseEditModal.user.email}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Request Code</span>
+                  <span className="font-mono font-black text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100/30">
+                    {licenseEditModal.user.requestCode || "REQ-SYSTEM-9401"}
+                  </span>
+                </div>
+              </div>
+
+              {/* Single-Use Renewal Passcode Box for Client */}
+              <div className="bg-gradient-to-br from-amber-50 via-amber-50/80 to-orange-50/60 rounded-2xl p-4 border border-amber-200/90 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-extrabold uppercase text-amber-900 tracking-wider flex items-center gap-1">
+                    🔑 Client Single-Use Renewal Code
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const reqC = licenseEditModal.user.requestCode || `REQ-${licenseEditModal.user.email.split('@')[0].substring(0, 4).toUpperCase()}-9401`;
+                      const pass = generateActivationCode(licenseEditModal.user.email, reqC);
+                      navigator.clipboard.writeText(pass);
+                      triggerToast(`Copied passcode ${pass} to clipboard!`, 'info');
+                    }}
+                    className="text-[10px] font-black bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white px-2.5 py-1 rounded-lg transition flex items-center gap-1 cursor-pointer shadow-xs"
+                  >
+                    Copy Code
+                  </button>
+                </div>
+                <div className="font-mono text-base font-black text-amber-950 bg-white/95 px-3 py-2 rounded-xl border border-amber-200/80 shadow-inner text-center tracking-widest select-all">
+                  {generateActivationCode(
+                    licenseEditModal.user.email, 
+                    licenseEditModal.user.requestCode || `REQ-${licenseEditModal.user.email.split('@')[0].substring(0, 4).toUpperCase()}-9401`
+                  )}
+                </div>
+                <p className="text-[10px] text-amber-800/90 leading-relaxed font-sans">
+                  Send this passcode to the client/school. When entered in <strong>Settings → School License Top Up</strong>, their subscription extends by <strong>{licenseEditModal.licensePeriod || 1} year(s)</strong> and rotates their Request Code automatically.
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-[11px] font-black uppercase text-slate-500 tracking-wider">License Type</label>
+                <select
+                  value={licenseEditModal.licenseType}
+                  onChange={(e) => setLicenseEditModal({
+                    ...licenseEditModal,
+                    licenseType: e.target.value as any
+                  })}
+                  className="w-full text-xs py-2.5 px-3 bg-white border border-slate-200 rounded-xl focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition uppercase font-bold text-slate-700"
+                >
+                  <option value="trial">Free Trial (14 Days)</option>
+                  <option value="activated">Activated Paid License</option>
+                  <option value="unlimited">Unlimited Lifetime License</option>
+                </select>
+              </div>
+
+              {licenseEditModal.licenseType === 'activated' && (
+                <>
+                  <div className="space-y-1.5">
+                    <label className="block text-[11px] font-black uppercase text-slate-500 tracking-wider">Subscription Period</label>
+                    <select
+                      value={licenseEditModal.licensePeriod}
+                      onChange={(e) => setLicenseEditModal({
+                        ...licenseEditModal,
+                        licensePeriod: parseInt(e.target.value, 10)
+                      })}
+                      className="w-full text-xs py-2.5 px-3 bg-white border border-slate-200 rounded-xl focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition font-bold text-slate-700"
+                    >
+                      <option value={1}>1 Year Access</option>
+                      <option value={2}>2 Years Access</option>
+                      <option value={3}>3 Years Access</option>
+                      <option value={5}>5 Years Access</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="block text-[11px] font-black uppercase text-slate-500 tracking-wider">Date Authorized (Activation Date)</label>
+                    <input
+                      type="date"
+                      value={licenseEditModal.lastActivatedOn ? licenseEditModal.lastActivatedOn.substring(0, 10) : new Date().toISOString().substring(0, 10)}
+                      onChange={(e) => setLicenseEditModal({
+                        ...licenseEditModal,
+                        lastActivatedOn: e.target.value ? new Date(e.target.value).toISOString() : new Date().toISOString()
+                      })}
+                      className="w-full text-xs py-2.5 px-3 bg-white border border-slate-200 rounded-xl focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition font-mono font-bold text-slate-700"
+                    />
+                  </div>
+                </>
+              )}
+
+              <div className="flex gap-3 pt-4 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setLicenseEditModal(null)}
+                  className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition cursor-pointer select-none text-center"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-3 px-4 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-white font-black text-xs rounded-xl transition cursor-pointer select-none text-center"
+                >
+                  Save & Sync
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

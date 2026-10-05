@@ -1,7 +1,96 @@
 import { useState, useMemo } from 'react';
-import { DbController } from '../db';
+import { DbController, getStorageItem } from '../db';
 import { ClassType, Student } from '../types';
 import { ThemeStyles } from './ThemeWrapper';
+import { 
+  ScatterChart, 
+  Scatter, 
+  XAxis, 
+  YAxis, 
+  ZAxis, 
+  Tooltip as RechartsTooltip, 
+  ResponsiveContainer 
+} from 'recharts';
+
+const getColorForRate = (rate: number | null) => {
+  if (rate === null) return '#f1f5f9'; // Slate 100
+  if (rate >= 95) return '#10b981';    // Emerald 500
+  if (rate >= 90) return '#34d399';    // Emerald 400
+  if (rate >= 80) return '#6ee7b7';    // Emerald 300
+  if (rate >= 70) return '#fcd34d';    // Amber 300
+  if (rate >= 50) return '#fb923c';    // Orange 400
+  return '#f87171';                    // Red 400
+};
+
+const CustomTooltip = ({ active, payload }: any) => {
+  if (active && payload && payload.length) {
+    const data = payload[0].payload;
+    const dateObj = new Date(data.dateStr);
+    const formattedDate = dateObj.toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric'
+    });
+    
+    return (
+      <div className="bg-slate-900 text-white p-3 rounded-xl shadow-xl border border-slate-800 text-xs font-sans space-y-1.5 z-50">
+        <div className="font-bold border-b border-slate-850 pb-1 text-slate-200">
+          {formattedDate}
+        </div>
+        <div className="space-y-1">
+          <div className="flex justify-between gap-4">
+            <span className="text-slate-400">Timeframe:</span>
+            <span className="font-mono text-indigo-300 font-bold">{data.weekLabel}</span>
+          </div>
+          {data.hasRecords ? (
+            <>
+              <div className="flex justify-between gap-4">
+                <span className="text-slate-400">Attendance Rate:</span>
+                <span className="font-bold text-emerald-400 font-mono">{data.attendanceRate}%</span>
+              </div>
+              <div className="flex justify-between gap-4 text-[10px]">
+                <span className="text-slate-500">Breakdown:</span>
+                <span className="font-mono text-slate-300">
+                  {data.presentCount} Present / {data.totalCount} Total
+                </span>
+              </div>
+            </>
+          ) : (
+            <div className="text-amber-400 font-semibold italic text-[10px] pt-1">
+              No attendance logs marked
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+  return null;
+};
+
+const renderSquare = (props: any) => {
+  const { cx, cy, payload } = props;
+  if (cx === undefined || cy === undefined) return null;
+  
+  const color = getColorForRate(payload.attendanceRate);
+  
+  return (
+    <g>
+      <rect
+        x={cx - 12}
+        y={cy - 12}
+        width={24}
+        height={24}
+        rx={5}
+        ry={5}
+        fill={color}
+        stroke="#ffffff"
+        strokeWidth={1.5}
+        className="transition-all duration-200 hover:scale-110 hover:stroke-slate-300 hover:stroke-2 cursor-pointer"
+      />
+    </g>
+  );
+};
 import { 
   Users, 
   Search, 
@@ -162,6 +251,78 @@ export default function AttendanceSummaryView({ selectedClass, selectedDate, the
       frequentAbsentees
     };
   }, [studentMetrics]);
+
+  // 4b. Generate Calendar Heatmap Data
+  const heatmapData = useMemo(() => {
+    const startStr = getStorageItem('sms_term_start_date', '2026-05-20');
+    const endStr = getStorageItem('sms_term_end_date', '2026-07-04');
+    
+    const start = new Date(startStr);
+    const end = new Date(endStr);
+    if (isNaN(start.getTime()) || isNaN(end.getTime()) || start > end) {
+      return [];
+    }
+    
+    const data: {
+      dateStr: string;
+      weekNum: number;
+      weekLabel: string;
+      dayIndex: number;
+      dayLabel: string;
+      attendanceRate: number | null;
+      presentCount: number;
+      totalCount: number;
+      hasRecords: boolean;
+    }[] = [];
+    
+    const current = new Date(start);
+    let limit = 0;
+    while (current <= end && limit < 400) {
+      limit++;
+      const isWeekend = current.getDay() === 0 || current.getDay() === 6;
+      
+      if (!isWeekend) {
+        const year = current.getFullYear();
+        const month = String(current.getMonth() + 1).padStart(2, '0');
+        const day = String(current.getDate()).padStart(2, '0');
+        const dateStr = `${year}-${month}-${day}`;
+        
+        const diffTime = current.getTime() - start.getTime();
+        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+        const weekNum = Math.floor(diffDays / 7) + 1;
+        const weekLabel = `Wk ${weekNum}`;
+        
+        const dayLabel = current.toLocaleDateString('en-US', { weekday: 'short' });
+        const dayIndex = current.getDay() - 1;
+        
+        const records = allAttendanceRecords.filter(
+          r => r.class === selectedClass && r.date === dateStr
+        );
+        
+        const present = records.filter(r => r.status === 'Present').length;
+        const absent = records.filter(r => r.status === 'Absent').length;
+        const total = present + absent;
+        
+        const rate = total > 0 ? Math.round((present / total) * 100) : null;
+        
+        data.push({
+          dateStr,
+          weekNum,
+          weekLabel,
+          dayIndex,
+          dayLabel,
+          attendanceRate: rate,
+          presentCount: present,
+          totalCount: total,
+          hasRecords: total > 0
+        });
+      }
+      
+      current.setDate(current.getDate() + 1);
+    }
+    
+    return data;
+  }, [selectedClass, allAttendanceRecords]);
 
   // 5. Apply filters (gender, search, absentee toggle) and sort the student list
   const filteredAndSortedMetrics = useMemo(() => {
@@ -373,6 +534,100 @@ export default function AttendanceSummaryView({ selectedClass, selectedDate, the
           </p>
         </div>
 
+      </div>
+
+      {/* Heatmap Calendar Section */}
+      <div id="attendance-heatmap-card" className="bg-white p-6 rounded-xl border border-slate-200 shadow-xs space-y-4 no-print">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+          <div className="space-y-1">
+            <span className="text-[10px] uppercase font-mono font-bold text-indigo-600 tracking-wider flex items-center gap-1">
+              <Sparkles size={11} className="text-indigo-500 animate-pulse" /> Term Calendar View
+            </span>
+            <h4 className="text-sm font-black text-slate-900 tracking-tight flex items-center gap-2">
+              Class Attendance Heatmap (Current Term)
+            </h4>
+            <p className="text-[11px] text-slate-500 leading-tight">
+              Day-by-day attendance trends for Class {selectedClass} over the selected term dates.
+            </p>
+          </div>
+          
+          {/* Legend */}
+          <div className="flex flex-wrap items-center gap-2 text-[9px] font-mono font-bold text-slate-500 bg-slate-50 p-2 rounded-lg border border-slate-150">
+            <span className="mr-1 text-slate-400 uppercase font-sans">Key:</span>
+            <div className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded-xs bg-[#f1f5f9] border border-slate-200" />
+              <span>N/A</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded-xs bg-[#f87171]" />
+              <span>&lt;50%</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded-xs bg-[#fb923c]" />
+              <span>50-69%</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded-xs bg-[#fcd34d]" />
+              <span>70-79%</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded-xs bg-[#6ee7b7]" />
+              <span>80-89%</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded-xs bg-[#34d399]" />
+              <span>90-94%</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="w-3 h-3 rounded-xs bg-[#10b981]" />
+              <span>95%+</span>
+            </div>
+          </div>
+        </div>
+
+        {heatmapData.length === 0 ? (
+          <div className="h-44 flex flex-col items-center justify-center border border-dashed border-slate-200 rounded-xl bg-slate-50/50 text-slate-400 space-y-1">
+            <CalendarDays size={24} className="text-slate-300" />
+            <p className="text-xs font-semibold">No active term range configured</p>
+            <p className="text-[10px]">Configure term start/end dates in Settings or at top of Attendance Register.</p>
+          </div>
+        ) : (
+          <div className="w-full flex justify-center">
+            <div className="w-full max-w-4xl overflow-x-auto pb-2 scrollbar-none">
+              <div className="min-w-[640px] h-[210px] pr-4">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ScatterChart
+                    margin={{ top: 15, right: 10, bottom: 5, left: -10 }}
+                  >
+                    <XAxis
+                      type="category"
+                      dataKey="weekLabel"
+                      name="Week"
+                      axisLine={false}
+                      tickLine={false}
+                      tick={{ fontSize: 10, fontWeight: 700, fill: '#64748b' }}
+                    />
+                    <YAxis
+                      type="category"
+                      dataKey="dayLabel"
+                      name="Day"
+                      domain={['Fri', 'Thu', 'Wed', 'Tue', 'Mon']}
+                      axisLine={false}
+                      tickLine={false}
+                      tick={{ fontSize: 10, fontWeight: 700, fill: '#64748b' }}
+                    />
+                    <ZAxis type="number" range={[200, 200]} />
+                    <RechartsTooltip content={<CustomTooltip />} cursor={false} />
+                    <Scatter
+                      data={heatmapData}
+                      shape={renderSquare}
+                    />
+                  </ScatterChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 3. Filter and Student Table Section */}

@@ -1,5 +1,5 @@
 import { useState, FormEvent } from 'react';
-import { motion } from 'motion/react';
+import { motion } from 'framer-motion';
 import { DbController } from '../db';
 import { UserAccount } from '../types';
 import { 
@@ -36,17 +36,30 @@ export default function SubscriptionLockModal({ user, onUnlocked, onLogout, onSh
     setIsVerifying(true);
 
     try {
-      const cleanInput = activationInput.trim();
-      const expectedCode = generateActivationCode(user.email, requestCode);
+      const cleanInput = activationInput.trim().toUpperCase();
 
-      if (cleanInput.toUpperCase() === expectedCode) {
-        // Correct key! Activate the user for an academic year (12 months)
+      if (DbController.isCodeUsed(cleanInput)) {
+        setErrorMsg("This activation code has already been redeemed and cannot be reused. Each renewal code is strictly valid for ONE-TIME use. Please contact Admin for a new code.");
+        setIsVerifying(false);
+        return;
+      }
+
+      const expectedCodeByEmail = generateActivationCode(user.email, requestCode);
+      const expectedCodeByUid = user.uid ? generateActivationCode(user.uid, requestCode) : '';
+
+      if (cleanInput === expectedCodeByEmail || (expectedCodeByUid && cleanInput === expectedCodeByUid)) {
+        // Correct key! Record code as used & generate fresh rotated request code
+        DbController.recordUsedCode(cleanInput, user.email || user.uid);
+        const emailPrefix = user.email ? user.email.split('@')[0].substring(0, 4).toUpperCase() : 'USER';
+        const freshReqCode = `REQ-${emailPrefix}-${Math.floor(1000 + Math.random() * 9000)}`;
+
         const updated = await DbController.updateUserLicense(
           user.uid,
           'activated',
           new Date().toISOString(), // lastActivatedOn = now
-          cleanInput.toUpperCase(),
-          requestCode
+          cleanInput,
+          freshReqCode,
+          1
         );
         
         setSuccess(true);
@@ -167,9 +180,6 @@ export default function SubscriptionLockModal({ user, onUnlocked, onLogout, onSh
                 <p className="text-[10px] text-slate-400 leading-normal">
                   Renewal Hotline: <strong className="text-slate-200">0544052717</strong> or email <strong className="text-slate-200">pegyirenyi@gmail.com</strong>
                 </p>
-                <div className="text-[9px] text-slate-500 font-mono tracking-wider">
-                  Suggesting renewal activation code token to admin.
-                </div>
               </div>
             </div>
 

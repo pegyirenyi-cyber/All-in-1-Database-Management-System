@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import * as d3 from 'd3';
 import { 
   StudentAssessment, ClassType, CLASSES, AcademicYearType, ACADEMIC_YEARS, 
@@ -9,17 +9,19 @@ import { DbController, getStorageItem, setStorageItem } from '../db';
 import { ThemeStyles } from './ThemeWrapper';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  LineChart, Line, Cell
+  LineChart, Line, Cell, ReferenceLine
 } from 'recharts';
 import { 
   Printer, Save, CheckSquare, RefreshCw, Layers, Award, FileText, LayoutGrid, BarChart3, HelpCircle, AlertCircle, Sparkles, FileDown,
   Eye, EyeOff, ShieldAlert, Trash2, RotateCcw, Eraser, FileSpreadsheet,
   Smartphone, MessageSquare, Send, CheckCircle, ExternalLink, Calendar,
-  X, Sliders, Check, Plus, Info, TrendingUp, TrendingDown
+  X, Sliders, Check, Plus, Info, TrendingUp, TrendingDown, Archive, GraduationCap
 } from 'lucide-react';
-import { generateSecureToken, getWatermarkHtml } from '../utils';
+import { generateSecureToken, getWatermarkHtml, formatIdentifiableFilename, calculateAgeFromDob } from '../utils';
 import { generatePdfFromHtml, downloadBlobLocally } from '../pdfHelper';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
+import SmartTextarea from './SmartTextarea';
+import { MultiTermPerformanceLineChart } from './MultiTermPerformanceLineChart';
 
 export const RankBreakdownTooltip = ({ 
   term, 
@@ -213,6 +215,168 @@ const SubjectPerformanceChart = ({ data, viewType }: { data: any[], viewType: 'A
   return <svg ref={svgRef} width="100%" height="400" viewBox="0 0 800 400" preserveAspectRatio="xMidYMid meet" className="max-w-full" />;
 };
 
+const SUBJECT_COLORS = [
+  '#6366f1', // Indigo
+  '#06b6d4', // Cyan
+  '#10b981', // Emerald
+  '#f59e0b', // Amber
+  '#ef4444', // Red
+  '#ec4899', // Pink
+  '#8b5cf6', // Purple
+  '#f97316', // Orange
+  '#14b8a6', // Teal
+  '#3b82f6', // Blue
+  '#a855f7', // Violet
+  '#eab308'  // Yellow
+];
+
+const RechartsPerformanceTrends = ({ 
+  data, 
+  subjects, 
+  theme 
+}: { 
+  data: any[], 
+  subjects: string[], 
+  theme: ThemeStyles 
+}) => {
+  // Filter out subjects that have no data across all terms to keep the chart clean
+  const activeSubjects = subjects.filter(subj => 
+    data.some(d => d[subj] !== null && d[subj] !== undefined)
+  );
+
+  if (activeSubjects.length === 0) {
+    return (
+      <div className="p-12 text-center text-slate-400 bg-slate-50/50 rounded-2xl border border-slate-200/80 my-4 flex flex-col items-center justify-center gap-2">
+        <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl font-black">
+          📈
+        </div>
+        <p className="font-bold text-slate-700 text-xs">No Captured Subject Marks Recorded for Trend</p>
+        <p className="text-[10px] text-slate-400 max-w-sm">Input assessment scores for subjects in the current or previous terms to generate subject trend line graphs.</p>
+      </div>
+    );
+  }
+
+  return (
+    <AnimatePresence>
+      <motion.div 
+        key={JSON.stringify(data.map(d => d.term))}
+        initial={{ opacity: 0, y: 12, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: -10, scale: 0.98 }}
+        transition={{ duration: 0.35, ease: 'easeOut' }}
+        className="h-96 w-full font-sans text-xs min-h-[360px] text-left"
+      >
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={{ top: 20, right: 30, left: -10, bottom: 20 }}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+            <XAxis dataKey="term" tick={{ fontSize: 10, fill: '#64748b', fontWeight: 'bold' }} />
+            <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#64748b' }} tickFormatter={(v) => `${v}%`} />
+            <Tooltip 
+              formatter={(value: any, name: string) => [`${value}%`, name]}
+              labelStyle={{ fontWeight: 'bold', color: '#1e293b', fontSize: '11px' }}
+              contentStyle={{ borderRadius: '12px', border: '1px solid #e2e8f0', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)', fontSize: '11px', padding: '10px' }}
+            />
+            <Legend verticalAlign="top" height={48} iconType="circle" wrapperStyle={{ fontSize: '11px' }} />
+            {activeSubjects.map((subj, idx) => {
+              const color = SUBJECT_COLORS[idx % SUBJECT_COLORS.length];
+              return (
+                <Line 
+                  key={subj}
+                  type="monotone" 
+                  dataKey={subj} 
+                  name={subj} 
+                  stroke={color} 
+                  strokeWidth={3} 
+                  dot={{ r: 4, strokeWidth: 2 }}
+                  activeDot={{ r: 6 }} 
+                  connectNulls={true}
+                  isAnimationActive={true}
+                  animationDuration={850}
+                  animationEasing="ease-in-out"
+                />
+              );
+            })}
+          </LineChart>
+        </ResponsiveContainer>
+      </motion.div>
+    </AnimatePresence>
+  );
+};
+
+const RechartsPerformanceOverview = ({ 
+  data, 
+  viewType, 
+  theme 
+}: { 
+  data: any[], 
+  viewType: 'Average' | 'Trend', 
+  theme: ThemeStyles 
+}) => {
+  if (viewType === 'Average') {
+    return (
+      <div className="h-80 w-full font-sans text-xs min-h-[320px]">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={data} margin={{ top: 20, right: 10, left: -10, bottom: 20 }}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+            <XAxis 
+              dataKey="subject" 
+              tick={{ fontSize: 9, fill: '#64748b', fontWeight: 'bold' }} 
+              interval={0}
+              angle={-25}
+              textAnchor="end"
+              height={60}
+            />
+            <YAxis 
+              domain={[0, 100]} 
+              tick={{ fontSize: 10, fill: '#64748b' }} 
+              tickFormatter={(v) => `${v}%`} 
+            />
+            <Tooltip 
+              formatter={(value: any) => [`${value}%`, 'Class Average']}
+              labelStyle={{ fontWeight: 'bold', color: '#1e293b', fontSize: '11px' }}
+              contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)', fontSize: '11px' }}
+            />
+            <Legend verticalAlign="top" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px' }} />
+            <ReferenceLine y={50} stroke="#f43f5e" strokeDasharray="3 3" label={{ value: 'Passing (50%)', fill: '#f43f5e', fontSize: 10, position: 'top' }} />
+            <Bar dataKey="average" name="Subject Class Average" radius={[4, 4, 0, 0]}>
+              {data.map((entry, index) => {
+                const avg = entry.average || 0;
+                let fill = '#6366f1'; // Default indigo
+                if (avg >= 80) fill = '#10b981'; // Highly Proficient (emerald)
+                else if (avg >= 68) fill = '#3b82f6'; // Proficient (blue)
+                else if (avg >= 54) fill = '#f59e0b'; // Approaching (amber)
+                else if (avg > 0) fill = '#ef4444'; // Developing (red)
+                else fill = '#cbd5e1'; // No data
+                return <Cell key={`cell-${index}`} fill={fill} />;
+              })}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  } else {
+    return (
+      <div className="h-80 w-full font-sans text-xs min-h-[320px]">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={{ top: 20, right: 20, left: -10, bottom: 20 }}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+            <XAxis dataKey="term" tick={{ fontSize: 10, fill: '#64748b', fontWeight: 'bold' }} />
+            <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#64748b' }} tickFormatter={(v) => `${v}%`} />
+            <Tooltip 
+              formatter={(value: any, name: string) => [`${value}%`, name === 'highest' ? 'Highest Score' : 'Lowest Score']}
+              labelStyle={{ fontWeight: 'bold', color: '#1e293b', fontSize: '11px' }}
+              contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)', fontSize: '11px' }}
+            />
+            <Legend verticalAlign="top" height={36} iconType="circle" wrapperStyle={{ fontSize: '11px' }} />
+            <Line type="monotone" dataKey="highest" name="Highest Score in Term" stroke="#10b981" strokeWidth={3} activeDot={{ r: 6 }} />
+            <Line type="monotone" dataKey="lowest" name="Lowest Score in Term" stroke="#ef4444" strokeWidth={3} activeDot={{ r: 6 }} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    );
+  }
+};
+
 interface Props {
   theme: ThemeStyles;
   students: Student[];
@@ -233,7 +397,7 @@ interface Props {
   } | null;
 }
 
-type AssessmentSubMode = 'Worksheet' | 'IndividualReport' | 'Broadsheet' | 'PerformanceAnalytics' | 'StudentStrengthsWeaknesses';
+type AssessmentSubMode = 'Worksheet' | 'IndividualReport' | 'Broadsheet' | 'PerformanceAnalytics' | 'StudentStrengthsWeaknesses' | 'Transcript';
 
 export default function AssessmentTab({ 
   theme, 
@@ -253,7 +417,8 @@ export default function AssessmentTab({
   // Top selector ribbon states
   const [selectedClass, setSelectedClass] = useState<ClassType>(() => {
     if (userRole === 'Teacher') {
-      return assignedClasses.length > 0 ? assignedClasses[0] : (assignedClass || 'Basic 1');
+      const fallback = (assignedClass && assignedClass !== 'None') ? assignedClass : 'Basic 1';
+      return assignedClasses.length > 0 ? assignedClasses[0] : fallback;
     }
     return 'Basic 1';
   });
@@ -417,20 +582,143 @@ export default function AssessmentTab({
   
   // Navigation states
   const [subMode, setSubMode] = useState<AssessmentSubMode>('Worksheet');
+  const [analyticsSubTab, setAnalyticsSubTab] = useState<'general' | 'trends'>('general');
   const [chartView, setChartView] = useState<'Average' | 'Trend'>('Average');
+  const [chartEngine, setChartEngine] = useState<'Recharts' | 'D3'>('Recharts');
+  const [analyticsChartView, setAnalyticsChartView] = useState<'trends' | 'terms'>('trends');
   const [activeWorksheet, setActiveWorksheet] = useState<StudentAssessment[]>([]);
+  const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const latestWorksheetRef = useRef<StudentAssessment[]>([]);
+  const unsavedChangesRef = useRef<boolean>(false);
+  const isWorksheetArchived = useMemo(() => activeWorksheet.length > 0 && !!activeWorksheet[0].isArchived, [activeWorksheet]);
   const [selectedStudentId, setSelectedStudentId] = useState<string>('');
   
   // Student Trend Visualizer states
   const [trendStudentId, setTrendStudentId] = useState<string>('');
   const [trendSubject, setTrendSubject] = useState<string>('All');
   const [swSubjectFilter, setSwSubjectFilter] = useState<string>('All');
+  const [selectedAnalyticsStudentId, setSelectedAnalyticsStudentId] = useState<string>('all');
   
   // Heatmap Threshold Benchmark state
   const [heatmapThreshold, setHeatmapThreshold] = useState<number>(60);
   
   // Validation and Data Verification state
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
+
+  // Subject-Specific Mark Limits Configuration & Validation states
+  const DEFAULT_SUBJECT_LIMITS: Record<string, {
+    exercises: number;
+    tests: number;
+    projectWork: number;
+    groupWork: number;
+    examScore100: number;
+  }> = {
+    'Mathematics': { exercises: 10, tests: 20, projectWork: 10, groupWork: 10, examScore100: 100 },
+    'English Language': { exercises: 10, tests: 20, projectWork: 10, groupWork: 10, examScore100: 100 },
+    'Integrated Science': { exercises: 10, tests: 20, projectWork: 10, groupWork: 10, examScore100: 100 },
+    'Social Studies': { exercises: 10, tests: 20, projectWork: 10, groupWork: 10, examScore100: 100 },
+    'Religious And Moral Education': { exercises: 10, tests: 20, projectWork: 10, groupWork: 10, examScore100: 100 },
+    'Computing': { exercises: 10, tests: 20, projectWork: 10, groupWork: 10, examScore100: 100 },
+    'Creative Arts And Design': { exercises: 10, tests: 20, projectWork: 10, groupWork: 10, examScore100: 100 },
+    'French Language': { exercises: 10, tests: 20, projectWork: 10, groupWork: 10, examScore100: 100 },
+    'Our World Our People': { exercises: 10, tests: 20, projectWork: 10, groupWork: 10, examScore100: 100 },
+    'Career Technology': { exercises: 10, tests: 20, projectWork: 10, groupWork: 10, examScore100: 100 },
+    'History': { exercises: 10, tests: 20, projectWork: 10, groupWork: 10, examScore100: 100 },
+    'Ghanaian Language And Culture': { exercises: 10, tests: 20, projectWork: 10, groupWork: 10, examScore100: 100 },
+  };
+
+  const [subjectLimits, setSubjectLimits] = useState<Record<string, {
+    exercises: number;
+    tests: number;
+    projectWork: number;
+    groupWork: number;
+    examScore100: number;
+  }>>(() => {
+    try {
+      const saved = localStorage.getItem('school_subject_mark_limits');
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    return DEFAULT_SUBJECT_LIMITS;
+  });
+
+  const [showSubjectLimitsModal, setShowSubjectLimitsModal] = useState(false);
+
+  const activeSubjectLimits = useMemo(() => {
+    return subjectLimits[selectedSubject] || { exercises: 10, tests: 20, projectWork: 10, groupWork: 10, examScore100: 100 };
+  }, [subjectLimits, selectedSubject]);
+
+  const updateSubjectLimit = (
+    subject: string, 
+    field: 'exercises' | 'tests' | 'projectWork' | 'groupWork' | 'examScore100', 
+    value: number
+  ) => {
+    const nextLimits = {
+      ...subjectLimits,
+      [subject]: {
+        ...(subjectLimits[subject] || { exercises: 10, tests: 20, projectWork: 10, groupWork: 10, examScore100: 100 }),
+        [field]: value
+      }
+    };
+    setSubjectLimits(nextLimits);
+    localStorage.setItem('school_subject_mark_limits', JSON.stringify(nextLimits));
+  };
+
+  // Validation Effect: Automatically scan active worksheet whenever it changes, or when subject/limits change
+  useEffect(() => {
+    const errors: Record<string, string> = {};
+    const tmpl = DbController.getAssessmentTemplate(selectedClass, selectedYear, selectedTerm, selectedSubject);
+    
+    activeWorksheet.forEach(row => {
+      // Check duplicate student
+      const studentRecords = activeWorksheet.filter(r => r.studentId === row.studentId);
+      if (studentRecords.length > 1) {
+        errors[`duplicate-${row.studentId}`] = `Warning: Duplicate entries detected for student ID ${row.studentId} in current worksheet.`;
+      }
+      
+      // Check default/custom components
+      if (tmpl) {
+        tmpl.components.forEach((comp, idx) => {
+          const val = row.customAssessments?.[idx] || 0;
+          if (val > comp.maxScore) {
+            errors[`${row.studentId}-customAssessments-${idx}`] = `${row.studentName}: Component "${comp.name}" score (${val}) exceeds subject limit (${comp.maxScore})`;
+          }
+        });
+      } else {
+        // Exercises
+        row.exercises.forEach((val, idx) => {
+          if (val > activeSubjectLimits.exercises) {
+            errors[`${row.studentId}-exercises-${idx}`] = `${row.studentName}: Exercise ${idx + 1} score (${val}) exceeds subject limit (${activeSubjectLimits.exercises})`;
+          }
+        });
+        // Tests
+        row.tests.forEach((val, idx) => {
+          if (val > activeSubjectLimits.tests) {
+            errors[`${row.studentId}-tests-${idx}`] = `${row.studentName}: Class Test ${idx + 1} score (${val}) exceeds subject limit (${activeSubjectLimits.tests})`;
+          }
+        });
+        // Project
+        if (row.projectWork > activeSubjectLimits.projectWork) {
+          errors[`${row.studentId}-projectWork-0`] = `${row.studentName}: Project Work score (${row.projectWork}) exceeds subject limit (${activeSubjectLimits.projectWork})`;
+        }
+        // Group
+        if (row.groupWork > activeSubjectLimits.groupWork) {
+          errors[`${row.studentId}-groupWork-0`] = `${row.studentName}: Group Work score (${row.groupWork}) exceeds subject limit (${activeSubjectLimits.groupWork})`;
+        }
+      }
+      
+      // Exam Score
+      const examMax = activeSubjectLimits.examScore100;
+      if (row.examScore100 > examMax) {
+        errors[`${row.studentId}-examScore100-0`] = `${row.studentName}: Examination score (${row.examScore100}) exceeds subject limit (${examMax})`;
+      }
+    });
+    
+    setValidationErrors(errors);
+  }, [activeWorksheet, selectedSubject, activeSubjectLimits, selectedClass, selectedYear, selectedTerm]);
   
   // Custom Template states
   const [showTemplateModal, setShowTemplateModal] = useState(false);
@@ -441,6 +729,7 @@ export default function AssessmentTab({
   const [unsavedChanges, setUnsavedChanges] = useState(false);
   const [saveFeedback, setSaveFeedback] = useState('');
   const [reportCardPreviewMode, setReportCardPreviewMode] = useState(false);
+  const [subjectSortMode, setSubjectSortMode] = useState<'alphabetical' | 'score'>('alphabetical');
   const [bulkReportMode, setBulkReportMode] = useState(false);
   const [worksheetPreviewMode, setWorksheetPreviewMode] = useState(false);
   const [broadsheetPreviewMode, setBroadsheetPreviewMode] = useState(false);
@@ -850,22 +1139,67 @@ export default function AssessmentTab({
     alert(`Broadcast completed!\n\nSuccessful transmissions: ${successCount}\nFailed transmissions: ${failureCount}`);
   };
 
-  // Fetch or construct worksheet records whenever filters update!
+  // Compute stable key for students in the active class to prevent reloading worksheet on unrelated state updates
+  const classStudentIds = useMemo(() => {
+    return (students || []).filter(s => s.class === selectedClass).map(s => s.id).sort().join(',');
+  }, [students, selectedClass]);
+
+  // Fetch or construct worksheet records whenever class/year/term/subject or student roster changes
   useEffect(() => {
-    const sheet = DbController.getAssessmentsSheet(selectedClass, selectedYear, selectedTerm, selectedSubject);
-    setActiveWorksheet(sheet);
-    setUnsavedChanges(false);
+    // Flush or clear any pending auto-save before changing worksheet context
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+      if (unsavedChangesRef.current && latestWorksheetRef.current.length > 0) {
+        DbController.saveAssessmentsSheet(latestWorksheetRef.current);
+      }
+    }
+
+    const reloadWorksheet = () => {
+      const sheet = DbController.getAssessmentsSheet(selectedClass, selectedYear, selectedTerm, selectedSubject);
+      setActiveWorksheet(sheet);
+      latestWorksheetRef.current = sheet;
+      unsavedChangesRef.current = false;
+      setUnsavedChanges(false);
+    };
+
+    reloadWorksheet();
     
     // Set first student as default individual report target if none is active
-    const classStd = students.filter(s => s.class === selectedClass);
+    const classStd = (students || []).filter(s => s.class === selectedClass);
     if (classStd.length > 0 && !selectedStudentId) {
       setSelectedStudentId(classStd[0].id);
     }
-  }, [selectedClass, selectedYear, selectedTerm, selectedSubject, students]);
+
+    const handleSync = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const eventType = customEvent.detail?.type;
+      // Do NOT wipe active worksheet on local assessment-updated auto-saves or when unsaved changes exist
+      if (eventType === 'assessments-updated') return;
+      if (eventType === 'students-updated' || eventType === 'assessment-template-updated') {
+        if (unsavedChangesRef.current) return;
+        const sheet = DbController.getAssessmentsSheet(selectedClass, selectedYear, selectedTerm, selectedSubject);
+        setActiveWorksheet(sheet);
+        latestWorksheetRef.current = sheet;
+      }
+    };
+
+    window.addEventListener('school-system-sync', handleSync);
+    return () => {
+      window.removeEventListener('school-system-sync', handleSync);
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+        if (unsavedChangesRef.current && latestWorksheetRef.current.length > 0) {
+          DbController.saveAssessmentsSheet(latestWorksheetRef.current);
+        }
+      }
+    };
+  }, [selectedClass, selectedYear, selectedTerm, selectedSubject, classStudentIds]);
 
   // Set default student if search changes
   useEffect(() => {
-    const classStd = students.filter(s => s.class === selectedClass);
+    const classStd = (students || []).filter(s => s.class === selectedClass);
     if (classStd.length > 0 && (!selectedStudentId || !classStd.some(s => s.id === selectedStudentId))) {
       setSelectedStudentId(classStd[0].id);
     }
@@ -883,13 +1217,19 @@ export default function AssessmentTab({
       alert("Permission to edit grades has been suspended by the Headteacher.");
       return;
     }
-    const valueNum = valueStr === '' ? 0 : parseFloat(valueStr);
+    const cleanStr = valueStr.trim();
+    const isBlank = cleanStr === '';
+    const parsedNum = isBlank ? 0 : parseFloat(cleanStr);
+    const valueNum = isNaN(parsedNum) ? 0 : parsedNum;
     
-    // Define boundary checks according to prompt constraints:
+    // Define boundary checks according to subject-specific limits:
     let maxLimit = 10;
-    if (field === 'tests') maxLimit = 20;
-    if (field === 'examScore100') maxLimit = 100;
-    if (field === 'customAssessments') {
+    if (field === 'tests') maxLimit = activeSubjectLimits.tests;
+    else if (field === 'exercises') maxLimit = activeSubjectLimits.exercises;
+    else if (field === 'projectWork') maxLimit = activeSubjectLimits.projectWork;
+    else if (field === 'groupWork') maxLimit = activeSubjectLimits.groupWork;
+    else if (field === 'examScore100') maxLimit = activeSubjectLimits.examScore100;
+    else if (field === 'customAssessments') {
       const tmpl = DbController.getAssessmentTemplate(selectedClass, selectedYear, selectedTerm, selectedSubject);
       if (tmpl && tmpl.components[index]) {
         maxLimit = tmpl.components[index].maxScore;
@@ -900,7 +1240,7 @@ export default function AssessmentTab({
 
     // Data Verification Logic: Flag if marks exceed defined subject limit
     const errorKey = `${studentId}-${field}-${index}`;
-    if (valueNum > maxLimit) {
+    if (!isBlank && valueNum > maxLimit) {
       setValidationErrors(prev => ({
         ...prev,
         [errorKey]: `Mark (${valueNum}) exceeds subject limit (${maxLimit})`
@@ -914,7 +1254,6 @@ export default function AssessmentTab({
     }
 
     // Verification Logic: Check for duplicate entries for the same student in this term across the active worksheet
-    // (Though worksheet is per subject, this hook can check for consistency)
     const studentRecords = activeWorksheet.filter(r => r.studentId === studentId);
     if (studentRecords.length > 1) {
        setValidationErrors(prev => ({
@@ -923,19 +1262,19 @@ export default function AssessmentTab({
        }));
     }
 
-    // Reject or clamp values outside boundaries
-    const boundValue = Math.min(maxLimit, Math.max(0, valueNum));
+    // Allow entering non-negative values
+    const boundValue = Math.max(0, valueNum);
 
     // Update state worksheet
     const updated = activeWorksheet.map(row => {
       if (row.studentId === studentId) {
         let updatedRow = { ...row };
         if (field === 'exercises') {
-          const exps = [...row.exercises];
+          const exps = [...(row.exercises || [0, 0, 0, 0])];
           exps[index] = boundValue;
           updatedRow.exercises = exps;
         } else if (field === 'tests') {
-          const tsts = [...row.tests];
+          const tsts = [...(row.tests || [0, 0])];
           tsts[index] = boundValue;
           updatedRow.tests = tsts;
         } else if (field === 'customAssessments') {
@@ -957,24 +1296,66 @@ export default function AssessmentTab({
       return row;
     });
 
-    const ranked = DbController.calculatePositions(updated);
+    const tmpl = DbController.getAssessmentTemplate(selectedClass, selectedYear, selectedTerm, selectedSubject);
+    const ranked = DbController.calculatePositions(updated, tmpl);
     setActiveWorksheet(ranked);
+    latestWorksheetRef.current = ranked;
+    unsavedChangesRef.current = true;
     setUnsavedChanges(true);
 
     if (isAutoSave) {
-      DbController.saveAssessmentsSheet(ranked);
-      setUnsavedChanges(false);
-      setSaveFeedback('Auto-saved changes!');
-      setTimeout(() => setSaveFeedback(''), 1500);
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+      }
+      if (valueNum <= maxLimit) {
+        autoSaveTimerRef.current = setTimeout(() => {
+          DbController.saveAssessmentsSheet(latestWorksheetRef.current);
+          unsavedChangesRef.current = false;
+          setUnsavedChanges(false);
+          setSaveFeedback('Auto-saved changes!');
+          setTimeout(() => setSaveFeedback(''), 1500);
+        }, 500);
+      } else {
+        unsavedChangesRef.current = true;
+        setUnsavedChanges(true);
+        setSaveFeedback('Auto-save paused - correction required!');
+      }
     }
   };
 
   const handleManualSave = () => {
+    const errorList = Object.entries(validationErrors)
+      .filter(([key]) => !key.startsWith('Warning') && !key.startsWith('duplicate'))
+      .map(([_, val]) => val);
+    if (errorList.length > 0) {
+      alert(`Cannot save assessment data!\n\nPlease correct the following validation errors first:\n\n${errorList.map((err, i) => `${i + 1}. ${err}`).join('\n')}`);
+      return false;
+    }
     DbController.saveAssessmentsSheet(activeWorksheet);
+    latestWorksheetRef.current = activeWorksheet;
+    unsavedChangesRef.current = false;
     onManualSave();
     setUnsavedChanges(false);
     setSaveFeedback('Gradesheet successfully saved!');
     setTimeout(() => setSaveFeedback(''), 3500);
+    return true;
+  };
+
+  const handleArchiveWorksheet = () => {
+    if (!window.confirm("Are you sure you want to archive this entire assessment worksheet?\n\nThis will retire this worksheet from the main dashboard metrics, but you can restore it at any time from Settings > Deleted/Archived.")) {
+      return;
+    }
+    DbController.archiveAssessmentWorksheet(selectedClass, selectedYear, selectedTerm, selectedSubject);
+    const sheet = DbController.getAssessmentsSheet(selectedClass, selectedYear, selectedTerm, selectedSubject);
+    setActiveWorksheet(sheet);
+    window.dispatchEvent(new CustomEvent('app-toast', { detail: { text: 'Assessment worksheet successfully archived!', type: 'success' } }));
+  };
+
+  const handleRestoreWorksheet = () => {
+    DbController.restoreAssessmentWorksheet(selectedClass, selectedYear, selectedTerm, selectedSubject);
+    const sheet = DbController.getAssessmentsSheet(selectedClass, selectedYear, selectedTerm, selectedSubject);
+    setActiveWorksheet(sheet);
+    window.dispatchEvent(new CustomEvent('app-toast', { detail: { text: 'Assessment worksheet successfully restored!', type: 'success' } }));
   };
 
   const handleClearInputs = () => {
@@ -1162,27 +1543,166 @@ export default function AssessmentTab({
   const [previewOrientation, setPreviewOrientation] = useState<'portrait' | 'landscape'>('portrait');
   const [previewThemePreset, setPreviewThemePreset] = useState<'vivid' | 'charcoal' | 'grayscale'>('vivid');
   const [previewMarginSize, setPreviewMarginSize] = useState<'normal' | 'narrow' | 'none'>('normal');
+  const [maxSubjectsToPrint, setMaxSubjectsToPrint] = useState<number>(10);
+  const [isAutoFitA4, setIsAutoFitA4] = useState<boolean>(true);
+
+  const [previewScale, setPreviewScale] = useState<number>(1);
+  const [mobileActiveTab, setMobileActiveTab] = useState<'preview' | 'settings'>('preview');
+  const previewContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!previewContainerRef.current) return;
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (let entry of entries) {
+        const containerWidth = entry.contentRect.width - 48; // subtract padding
+        const targetWidth = previewOrientation === 'portrait' ? 760 : 1000;
+        if (containerWidth < targetWidth && containerWidth > 0) {
+          setPreviewScale(Math.max(0.1, containerWidth / targetWidth));
+        } else if (containerWidth > 0) {
+          setPreviewScale(1);
+        }
+      }
+    });
+    resizeObserver.observe(previewContainerRef.current);
+    return () => resizeObserver.disconnect();
+  }, [previewOrientation, showPrintPreviewModal]);
 
   const handlePrint = () => {
-    // Reset checklists for the new verification run
-    setChecklistStudent(false);
-    setChecklistGrades(false);
-    setChecklistRemarks(false);
-    setChecklistFinances(false);
-    setShowPrintPreviewModal(true);
+    if ((window as any).printTarget) {
+      (window as any).printTarget('pristine-report-card-preview', 'Student Terminal Report Card', false);
+    } else {
+      window.print();
+    }
   };
 
   const executeNativePrint = () => {
+    const previewEl = document.getElementById('report-center-preview-content');
+    if (!previewEl) {
+      setShowPrintPreviewModal(false);
+      DbController.writeActivityLog('Print Report Generated', `Printed individual report card for student ID ${selectedStudentId} (Class: ${selectedClass}).`, 'low');
+      document.body.classList.add('sms-printing-active');
+      setTimeout(() => {
+        try {
+          window.print();
+        } catch (e) {
+          console.warn("Direct print restricted inside sandbox iframe:", e);
+          setPrintBlocked(true);
+        } finally {
+          document.body.classList.remove('sms-printing-active');
+        }
+      }, 200);
+      return;
+    }
+
+    const printContent = previewEl.innerHTML;
+    const styleEl = document.createElement('style');
+    styleEl.id = 'sms-print-style-override';
+    styleEl.innerHTML = `
+      @media print {
+        body > :not(#sms-print-section) {
+          display: none !important;
+        }
+        #sms-print-section {
+          display: block !important;
+          position: absolute !important;
+          left: 0 !important;
+          top: 0 !important;
+          width: 100% !important;
+          height: auto !important;
+          background-color: #ffffff !important;
+          color: #000000 !important;
+          margin: 0 !important;
+          padding: 0 !important;
+        }
+        @page {
+          size: A4 ${previewOrientation};
+          margin: 0 !important;
+        }
+        
+        .report-card-print-container {
+          width: 210mm !important;
+          height: 297mm !important;
+          max-height: 297mm !important;
+          box-sizing: border-box !important;
+          position: relative !important;
+          margin: 0 !important;
+          overflow: hidden !important;
+          display: flex !important;
+          flex-direction: column !important;
+          justify-content: space-between !important;
+          background: #ffffff !important;
+        }
+        
+        /* Keep exact colors/backgrounds on print */
+        * {
+          -webkit-print-color-adjust: exact !important;
+          print-color-adjust: exact !important;
+        }
+      }
+    `;
+
+    const marginPadding = previewMarginSize === 'normal' ? '12mm 10mm 12mm 10mm' : previewMarginSize === 'narrow' ? '6mm 6mm 6mm 6mm' : '3mm 3mm 3mm 3mm';
+    const widthDim = previewOrientation === 'portrait' ? '210mm' : '297mm';
+    const heightDim = previewOrientation === 'portrait' ? '297mm' : '210mm';
+
+    const printSection = document.createElement('div');
+    printSection.id = 'sms-print-section';
+    printSection.className = 'bg-white text-slate-900';
+    printSection.style.fontFamily = "'Inter', sans-serif";
+    printSection.innerHTML = `
+      <div class="report-card-print-container" style="width: ${widthDim} !important; height: ${heightDim} !important; max-height: ${heightDim} !important; padding: ${marginPadding} !important;">
+        ${printContent}
+      </div>
+    `;
+
+    document.body.appendChild(printSection);
+    document.head.appendChild(styleEl);
+    document.body.classList.add('sms-printing-active');
+
     setShowPrintPreviewModal(false);
     DbController.writeActivityLog('Print Report Generated', `Printed individual report card for student ID ${selectedStudentId} (Class: ${selectedClass}).`, 'low');
+
     setTimeout(() => {
       try {
         window.print();
       } catch (e) {
         console.warn("Direct print restricted inside sandbox iframe:", e);
         setPrintBlocked(true);
+      } finally {
+        printSection.remove();
+        styleEl.remove();
+        document.body.classList.remove('sms-printing-active');
       }
-    }, 200);
+    }, 250);
+  };
+
+  // Trigger bulk PDF generation for all students in selected class
+  const handleTriggerBulkPdfDownload = () => {
+    if (teacherPermissions?.canExportReports === false) {
+      alert("Permission to export reports has been suspended by the Headteacher.");
+      return;
+    }
+
+    const classStudentsCount = students.filter(s => s.class === selectedClass).length;
+    if (classStudentsCount === 0) {
+      alert(`No registered students found in ${selectedClass}.`);
+      return;
+    }
+
+    setBulkReportMode(true);
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('app-toast', {
+        detail: { text: `Preparing bulk PDF report cards for ${selectedClass} (${classStudentsCount} students)...`, type: 'info' }
+      }));
+    }
+
+    setTimeout(() => {
+      const batchBtn = document.getElementById('batch-print-now-btn');
+      if (batchBtn) {
+        batchBtn.click();
+      }
+    }, 400);
   };
 
   // Compute individual student report card metrics across all subjects
@@ -1190,6 +1710,28 @@ export default function AssessmentTab({
     if (!selectedStudentId) return null;
     return DbController.getStudentTermReportCard(selectedStudentId, selectedYear, selectedTerm);
   }, [selectedStudentId, selectedYear, selectedTerm, activeWorksheet]);
+
+  // Sort grades based on toggle selection
+  const sortedGrades = useMemo(() => {
+    if (!compiledReport || !compiledReport.grades) return [];
+    const gradesCopy = [...compiledReport.grades];
+    if (subjectSortMode === 'alphabetical') {
+      return gradesCopy.sort((a, b) => (a.subject || '').localeCompare(b.subject || ''));
+    } else {
+      return gradesCopy.sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
+    }
+  }, [compiledReport, subjectSortMode]);
+
+  // Compute subject count class for single student preview to enable CSS-based autofit
+  const singleSubjectCountClass = useMemo(() => {
+    const singleSubjectCount = sortedGrades.length;
+    return singleSubjectCount <= 8 ? 'subject-count-normal' :
+      singleSubjectCount <= 12 ? 'subject-count-moderate' :
+      singleSubjectCount <= 16 ? 'subject-count-high' :
+      singleSubjectCount <= 20 ? 'subject-count-extra-high' :
+      singleSubjectCount <= 24 ? 'subject-count-extreme' :
+      'subject-count-critical';
+  }, [sortedGrades.length]);
 
   // Compute student financial outstanding balance and next term plan
   const studentFinancials = useMemo(() => {
@@ -1239,7 +1781,7 @@ export default function AssessmentTab({
         const y1 = parseInt(parts[0], 10);
         const y2 = parseInt(parts[1], 10);
         if (!isNaN(y1) && !isNaN(y2)) {
-          nextYear = `${y1 + 1}/${y2 + 1}`;
+          nextYear = `${y1 + 1}/${y2 + 1}` as AcademicYearType;
         }
       }
     }
@@ -1269,6 +1811,74 @@ export default function AssessmentTab({
     };
   }, [selectedStudentId, selectedYear, selectedTerm]);
 
+  // Dynamic scaling logic for report cards based on subject count
+  const getReportCardScaling = useCallback((subjectCount: number) => {
+    if (subjectCount > 22) {
+      return {
+        tablePadding: 'py-0.5 px-1.5',
+        tableFontSize: 'text-[8.5px]',
+        rowHeight: 'print:h-4',
+        headerSpacing: 'pb-1 mb-1',
+        metaPadding: 'p-1.5 gap-2',
+        footerSpacing: 'mt-1.5 pt-1.5',
+        financialSpacing: 'mt-1.5 p-1.5 gap-2',
+        remarksSpacing: 'mt-1.5 pt-1.5 gap-4',
+        logoSize: 'w-10 h-10',
+        photoSize: 'w-10 h-10',
+        titleSize: 'text-base',
+        subTitleSize: 'text-[8px]',
+        infoSize: 'text-[7px]',
+        metaValSize: 'text-[10px]',
+        remarkBoxHeight: 'min-h-[40px] p-2 text-[9px]',
+        signatureSize: 'w-32 h-10',
+        signatureLine: 'w-40',
+        tableMargin: 'mt-3'
+      };
+    }
+    if (subjectCount > 16) {
+      return {
+        tablePadding: 'py-1 px-2.5',
+        tableFontSize: 'text-[10px]',
+        rowHeight: 'print:h-6',
+        headerSpacing: 'pb-2.5 mb-3',
+        metaPadding: 'p-3 gap-3',
+        footerSpacing: 'mt-3 pt-3',
+        financialSpacing: 'mt-3 p-2.5 gap-3',
+        remarksSpacing: 'mt-3 pt-3 gap-6',
+        logoSize: 'w-14 h-14',
+        photoSize: 'w-12 h-12',
+        titleSize: 'text-xl',
+        subTitleSize: 'text-[10px]',
+        infoSize: 'text-[9px]',
+        metaValSize: 'text-xs',
+        remarkBoxHeight: 'min-h-[55px] p-3 text-[10px]',
+        signatureSize: 'w-40 h-12',
+        signatureLine: 'w-48',
+        tableMargin: 'mt-5'
+      };
+    }
+    return {
+      tablePadding: 'py-3 px-3',
+      tableFontSize: 'text-sm',
+      rowHeight: 'print:h-10',
+      headerSpacing: 'pb-5 mb-8',
+      metaPadding: 'p-5 gap-4',
+      footerSpacing: 'mt-8 pt-6',
+      financialSpacing: 'mt-4 p-3 gap-4',
+      remarksSpacing: 'mt-10 pt-4 gap-8',
+      logoSize: 'w-20 h-20',
+      photoSize: 'w-16 h-16',
+      titleSize: 'text-2xl',
+      subTitleSize: 'text-xs',
+      infoSize: 'text-[10px]',
+      metaValSize: 'text-sm',
+      remarkBoxHeight: 'min-h-[70px] p-4 text-[11px]',
+      signatureSize: 'w-52 h-16',
+      signatureLine: 'w-52',
+      tableMargin: 'mt-8'
+    };
+  }, []);
+
   // Compute bulk class report cards for all students in selected class
   const bulkClassReports = useMemo(() => {
     const classStudents = students.filter(s => s.class === selectedClass);
@@ -1276,6 +1886,7 @@ export default function AssessmentTab({
 
     return classStudents.map(student => {
       const report = DbController.getStudentTermReportCard(student.id, selectedYear, selectedTerm);
+      const scaling = getReportCardScaling(report?.grades?.length || 0);
       
       // Calculate financials for this student
       const currentBill = bills.find(b => b.studentId === student.id && b.academicYear === selectedYear && b.term === selectedTerm);
@@ -1317,7 +1928,7 @@ export default function AssessmentTab({
           const y1 = parseInt(parts[0], 10);
           const y2 = parseInt(parts[1], 10);
           if (!isNaN(y1) && !isNaN(y2)) {
-            nextYear = `${y1 + 1}/${y2 + 1}`;
+            nextYear = `${y1 + 1}/${y2 + 1}` as AcademicYearType;
           }
         }
       }
@@ -1428,6 +2039,78 @@ export default function AssessmentTab({
     ];
   }, [activeWorksheet]);
 
+  // Distribution of student rankings within their respective classes
+  const studentRankingsDistributionStats = useMemo(() => {
+    const totalStudentsCount = broadsheetData.length;
+    let top10Count = 0;
+    let top25Count = 0;
+    let averageCount = 0;
+    let belowAverageCount = 0;
+
+    broadsheetData.forEach((item, index) => {
+      if (totalStudentsCount === 0) return;
+
+      const rank = index + 1;
+      const rankPercentile = (rank / totalStudentsCount) * 100;
+
+      if (rankPercentile <= 10) {
+        top10Count++;
+      } else if (rankPercentile <= 25) {
+        top25Count++;
+      } else if (rankPercentile <= 75) {
+        averageCount++;
+      } else {
+        belowAverageCount++;
+      }
+    });
+
+    return [
+      { name: 'Top 10%', value: top10Count, fill: '#10b981' },
+      { name: 'Top 25%', value: top25Count, fill: '#3b82f6' },
+      { name: 'Average', value: averageCount, fill: '#6366f1' },
+      { name: 'Below Average', value: belowAverageCount, fill: '#ef4444' }
+    ];
+  }, [broadsheetData]);
+
+  const rankingCohorts = useMemo(() => {
+    const totalStudentsCount = broadsheetData.length;
+    const cohorts: {
+      top10: { student: Student; averageOverallScore: number; rank: number }[];
+      top25: { student: Student; averageOverallScore: number; rank: number }[];
+      average: { student: Student; averageOverallScore: number; rank: number }[];
+      belowAverage: { student: Student; averageOverallScore: number; rank: number }[];
+    } = {
+      top10: [],
+      top25: [],
+      average: [],
+      belowAverage: [],
+    };
+
+    broadsheetData.forEach((item, index) => {
+      if (totalStudentsCount === 0) return;
+
+      const rank = index + 1;
+      const rankPercentile = (rank / totalStudentsCount) * 100;
+      const studentObj = {
+        student: item.student,
+        averageOverallScore: item.averageOverallScore,
+        rank
+      };
+
+      if (rankPercentile <= 10) {
+        cohorts.top10.push(studentObj);
+      } else if (rankPercentile <= 25) {
+        cohorts.top25.push(studentObj);
+      } else if (rankPercentile <= 75) {
+        cohorts.average.push(studentObj);
+      } else {
+        cohorts.belowAverage.push(studentObj);
+      }
+    });
+
+    return cohorts;
+  }, [broadsheetData]);
+
   // Dynamic real-time performance KPI metrics calculated efficiently
   const classPerformanceDetails = useMemo(() => {
     const gradedList = activeWorksheet.filter(isAssessmentGraded);
@@ -1502,6 +2185,20 @@ export default function AssessmentTab({
       setTrendStudentId(classStudentsForTrend[0].id);
     }
   }, [classStudentsForTrend, trendStudentId]);
+
+  // Compute captured subjects for the selected student
+  const capturedSubjectsForTrendStudent = useMemo(() => {
+    if (!selectedTrendStudent) return [];
+    const allAssessments = DbController.getAssessments();
+    const studentRecords = allAssessments.filter(a => a.studentId === selectedTrendStudent.id);
+    const set = new Set<string>();
+    studentRecords.forEach(a => { if (a.subject) set.add(a.subject); });
+    const list: string[] = SUBJECTS.filter(s => set.has(s));
+    Array.from(set).forEach(s => {
+      if (!list.includes(s)) list.push(s);
+    });
+    return list;
+  }, [selectedTrendStudent, activeWorksheet]);
 
   // Compute Student Trend Data
   const studentTrendData = useMemo(() => {
@@ -1759,6 +2456,96 @@ export default function AssessmentTab({
       });
   }, [selectedClass, selectedYear, students]);
 
+  const subjectEvolutionTrendData = useMemo(() => {
+    const allAssessments = DbController.getAssessments();
+    const filtered = allAssessments.filter(
+      a => a.class === selectedClass && a.academicYear === selectedYear
+    );
+
+    const terms = ['Term 1', 'Term 2', 'Term 3'];
+    return terms.map(term => {
+      const termAssessments = filtered.filter(a => a.term === term);
+      const termData: any = { term };
+      
+      SUBJECTS.forEach(subj => {
+        const subjAssessments = termAssessments.filter(a => a.subject === subj);
+        if (subjAssessments.length > 0) {
+          const sum = subjAssessments.reduce((acc, curr) => acc + curr.totalScore, 0);
+          termData[subj] = parseFloat((sum / subjAssessments.length).toFixed(1));
+        } else {
+          termData[subj] = null;
+        }
+      });
+      
+      return termData;
+    });
+  }, [selectedClass, selectedYear, students, activeWorksheet]);
+
+  const assessmentTermOverTermData = useMemo(() => {
+    const allAssessments = DbController.getAssessments();
+    const filtered = allAssessments.filter(a => {
+      let matches = a.class === selectedClass && a.academicYear === selectedYear;
+      if (selectedAnalyticsStudentId !== 'all') {
+        matches = matches && a.studentId === selectedAnalyticsStudentId;
+      }
+      return matches;
+    });
+
+    const terms = ['Term 1', 'Term 2', 'Term 3'];
+
+    const shortNameMap: Record<string, string> = {
+      'English Language': 'English',
+      'Mathematics': 'Maths',
+      'Integrated Science': 'Science',
+      'Social Studies': 'Soc Stud',
+      'Information & Comm. Tech (ICT)': 'ICT',
+      'ICT': 'ICT',
+      'Creative Arts & Design': 'Creat Arts',
+      'Creative Arts': 'Creat Arts',
+      'Ghanaian Language & Culture': 'Ghan Lang',
+      'Religious & Moral Education (RME)': 'RME',
+      'Religious And Moral Education': 'RME',
+      'RME': 'RME',
+      'French Language': 'French',
+      'French': 'French',
+      'Career Technology': 'Career Tech',
+      'Computing': 'Computing',
+      'History': 'History',
+      'Our World Our People': 'OWOP'
+    };
+
+    // Filter to ONLY subjects that have captured assessments in filtered data
+    const capturedSubjectsSet = new Set<string>();
+    filtered.forEach(a => {
+      if (a.subject) capturedSubjectsSet.add(a.subject);
+    });
+
+    const subjectsToShow: string[] = SUBJECTS.filter(s => capturedSubjectsSet.has(s));
+    capturedSubjectsSet.forEach(s => {
+      if (!subjectsToShow.includes(s)) subjectsToShow.push(s);
+    });
+
+    return subjectsToShow.map((subj) => {
+      const shortSubj = shortNameMap[subj] || subj.split(' ')[0];
+      const item: any = { 
+        subject: subj,
+        shortSubject: shortSubj
+      };
+      
+      terms.forEach((term) => {
+        const termSubjAssessments = filtered.filter(a => a.term === term && a.subject === subj);
+        if (termSubjAssessments.length > 0) {
+          const sum = termSubjAssessments.reduce((sum, a) => sum + a.totalScore, 0);
+          item[term] = parseFloat((sum / termSubjAssessments.length).toFixed(1));
+        } else {
+          item[term] = null;
+        }
+      });
+
+      return item;
+    });
+  }, [selectedClass, selectedYear, students, selectedAnalyticsStudentId, activeWorksheet]);
+
   const inputtedSubjects = useMemo(() => {
     const subjectsSet = new Set<string>();
     broadsheetData.forEach(row => {
@@ -1894,44 +2681,57 @@ export default function AssessmentTab({
         </div>
 
         {/* Component Dashboard Sub-Navigation Tabs */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
-          <div className="flex flex-wrap items-center gap-1.5 p-1 bg-slate-100 rounded-lg">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pt-1">
+          <div className="flex flex-wrap items-center gap-1.5 p-1 bg-slate-100 rounded-xl">
             <button
               onClick={() => setSubMode('Worksheet')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-bold transition text-[11px] cursor-pointer ${subMode === 'Worksheet' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold transition text-[11px] cursor-pointer ${subMode === 'Worksheet' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
             >
               <LayoutGrid size={14} /> Marks Input Sheet
             </button>
             <button
               onClick={() => setSubMode('IndividualReport')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-bold transition text-[11px] cursor-pointer ${subMode === 'IndividualReport' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold transition text-[11px] cursor-pointer ${subMode === 'IndividualReport' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
             >
               <FileText size={14} /> Student Report Card
             </button>
             <button
               onClick={() => setSubMode('Broadsheet')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-bold transition text-[11px] cursor-pointer ${subMode === 'Broadsheet' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold transition text-[11px] cursor-pointer ${subMode === 'Broadsheet' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
             >
               <Layers size={14} /> Class Broadsheet
             </button>
             <button
               onClick={() => setSubMode('PerformanceAnalytics')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-bold transition text-[11px] cursor-pointer ${subMode === 'PerformanceAnalytics' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold transition text-[11px] cursor-pointer ${subMode === 'PerformanceAnalytics' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
             >
               <BarChart3 size={14} /> Performance Charts
             </button>
             <button
               onClick={() => setSubMode('StudentStrengthsWeaknesses')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md font-bold transition text-[11px] cursor-pointer ${subMode === 'StudentStrengthsWeaknesses' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold transition text-[11px] cursor-pointer ${subMode === 'StudentStrengthsWeaknesses' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
             >
               <Sparkles size={14} className="text-amber-500 animate-pulse" /> Strengths & Weaknesses
             </button>
+            <button
+              onClick={() => {
+                setSubMode('Transcript');
+                // Ensure a student is selected
+                if (!selectedStudentId) {
+                  const firstStudent = students.find(s => s.class === selectedClass);
+                  if (firstStudent) setSelectedStudentId(firstStudent.id);
+                }
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold transition text-[11px] cursor-pointer ${subMode === 'Transcript' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
+            >
+              <GraduationCap size={14} className="text-indigo-550" /> Student Transcript
+            </button>
           </div>
 
-          <div className="flex items-center gap-2 self-end sm:self-auto">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={handleExportAllAssessmentsCSV}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-600 border border-emerald-600 text-white hover:bg-emerald-700 transition font-bold rounded-lg cursor-pointer active:translate-y-0.5 whitespace-nowrap text-xs shadow-sm"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 border border-emerald-600 text-white hover:bg-emerald-700 transition font-bold rounded-lg cursor-pointer active:translate-y-0.5 whitespace-nowrap text-[11px] shadow-sm"
               title="Export all student performance records across subjects to CSV"
             >
               <FileSpreadsheet size={14} /> Export All to CSV
@@ -1947,20 +2747,40 @@ export default function AssessmentTab({
                     setPerformancePreviewMode(!performancePreviewMode);
                   }
                 }}
-                className="flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-900 border border-slate-900 text-white hover:bg-slate-800 transition font-bold rounded-lg cursor-pointer active:translate-y-0.5 text-xs whitespace-nowrap"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 border border-slate-900 text-white hover:bg-slate-800 transition font-bold rounded-lg cursor-pointer active:translate-y-0.5 text-[11px] whitespace-nowrap"
               >
                 <Eye size={14} /> Toggle Preview Mode
               </button>
             )}
             
             {subMode === 'Worksheet' && (
-              <button
-                onClick={handleManualSave}
-                className={`flex items-center gap-1 px-4 py-1.5 rounded-lg font-black shadow-sm cursor-pointer active:translate-y-0.5 transition ${theme.btnColors} ${unsavedChanges ? 'animate-pulse ring-2 ring-indigo-400' : ''}`}
-                title={unsavedChanges ? 'You have unsaved gradesheet changes' : 'Save current academic assessment data'}
-              >
-                <Save size={14} /> Save Data
-              </button>
+              <>
+                {!isWorksheetArchived ? (
+                  <button
+                    onClick={handleArchiveWorksheet}
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg font-bold shadow-sm cursor-pointer active:translate-y-0.5 transition bg-amber-100 text-amber-800 hover:bg-amber-200 border border-amber-300 text-[11px]"
+                    title="Archive this worksheet"
+                  >
+                    <Archive size={14} /> Archive
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleRestoreWorksheet}
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg font-bold shadow-sm cursor-pointer active:translate-y-0.5 transition bg-emerald-100 text-emerald-800 hover:bg-emerald-200 border border-emerald-300 text-[11px]"
+                    title="Restore this archived worksheet"
+                  >
+                    <RefreshCw size={14} /> Restore
+                  </button>
+                )}
+                <button
+                  onClick={handleManualSave}
+                  className={`flex items-center gap-1 px-3 py-1.5 rounded-lg font-bold shadow-sm cursor-pointer active:translate-y-0.5 transition text-[11px] ${theme.btnColors} ${unsavedChanges ? 'animate-pulse ring-2 ring-indigo-400' : ''}`}
+                  title={unsavedChanges ? 'You have unsaved gradesheet changes' : 'Save current academic assessment data'}
+                  disabled={isWorksheetArchived}
+                >
+                  <Save size={14} /> Save Data
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -2023,7 +2843,7 @@ export default function AssessmentTab({
                     />
                     Custom Template
                   </label>
-                  {!!DbController.getAssessmentTemplate(selectedClass, selectedYear, selectedTerm, selectedSubject) && (
+                  {!!DbController.getAssessmentTemplate(selectedClass, selectedYear, selectedTerm, selectedSubject) ? (
                     <button
                       type="button"
                       onClick={() => {
@@ -2038,6 +2858,15 @@ export default function AssessmentTab({
                       className="py-1 px-2 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded text-[10px] font-bold shadow-xs cursor-pointer transition flex items-center justify-center gap-1 active:translate-y-0.5 no-print"
                     >
                       <Sliders size={10} /> Configure
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setShowSubjectLimitsModal(true)}
+                      className="py-1 px-2.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded text-[10px] font-bold shadow-xs cursor-pointer transition flex items-center justify-center gap-1 active:translate-y-0.5 no-print"
+                      title="Configure Subject-Specific Mark Limits for Exercises, Tests, Projects, and Exams"
+                    >
+                      <Sliders size={10} /> Subject Limits
                     </button>
                   )}
                 </div>
@@ -2060,6 +2889,23 @@ export default function AssessmentTab({
               </button>
             </div>
           </div>
+
+          {Object.keys(validationErrors).filter(k => !k.startsWith('Warning') && !k.startsWith('duplicate')).length > 0 && (
+            <div className="mx-5 mb-4 bg-rose-50 border border-rose-200 text-rose-850 p-4 rounded-xl flex items-start gap-3 animate-fade-in no-print">
+              <AlertCircle className="text-rose-500 shrink-0 mt-0.5" size={16} />
+              <div className="flex-1 space-y-1">
+                <h4 className="font-bold text-xs text-rose-900">Assessment Sheet Has Validation Errors</h4>
+                <p className="text-[10px] text-rose-600 font-medium">Some entered marks exceed the maximum allowed limits for {selectedSubject}. The sheet cannot be saved until corrected.</p>
+                <ul className="text-[10px] font-mono text-rose-700 list-disc list-inside mt-1.5 max-h-20 overflow-y-auto space-y-0.5 custom-scrollbar">
+                  {Object.entries(validationErrors)
+                    .filter(([key]) => !key.startsWith('Warning') && !key.startsWith('duplicate'))
+                    .map(([key, error]) => (
+                      <li key={key}>{error}</li>
+                    ))}
+                </ul>
+              </div>
+            </div>
+          )}
 
           <div className="overflow-x-auto">
             {activeWorksheet.length === 0 ? (
@@ -2084,23 +2930,23 @@ export default function AssessmentTab({
                     ) : (
                       <>
                         {/* Exercises 4 Columns */}
-                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40 border-l border-slate-200">Ex 1 (10)</th>
-                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40">Ex 2 (10)</th>
-                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40">Ex 3 (10)</th>
-                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40">Ex 4 (10)</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40 border-l border-slate-200">Ex 1 ({activeSubjectLimits.exercises})</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40">Ex 2 ({activeSubjectLimits.exercises})</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40">Ex 3 ({activeSubjectLimits.exercises})</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40">Ex 4 ({activeSubjectLimits.exercises})</th>
                         {/* Class Test 2 Columns */}
-                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-teal-50/40 border-l border-slate-200">Ts 1 (20)</th>
-                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-teal-50/40">Ts 2 (20)</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-teal-50/40 border-l border-slate-200">Ts 1 ({activeSubjectLimits.tests})</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-teal-50/40">Ts 2 ({activeSubjectLimits.tests})</th>
                         {/* Project & Group */}
-                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-amber-50/40 border-l border-slate-200">Proj (10)</th>
-                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-amber-50/40">Grp (10)</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-amber-50/40 border-l border-slate-200">Proj ({activeSubjectLimits.projectWork})</th>
+                        <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-amber-50/40">Grp ({activeSubjectLimits.groupWork})</th>
                       </>
                     )}
                     
                     {/* Total & 50% */}
                     <th className="py-2.5 px-1 font-bold text-slate-700 text-center bg-slate-100 border-l border-slate-200">Class 50%</th>
                     {/* Exams */}
-                    <th className="py-2.5 px-1.5 font-bold text-slate-600 text-center bg-indigo-50 border-l border-slate-200">Exam (100)</th>
+                    <th className="py-2.5 px-1.5 font-bold text-slate-600 text-center bg-indigo-50 border-l border-slate-200">Exam ({activeSubjectLimits.examScore100})</th>
                     <th className="py-2.5 px-1 font-bold text-slate-700 text-center bg-indigo-50">Exam 50%</th>
                     {/* Combined Grade, Position */}
                     <th className="py-2.5 px-1 font-black text-slate-900 text-center border-l border-slate-200">Total (100)</th>
@@ -2113,10 +2959,11 @@ export default function AssessmentTab({
                     {activeWorksheet.map((row, index) => (
                       <motion.tr 
                         key={row.studentId} 
-                        className="hover:bg-slate-50/20 transition"
+                        className="transition-all duration-150 hover:bg-indigo-50/70 dark:hover:bg-indigo-950/40 hover:shadow-xs group border-b border-slate-100"
                         initial={{ opacity: 0, y: 8 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.95 }}
+                        whileHover={{ scale: 1.002, backgroundColor: "rgba(238, 242, 255, 0.75)" }}
                         transition={{ duration: 0.2, delay: Math.min(index * 0.02, 0.4), ease: 'easeOut' }}
                       >
                         <td className="py-1 px-1.5 text-center font-mono text-slate-300 font-bold">{index + 1}</td>
@@ -2132,68 +2979,83 @@ export default function AssessmentTab({
                                 type="number"
                                 min="0"
                                 max={comp.maxScore}
-                                step="0.1"
-                                value={row.customAssessments?.[idx] || 0}
+                                step="any"
+                                value={row.customAssessments?.[idx] === 0 ? '' : (row.customAssessments?.[idx] ?? '')}
+                                placeholder="0"
+                                onFocus={(e) => e.target.select()}
                                 onChange={(e) => handleScoreInput(row.studentId, 'customAssessments', idx, e.target.value)}
-                                className="w-full text-center py-1 text-xs font-semibold bg-white border border-slate-200 rounded focus:bg-slate-50 focus:border-indigo-400 focus:outline-none"
+                                className={`w-full text-center py-1 text-xs font-semibold bg-white border rounded focus:bg-slate-50 focus:border-indigo-400 focus:outline-none font-mono ${validationErrors[`${row.studentId}-customAssessments-${idx}`] ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200'}`}
+                                title={validationErrors[`${row.studentId}-customAssessments-${idx}`]}
                               />
                             </td>
                           ))
                         ) : (
                           <>
-                            {/* Exercises 4 Columns input with constraints 0-10 */}
+                            {/* Exercises 4 Columns input with constraints */}
                             {[0, 1, 2, 3].map(exIdx => (
                               <td key={`ex-${exIdx}`} className="py-1 px-0.5 bg-blue-50/10 border-l border-slate-100">
                                 <input
                                   type="number"
                                   min="0"
-                                  max="10"
-                                  step="0.1"
-                                  value={row.exercises[exIdx] || 0}
+                                  max={activeSubjectLimits.exercises}
+                                  step="any"
+                                  value={row.exercises[exIdx] === 0 ? '' : (row.exercises[exIdx] ?? '')}
+                                  placeholder="0"
+                                  onFocus={(e) => e.target.select()}
                                   onChange={(e) => handleScoreInput(row.studentId, 'exercises', exIdx, e.target.value)}
-                                  className="w-full text-center py-1 text-xs font-semibold bg-white border border-slate-200 rounded focus:bg-slate-50 focus:border-indigo-400 focus:outline-none"
+                                  className={`w-full text-center py-1 text-xs font-semibold bg-white border rounded focus:bg-slate-50 focus:border-indigo-400 focus:outline-none font-mono ${validationErrors[`${row.studentId}-exercises-${exIdx}`] ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200'}`}
+                                  title={validationErrors[`${row.studentId}-exercises-${exIdx}`]}
                                 />
                               </td>
                             ))}
 
-                            {/* Class Test 2 Columns input with constraints 0-20 */}
+                            {/* Class Test 2 Columns input with constraints */}
                             {[0, 1].map(tsIdx => (
                               <td key={`ts-${tsIdx}`} className="py-1 px-0.5 bg-teal-50/10 border-l border-slate-100">
                                 <input
                                   type="number"
                                   min="0"
-                                  max="20"
-                                  step="0.1"
-                                  value={row.tests[tsIdx] || 0}
+                                  max={activeSubjectLimits.tests}
+                                  step="any"
+                                  value={row.tests[tsIdx] === 0 ? '' : (row.tests[tsIdx] ?? '')}
+                                  placeholder="0"
+                                  onFocus={(e) => e.target.select()}
                                   onChange={(e) => handleScoreInput(row.studentId, 'tests', tsIdx, e.target.value)}
-                                  className="w-full text-center py-1 text-xs font-semibold bg-white border border-slate-200 rounded focus:bg-slate-50"
+                                  className={`w-full text-center py-1 text-xs font-semibold bg-white border rounded focus:bg-slate-50 font-mono ${validationErrors[`${row.studentId}-tests-${tsIdx}`] ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200'}`}
+                                  title={validationErrors[`${row.studentId}-tests-${tsIdx}`]}
                                 />
                               </td>
                             ))}
 
-                          {/* Project Work input constraint 0-10 */}
+                          {/* Project Work input constraint */}
                           <td className="py-1 px-0.5 bg-amber-50/10 border-l border-slate-100">
                             <input
                               type="number"
                               min="0"
-                              max="10"
-                              step="0.1"
-                              value={row.projectWork || 0}
+                              max={activeSubjectLimits.projectWork}
+                              step="any"
+                              value={row.projectWork === 0 ? '' : (row.projectWork ?? '')}
+                              placeholder="0"
+                              onFocus={(e) => e.target.select()}
                               onChange={(e) => handleScoreInput(row.studentId, 'projectWork', 0, e.target.value)}
-                              className="w-full text-center py-1 text-xs font-semibold bg-white border border-slate-200 rounded focus:bg-slate-50"
+                              className={`w-full text-center py-1 text-xs font-semibold bg-white border rounded focus:bg-slate-50 font-mono ${validationErrors[`${row.studentId}-projectWork-0`] ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200'}`}
+                              title={validationErrors[`${row.studentId}-projectWork-0`]}
                             />
                           </td>
 
-                          {/* Group Work input constraint 0-10 */}
+                          {/* Group Work input constraint */}
                           <td className="py-1 px-0.5 bg-amber-50/10">
                             <input
                               type="number"
                               min="0"
-                              max="10"
-                              step="0.1"
-                              value={row.groupWork || 0}
+                              max={activeSubjectLimits.groupWork}
+                              step="any"
+                              value={row.groupWork === 0 ? '' : (row.groupWork ?? '')}
+                              placeholder="0"
+                              onFocus={(e) => e.target.select()}
                               onChange={(e) => handleScoreInput(row.studentId, 'groupWork', 0, e.target.value)}
-                              className="w-full text-center py-1 text-xs font-semibold bg-white border border-slate-200 rounded"
+                              className={`w-full text-center py-1 text-xs font-semibold bg-white border rounded font-mono ${validationErrors[`${row.studentId}-groupWork-0`] ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200'}`}
+                              title={validationErrors[`${row.studentId}-groupWork-0`]}
                             />
                           </td>
                         </>
@@ -2204,16 +3066,19 @@ export default function AssessmentTab({
                         {row.classScore50} <span className="text-[9px] text-slate-400 block font-normal">/{row.classScoreTotal}</span>
                       </td>
 
-                      {/* Exam Score input constraint 0-100 */}
+                      {/* Exam Score input constraint */}
                       <td className="py-1 px-0.5 bg-indigo-50/10 border-l border-slate-200">
                         <input
                           type="number"
                           min="0"
-                          max="100"
-                          step="0.1"
-                          value={row.examScore100 || 0}
+                          max={activeSubjectLimits.examScore100}
+                          step="any"
+                          value={row.examScore100 === 0 ? '' : (row.examScore100 ?? '')}
+                          placeholder="0"
+                          onFocus={(e) => e.target.select()}
                           onChange={(e) => handleScoreInput(row.studentId, 'examScore100', 0, e.target.value)}
-                          className="w-full text-center py-1 text-xs font-semibold bg-white border border-slate-200 rounded text-indigo-700 font-mono"
+                          className={`w-full text-center py-1 text-xs font-semibold bg-white border rounded text-indigo-700 font-mono ${validationErrors[`${row.studentId}-examScore100-0`] ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200'}`}
+                          title={validationErrors[`${row.studentId}-examScore100-0`]}
                         />
                       </td>
 
@@ -2282,31 +3147,47 @@ export default function AssessmentTab({
                 <button
                   type="button"
                   onClick={() => setReportCardPreviewMode(!reportCardPreviewMode)}
-                  className={`py-1.5 px-3.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-black shadow-xs cursor-pointer transition flex items-center justify-center gap-1.5 active:translate-y-0.5`}
+                  className={`py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[11px] font-bold shadow-sm cursor-pointer transition flex items-center justify-center gap-1.5 active:translate-y-0.5`}
                 >
                   <Eye size={14} /> Toggle Preview Mode
                 </button>
               )}
 
               {students.filter(s => s.class === selectedClass).length > 0 && (
-                <button
-                  type="button"
-                  disabled={teacherPermissions?.canExportReports === false}
-                  onClick={() => {
-                    if (teacherPermissions?.canExportReports === false) {
-                      alert("Permission to export reports has been suspended by the Headteacher.");
-                      return;
-                    }
-                    setBulkReportMode(true);
-                  }}
-                  className={`py-1.5 px-3.5 ${
-                    teacherPermissions?.canExportReports === false 
-                      ? 'bg-slate-300 text-slate-500 cursor-not-allowed opacity-60' 
-                      : 'bg-sky-600 hover:bg-sky-700 text-white cursor-pointer active:translate-y-0.5'
-                  } rounded-lg text-xs font-black shadow-xs transition flex items-center justify-center gap-1.5`}
-                >
-                  <Printer size={14} /> Print Bulk (Class {selectedClass})
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={teacherPermissions?.canExportReports === false}
+                    onClick={() => {
+                      if (teacherPermissions?.canExportReports === false) {
+                        alert("Permission to export reports has been suspended by the Headteacher.");
+                        return;
+                      }
+                      setBulkReportMode(true);
+                    }}
+                    className={`py-1.5 px-3 ${
+                      teacherPermissions?.canExportReports === false 
+                        ? 'bg-slate-300 text-slate-500 cursor-not-allowed opacity-60' 
+                        : 'bg-sky-600 hover:bg-sky-700 text-white cursor-pointer active:translate-y-0.5'
+                    } rounded-lg text-[11px] font-bold shadow-sm transition flex items-center justify-center gap-1.5`}
+                  >
+                    <Printer size={14} /> Print Bulk (Class {selectedClass})
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={teacherPermissions?.canExportReports === false}
+                    onClick={handleTriggerBulkPdfDownload}
+                    className={`py-1.5 px-3 ${
+                      teacherPermissions?.canExportReports === false 
+                        ? 'bg-slate-300 text-slate-500 cursor-not-allowed opacity-60' 
+                        : 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer active:translate-y-0.5'
+                    } rounded-lg text-[11px] font-bold shadow-sm transition flex items-center justify-center gap-1.5`}
+                    title={`Download bulk PDF containing all student report cards for ${selectedClass}`}
+                  >
+                    <FileDown size={14} /> Download All (Class PDF)
+                  </button>
+                </div>
               )}
             </div>
             
@@ -2421,7 +3302,19 @@ export default function AssessmentTab({
                 <table className="w-full text-left border-collapse border border-slate-200 text-xs mt-4">
                   <thead>
                     <tr className="bg-slate-100 border-b-2 border-slate-800">
-                      <th className="py-1.5 px-2 border border-slate-200 font-bold text-[11px]">Subject Course</th>
+                      <th className="py-1.5 px-2 border border-slate-200 font-bold text-[11px]">
+                        <div className="flex items-center justify-between gap-2">
+                          <span>Subject Course</span>
+                          <button
+                            type="button"
+                            onClick={() => setSubjectSortMode(prev => prev === 'alphabetical' ? 'score' : 'alphabetical')}
+                            className="px-2 py-0.5 hover:bg-slate-200 bg-white rounded text-[9px] font-bold text-slate-500 hover:text-slate-800 flex items-center gap-1 transition no-print border border-slate-250 cursor-pointer"
+                            title="Toggle between Alphabetical and Score-Based ranking"
+                          >
+                            <span>Sort: {subjectSortMode === 'alphabetical' ? 'A-Z' : 'Score 📊'}</span>
+                          </button>
+                        </div>
+                      </th>
                       <th className="py-1.5 px-1 border border-slate-200 font-bold text-center text-[11px]">Class 50%</th>
                       <th className="py-1.5 px-1 border border-slate-200 font-bold text-center text-[11px]">Exams 50%</th>
                       <th className="py-1.5 px-1 border border-slate-200 font-bold text-center text-[11px]">Total 100%</th>
@@ -2430,12 +3323,13 @@ export default function AssessmentTab({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {compiledReport.grades.map((item, index) => (
+                    {sortedGrades.map((item, index) => (
                       <motion.tr 
                         key={item.id} 
-                        className={`hover:bg-slate-50/50 assessment-grade-row ${(!item.totalScore || item.totalScore === 0) ? 'assessment-grade-empty' : ''}`}
+                        className={`transition-all duration-150 hover:bg-indigo-50/60 dark:hover:bg-indigo-950/40 assessment-grade-row ${(!item.totalScore || item.totalScore === 0) ? 'assessment-grade-empty' : ''}`}
                         initial={{ opacity: 0, y: 6 }}
                         animate={{ opacity: 1, y: 0 }}
+                        whileHover={{ scale: 1.002, x: 2, backgroundColor: "rgba(238, 242, 255, 0.7)" }}
                         transition={{ duration: 0.2, delay: Math.min(index * 0.03, 0.4), ease: 'easeOut' }}
                       >
                         <td className="py-1.5 px-2 border border-slate-200 font-bold text-slate-900">{item.subject}</td>
@@ -2443,7 +3337,7 @@ export default function AssessmentTab({
                         <td className="py-1.5 px-1 border border-slate-200 text-center font-mono font-semibold">{item.examScore50}</td>
                         <td className="py-1.5 px-1 border border-slate-200 text-center font-mono font-black text-rose-700 bg-rose-50/20">{item.totalScore}%</td>
                         <td className="py-1.5 px-2 border border-slate-200 text-center">
-                          <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold ${item.gradeLevel === 'L1' ? 'bg-emerald-50 text-emerald-800 border border-emerald-100' : item.gradeLevel === 'L2' ? 'bg-blue-50 text-blue-800' : item.gradeLevel === 'L3' ? 'bg-amber-50 text-amber-800' : 'bg-red-50 text-red-800'}`}>
+                          <span className={`text-[10px] font-bold uppercase ${item.gradeLevel === 'L1' ? 'text-emerald-700' : item.gradeLevel === 'L2' ? 'text-blue-700' : item.gradeLevel === 'L3' ? 'text-amber-600' : 'text-rose-700'}`}>
                             {item.remarks} ({item.gradeLevel})
                           </span>
                         </td>
@@ -2475,7 +3369,7 @@ export default function AssessmentTab({
 
                 {/* Financial Ledger Section */}
                 {studentFinancials && (
-                  <div className="mt-4 bg-slate-50 border border-slate-200/80 rounded-xl p-3 font-sans text-xs flex flex-col md:flex-row justify-between gap-4 leading-normal print:bg-white print:border-slate-300">
+                  <div className="mt-4 bg-slate-50 border border-slate-200/80 rounded-xl p-3 font-sans text-xs flex flex-col md:flex-row justify-between gap-4 leading-normal print:bg-white print:border-slate-300 report-card-financial-ledger">
                     <div className="space-y-1">
                       <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Current Balance Status</div>
                       <div className="flex items-baseline gap-2">
@@ -2506,7 +3400,7 @@ export default function AssessmentTab({
                 )}
 
                 {/* Remarks & Signatures desk */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-10 border-t border-slate-100 pt-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-10 border-t border-slate-100 pt-4 report-card-remarks-signatures">
                   <div className="space-y-1.5">
                     <span className="text-[10px] font-mono text-slate-410 uppercase font-bold">Principal Headteacher Remarks</span>
                     <p className="text-[11px] italic text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-200/50 leading-relaxed min-h-[60px] print:bg-white print:border-none">
@@ -2604,19 +3498,140 @@ export default function AssessmentTab({
 
                   <div className="flex items-center gap-2.5">
                     <button
+                      id="batch-print-now-btn"
                       type="button"
                       onClick={() => {
                         DbController.writeActivityLog('Batch Print Report Generated', `Printed batch report cards for ${bulkClassReports.length} students in ${selectedClass}.`, 'medium');
-                        try {
-                          window.print();
-                        } catch (err) {
-                          console.warn("Direct window print error:", err);
-                          setPrintBlocked(true);
+                        
+                        const pagesEl = document.querySelectorAll('.bulk-report-card-print-page');
+                        if (pagesEl.length === 0) {
+                          if ((window as any).printTarget) {
+                            (window as any).printTarget('', 'Bulk Student Report Cards', false);
+                          } else {
+                            try {
+                              document.body.classList.add('sms-printing-active');
+                              window.print();
+                            } catch (err) {
+                              console.warn("Direct window print error:", err);
+                              setPrintBlocked(true);
+                            } finally {
+                              document.body.classList.remove('sms-printing-active');
+                            }
+                          }
+                          return;
+                        }
+
+                        const pagesHtml = Array.from(pagesEl).map(p => p.outerHTML).join('');
+
+                        if ((window as any).printTarget) {
+                          setBulkReportMode(false);
+                          (window as any).printTarget('', 'Bulk Student Report Cards', false, pagesHtml);
+                        } else {
+                          const styleEl = document.createElement('style');
+                          styleEl.id = 'sms-print-style-override';
+                          styleEl.innerHTML = `
+                            @media print {
+                              body > :not(#sms-print-section) {
+                                display: none !important;
+                              }
+                              #sms-print-section, #sms-print-section * {
+                                visibility: visible !important;
+                              }
+                              #sms-print-section {
+                                display: block !important;
+                                position: absolute !important;
+                                left: 0 !important;
+                                top: 0 !important;
+                                width: 100% !important;
+                                height: auto !important;
+                                background-color: #ffffff !important;
+                                margin: 0 !important;
+                                padding: 0 !important;
+                              }
+                              @page {
+                                size: A4 portrait;
+                                margin: 0 !important;
+                              }
+                              
+                              .bulk-report-card-print-page {
+                                width: 210mm !important;
+                                height: 297mm !important;
+                                max-height: 297mm !important;
+                                box-sizing: border-box !important;
+                                position: relative !important;
+                                margin: 0 !important;
+                                padding: 6mm 10mm 6mm 10mm !important;
+                                overflow: hidden !important;
+                                display: flex !important;
+                                flex-direction: column !important;
+                                justify-content: space-between !important;
+                                background: #ffffff !important;
+                                page-break-inside: avoid !important;
+                                page-break-after: always !important;
+                                break-after: page !important;
+                              }
+                              
+                              /* Keep exact colors/backgrounds on print */
+                              * {
+                                -webkit-print-color-adjust: exact !important;
+                                print-color-adjust: exact !important;
+                              }
+                            }
+                          `;
+
+                          const printSection = document.createElement('div');
+                          printSection.id = 'sms-print-section';
+                          printSection.className = 'bg-white text-slate-900';
+                          printSection.style.fontFamily = "'Inter', sans-serif";
+                          printSection.innerHTML = pagesHtml;
+
+                          document.body.appendChild(printSection);
+                          document.head.appendChild(styleEl);
+                          document.body.classList.add('sms-printing-active');
+
+                          setBulkReportMode(false);
+
+                          setTimeout(() => {
+                            try {
+                              window.print();
+                            } catch (err) {
+                              console.warn("Direct window print error:", err);
+                              setPrintBlocked(true);
+                            } finally {
+                              printSection.remove();
+                              styleEl.remove();
+                              document.body.classList.remove('sms-printing-active');
+                            }
+                          }, 250);
                         }
                       }}
                       className="flex items-center gap-1.5 px-4 py-2 bg-indigo-650 hover:bg-indigo-750 text-white font-bold rounded-lg cursor-pointer active:translate-y-0.5 text-xs text-center transition shadow-md bg-indigo-600 hover:bg-indigo-700"
                     >
                       <Printer size={14} /> Batch Print Now
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        DbController.writeActivityLog('Bulk PDF Report Exported', `Downloaded unified class PDF reports for ${bulkClassReports.length} students in ${selectedClass}.`, 'medium');
+                        if (typeof window !== 'undefined') {
+                          window.dispatchEvent(new CustomEvent('app-toast', {
+                            detail: { text: "Compiling multi-page terminal report package PDF...", type: 'info' }
+                          }));
+                        }
+                        try {
+                          await handlePdfDownloadElement(
+                            'bulk-batch-scroll-container', 
+                            `Bulk_Report_Cards_${selectedClass.replace(/\s+/g, '_')}_${selectedYear}_${selectedTerm}`, 
+                            false
+                          );
+                        } catch (err) {
+                          console.error("Bulk PDF export failed:", err);
+                        }
+                      }}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg cursor-pointer active:translate-y-0.5 text-xs text-center transition shadow-md font-sans"
+                    >
+                      <FileDown size={14} /> Download Class PDF Package
                     </button>
 
                     <button
@@ -2627,45 +3642,55 @@ export default function AssessmentTab({
                       Exit Batch Mode
                     </button>
                   </div>
-                </div>
+              </div>
 
                 {/* Batch compiled student report list */}
-                <div className="w-full space-y-8 no-scrollbar">
+                <div id="bulk-batch-scroll-container" className="w-full space-y-8 no-scrollbar">
                   {bulkClassReports.length === 0 ? (
                     <div className="bg-white p-12 text-center text-slate-400 rounded-xl space-y-2 max-w-4xl w-full">
                       <FileText size={36} className="text-slate-300 mx-auto animate-bounce" />
                       <h4 className="font-bold text-slate-600">No Students Registered in class {selectedClass}</h4>
                     </div>
                   ) : (
-                    bulkClassReports.map(({ student, report, financials }, batchIdx) => {
-                      if (!report || report.grades.length === 0) {
-                        return (
-                          <div key={student.id} className="w-full bg-white/95 p-10 rounded-2xl border border-dashed border-slate-200 text-center text-slate-400 font-sans space-y-2 no-print shadow-xl">
-                            <FileText size={28} className="mx-auto text-slate-300" />
-                            <h5 className="font-bold text-slate-600 text-xs">No Graded Statements For: {student.firstName} {student.lastName} ({student.id})</h5>
-                            <p className="text-[10px] text-slate-400 max-w-sm mx-auto">Please draft and lock terminal report cards inside the main grade worksheet view.</p>
-                          </div>
-                        );
-                      }
+                      bulkClassReports.map(({ student, report, financials }, batchIdx) => {
+                        if (!report || report.grades.length === 0) {
+                          return (
+                            <div key={student.id} className="w-full bg-white/95 p-10 rounded-2xl border border-dashed border-slate-200 text-center text-slate-400 font-sans space-y-2 no-print shadow-xl">
+                              <FileText size={28} className="mx-auto text-slate-300" />
+                              <h5 className="font-bold text-slate-600 text-xs">No Graded Statements For: {student.firstName} {student.lastName} ({student.id})</h5>
+                              <p className="text-[10px] text-slate-400 max-w-sm mx-auto">Please draft and lock terminal report cards inside the main grade worksheet view.</p>
+                            </div>
+                          );
+                        }
 
-                      return (
+                        const scaling = getReportCardScaling(report.grades.length);
+                        const subjectCount = report.grades.length;
+                        const subjectCountClass = 
+                          subjectCount <= 8 ? 'subject-count-normal' :
+                          subjectCount <= 12 ? 'subject-count-moderate' :
+                          subjectCount <= 16 ? 'subject-count-high' :
+                          subjectCount <= 20 ? 'subject-count-extra-high' :
+                          subjectCount <= 24 ? 'subject-count-extreme' :
+                          'subject-count-critical';
+
+                        return (
                         <div 
                           key={student.id} 
-                          className="w-full bg-white p-12 md:p-16 print:p-0 shadow-2xl rounded-2xl border border-slate-200 font-sans leading-relaxed text-black/90 text-left bulk-report-card-print-page relative"
+                          className={`w-full bg-white p-6 md:p-16 print:p-0 shadow-2xl rounded-2xl border border-slate-200 font-sans leading-relaxed text-black/90 text-left bulk-report-card-print-page relative ${subjectCountClass}`}
                         >
                           <div className="absolute inset-0 z-0 pointer-events-none hidden print:block" dangerouslySetInnerHTML={{ __html: getWatermarkHtml(DbController.getSchoolInfo().crestUrl) }} />
                           
                           {/* Professional Letterhead */}
-                          <div className="flex flex-col sm:flex-row items-center justify-between border-b-2 border-slate-900 pb-4 mb-4 print:pb-2 print:mb-2 gap-4 font-sans text-left relative z-10">
+                          <div className={`flex flex-col sm:flex-row items-center justify-between border-b-2 border-slate-900 ${scaling.headerSpacing} gap-4 font-sans text-left relative z-10`}>
                             {DbController.getSchoolInfo().logoUrl ? (
                               <img 
                                 src={DbController.getSchoolInfo().logoUrl} 
                                 alt="School Logo" 
-                                className="w-20 h-20 object-contain flex-shrink-0" 
+                                className={`${scaling.logoSize} object-contain flex-shrink-0`} 
                                 referrerPolicy="no-referrer"
                               />
                             ) : (
-                              <div className="w-20 h-20 rounded-full bg-slate-50 flex items-center justify-center border border-slate-300 p-1 flex-shrink-0">
+                              <div className={`${scaling.logoSize} rounded-full bg-slate-50 flex items-center justify-center border border-slate-300 p-1 flex-shrink-0`}>
                                 <div className="w-full h-full rounded-full border border-dashed border-slate-400 bg-white flex flex-col items-center justify-center text-[8px] text-slate-500 font-mono font-bold leading-normal">
                                   <Award size={24} className="text-indigo-600 mb-1" />
                                   <span className="scale-75 origin-center uppercase">CREST</span>
@@ -2673,13 +3698,13 @@ export default function AssessmentTab({
                               </div>
                             )}
                             <div className="flex-1 text-center space-y-0.5">
-                              <h2 className="text-2xl font-black text-slate-950 tracking-tight leading-tight uppercase font-display text-center">
+                              <h2 className={`${scaling.titleSize} font-black text-slate-950 tracking-tight leading-tight uppercase font-display text-center`}>
                                 {DbController.getSchoolInfo().name}
                               </h2>
-                              <p className="text-xs italic font-serif text-slate-600 text-center">
+                              <p className={`${scaling.subTitleSize} italic font-serif text-slate-600 text-center`}>
                                 Motto: "{DbController.getSchoolInfo().motto}"
                               </p>
-                              <div className="text-[10px] text-slate-500 font-sans flex flex-wrap justify-center gap-x-3 gap-y-0.5 mt-0.5 leading-normal">
+                              <div className={`${scaling.infoSize} text-slate-500 font-sans flex flex-wrap justify-center gap-x-3 gap-y-0.5 mt-0.5 leading-normal`}>
                                 {DbController.getSchoolInfo().gpsAddress && <span>📍 {DbController.getSchoolInfo().gpsAddress}</span>}
                                 {DbController.getSchoolInfo().telephone && <span>☎️ {DbController.getSchoolInfo().telephone}</span>}
                                 {DbController.getSchoolInfo().email && <span>📧 {DbController.getSchoolInfo().email}</span>}
@@ -2697,11 +3722,11 @@ export default function AssessmentTab({
                               <img 
                                 src={student.photoUrl} 
                                 alt={`${student.firstName} ${student.lastName}`} 
-                                className="w-16 h-16 rounded border border-slate-300 object-cover flex-shrink-0 student-report-photo" 
+                                className={`${scaling.photoSize} rounded border border-slate-300 object-cover flex-shrink-0 student-report-photo`} 
                                 referrerPolicy="no-referrer"
                               />
                             ) : (
-                              <div className="w-16 h-16 rounded border border-dashed border-slate-300 flex flex-col items-center justify-center bg-slate-50 p-1 flex-shrink-0 text-[7px] text-slate-400 font-mono text-center leading-normal select-none student-report-photo-placeholder">
+                              <div className={`${scaling.photoSize} rounded border border-dashed border-slate-300 flex flex-col items-center justify-center bg-slate-50 p-1 flex-shrink-0 text-[7px] text-slate-400 font-mono text-center leading-normal select-none student-report-photo-placeholder`}>
                                 <div className="font-bold scale-90">PASSPORT</div>
                                 <div className="scale-75">STAMP</div>
                               </div>
@@ -2709,28 +3734,28 @@ export default function AssessmentTab({
                           </div>
 
                           {/* Student Personal Data metadata */}
-                          <div className="grid grid-cols-2 lg:grid-cols-6 gap-4 bg-slate-50 p-3 rounded-xl text-xs leading-relaxed border border-slate-100">
+                          <div className={`grid grid-cols-2 lg:grid-cols-6 ${scaling.metaPadding} bg-slate-50 rounded-xl text-xs leading-relaxed border border-slate-100`}>
                             <div>
                               <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Student ID</span>
-                              <strong className="text-slate-800 font-mono text-sm">{student.id}</strong>
+                              <strong className={`text-slate-800 font-mono ${scaling.metaValSize}`}>{student.id}</strong>
                             </div>
                             <div>
                               <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Full Name</span>
-                              <strong className="text-slate-800 text-sm">{student.firstName} {student.lastName}</strong>
+                              <strong className={`text-slate-800 ${scaling.metaValSize}`}>{student.firstName} {student.lastName}</strong>
                             </div>
                             <div>
                               <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Academic Class</span>
-                              <strong className="text-slate-800 text-sm">{student.class} ({student.section})</strong>
+                              <strong className={`text-slate-800 ${scaling.metaValSize}`}>{student.class} ({student.section})</strong>
                             </div>
                             <div>
                               <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Report Term</span>
-                              <strong className="text-slate-800 text-sm font-mono">{selectedTerm} ({selectedYear})</strong>
+                              <strong className={`text-slate-800 ${scaling.metaValSize} font-mono`}>{selectedTerm} ({selectedYear})</strong>
                             </div>
                             <div className="relative group cursor-help bg-indigo-50/30 p-1.5 rounded-lg border border-indigo-100/50 transition-all hover:bg-indigo-50/80">
                               <span className="text-[10px] uppercase text-indigo-700 font-mono font-bold flex items-center gap-1 select-none">
                                 Class Rank Standing <HelpCircle size={10} className="text-indigo-400" />
                               </span>
-                              <strong className="text-indigo-900 text-sm font-mono font-bold">{report.classRank || 'N/A'}</strong>
+                              <strong className={`text-indigo-900 ${scaling.metaValSize} font-mono font-bold`}>{report.classRank || 'N/A'}</strong>
                               <RankBreakdownTooltip 
                                 term={selectedTerm} 
                                 year={selectedYear} 
@@ -2740,55 +3765,60 @@ export default function AssessmentTab({
                             </div>
                             <div>
                               <span className="text-[10px] uppercase text-teal-700 font-mono font-bold block">Reopening Date</span>
-                              <strong className="text-teal-900 bg-teal-50 px-1.5 py-0.5 rounded border border-teal-100 text-sm">{formatReopeningDate(DbController.getSchoolInfo().reopeningDate)}</strong>
+                              <strong className={`text-teal-900 bg-teal-50 px-1.5 py-0.5 rounded border border-teal-100 ${scaling.metaValSize}`}>{formatReopeningDate(DbController.getSchoolInfo().reopeningDate)}</strong>
                             </div>
                           </div>
 
                           {/* Registered Subjects grades table */}
-                          <table className="w-full text-left border-collapse border border-slate-200 text-xs mt-4">
+                          <table className={`w-full text-left border-collapse border border-slate-200 text-xs ${scaling.tableMargin}`}>
                             <thead>
                               <tr className="bg-slate-100 border-b-2 border-slate-800">
-                                <th className="py-1.5 px-3 border border-slate-200 font-bold uppercase tracking-wider">Subject Course</th>
-                                <th className="py-1.5 px-2 border border-slate-200 font-bold text-center uppercase tracking-wider">Class 50%</th>
-                                <th className="py-1.5 px-2 border border-slate-200 font-bold text-center uppercase tracking-wider">Exams 50%</th>
-                                <th className="py-1.5 px-2 border border-slate-200 font-bold text-center uppercase tracking-wider">Total 100%</th>
-                                <th className="py-1.5 px-3 border border-slate-200 font-bold text-center uppercase tracking-wider">Remarks</th>
-                                <th className="py-1.5 px-2 border border-slate-200 font-bold text-center uppercase tracking-wider">Rank</th>
+                                <th className={`${scaling.tablePadding} border border-slate-200 font-bold uppercase tracking-wider`}>Subject Course</th>
+                                <th className={`${scaling.tablePadding} border border-slate-200 font-bold text-center uppercase tracking-wider`}>Class 50%</th>
+                                <th className={`${scaling.tablePadding} border border-slate-200 font-bold text-center uppercase tracking-wider`}>Exams 50%</th>
+                                <th className={`${scaling.tablePadding} border border-slate-200 font-bold text-center uppercase tracking-wider`}>Total 100%</th>
+                                <th className={`${scaling.tablePadding} border border-slate-200 font-bold text-center uppercase tracking-wider`}>Remarks</th>
+                                <th className={`${scaling.tablePadding} border border-slate-200 font-bold text-center uppercase tracking-wider`}>Rank</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-slate-100">
                               {report.grades.map((item) => (
-                                <tr key={item.id} className={`hover:bg-slate-50/40 print:h-7 assessment-grade-row ${(!item.totalScore || item.totalScore === 0) ? 'assessment-grade-empty' : ''}`}>
-                                  <td className="py-1.5 px-3 print:py-1 border border-slate-200 font-black text-slate-900 text-sm">{item.subject}</td>
-                                  <td className="py-1.5 px-2 print:py-1 border border-slate-200 text-center font-mono font-bold text-slate-700 text-sm">{item.classScore50}</td>
-                                  <td className="py-1.5 px-2 print:py-1 border border-slate-200 text-center font-mono font-bold text-slate-700 text-sm">{item.examScore50}</td>
-                                  <td className="py-1.5 px-2 print:py-1 border border-slate-200 text-center font-mono font-black text-rose-700 bg-rose-50/10 text-sm">{item.totalScore}%</td>
-                                  <td className="py-1.5 px-3 print:py-1 border border-slate-200 text-center">
-                                    <span className={`inline-block px-2.5 py-1 rounded-full text-[10px] font-black ${item.gradeLevel === 'L1' ? 'bg-emerald-50 text-emerald-800 border border-emerald-100' : item.gradeLevel === 'L2' ? 'bg-blue-50 text-blue-800 border border-blue-100' : item.gradeLevel === 'L3' ? 'bg-amber-50 text-amber-800 border border-amber-100' : 'bg-red-50 text-red-800 border border-red-100'}`}>
+                                <motion.tr 
+                                  key={item.id} 
+                                  whileHover={{ scale: 1.002, x: 2, backgroundColor: "rgba(238, 242, 255, 0.7)" }}
+                                  transition={{ duration: 0.15 }}
+                                  className={`transition-all duration-150 hover:bg-indigo-50/60 dark:hover:bg-indigo-950/40 ${scaling.rowHeight} assessment-grade-row ${(!item.totalScore || item.totalScore === 0) ? 'assessment-grade-empty' : ''}`}
+                                >
+                                  <td className={`${scaling.tablePadding} print:py-0 border border-slate-200 font-black text-slate-900 ${scaling.tableFontSize}`}>{item.subject}</td>
+                                  <td className={`${scaling.tablePadding} print:py-0 border border-slate-200 text-center font-mono font-bold text-slate-700 ${scaling.tableFontSize}`}>{item.classScore50}</td>
+                                  <td className={`${scaling.tablePadding} print:py-0 border border-slate-200 text-center font-mono font-bold text-slate-700 ${scaling.tableFontSize}`}>{item.examScore50}</td>
+                                  <td className={`${scaling.tablePadding} print:py-0 border border-slate-200 text-center font-mono font-black text-rose-700 bg-rose-50/10 ${scaling.tableFontSize}`}>{item.totalScore}%</td>
+                                  <td className={`${scaling.tablePadding} print:py-0 border border-slate-200 text-center`}>
+                                    <span className={`text-[10px] font-black uppercase ${item.gradeLevel === 'L1' ? 'text-emerald-700' : item.gradeLevel === 'L2' ? 'text-blue-700' : item.gradeLevel === 'L3' ? 'text-amber-600' : 'text-rose-700'}`}>
                                       {item.remarks} ({item.gradeLevel})
                                     </span>
                                   </td>
-                                  <td className="py-1.5 px-2 print:py-1 border border-slate-200 text-center font-mono font-black text-indigo-700 text-sm">{item.position ? `${item.position}` : 'N/A'}</td>
-                                </tr>
+                                  <td className={`${scaling.tablePadding} print:py-0 border border-slate-200 text-center font-mono font-black text-indigo-700 ${scaling.tableFontSize}`}>{item.position ? `${item.position}` : 'N/A'}</td>
+                                </motion.tr>
                               ))}
                             </tbody>
                           </table>
 
                           {/* Report Card Aggregates Footer summary */}
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 border-t border-slate-200 pt-4 text-xs text-center font-mono leading-relaxed">
-                            <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                          <div className={`grid grid-cols-2 md:grid-cols-4 gap-4 ${scaling.footerSpacing} border-t border-slate-200 text-xs text-center font-mono leading-relaxed`}>
+                            <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
                               <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Subjects Graded</span>
                               <strong className="text-slate-800 text-sm">{report.totalSubjects} courses</strong>
                             </div>
-                            <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                            <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
                               <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Term Average Score</span>
                               <strong className="text-slate-800 text-sm italic">{report.averageScore}%</strong>
                             </div>
-                            <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                            <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
                               <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Attendance / School Open</span>
                               <strong className="text-slate-800 text-sm font-sans">{report.attendancePresent} / {report.schoolOpenDays} Days Present</strong>
                             </div>
-                            <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                            <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
                               <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Grade Rating</span>
                               <strong className="text-slate-800 text-sm">GES Certified</strong>
                             </div>
@@ -2796,7 +3826,7 @@ export default function AssessmentTab({
 
                           {/* Financial Ledger Section */}
                           {financials && (
-                            <div className="mt-4 bg-slate-50 border border-slate-200/80 rounded-xl p-3 font-sans text-xs flex flex-col md:flex-row justify-between gap-4 leading-normal print:bg-white print:border-slate-300">
+                            <div className={`${scaling.financialSpacing} bg-slate-50 border border-slate-200/80 rounded-xl font-sans text-xs flex flex-col md:flex-row justify-between leading-normal print:bg-white print:border-slate-300 report-card-financial-ledger`}>
                               <div className="space-y-1">
                                 <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Current Balance Status</div>
                                 <div className="flex items-baseline gap-2">
@@ -2827,10 +3857,10 @@ export default function AssessmentTab({
                           )}
 
                           {/* Remarks & Signatures desk */}
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-10 border-t border-slate-100 pt-4 text-xs">
+                          <div className={`grid grid-cols-1 md:grid-cols-2 ${scaling.remarksSpacing} border-t border-slate-100 text-xs report-card-remarks-signatures`}>
                             <div className="space-y-2 text-left">
                               <span className="text-[10px] font-mono text-slate-500 uppercase font-black">Principal Headteacher Remarks</span>
-                              <p className="text-[11px] italic text-slate-700 bg-slate-50 p-4 rounded-xl border border-slate-200/50 leading-relaxed min-h-[70px] print:bg-white print:border-none">
+                              <p className={`${scaling.remarkBoxHeight} italic text-slate-700 bg-slate-50 rounded-xl border border-slate-200/50 leading-relaxed print:bg-white print:border-none`}>
                                 {report.averageScore >= 80 
                                   ? 'Excellent performance! The student reflects high mastery level standards on the GES curriculum benchmarks.' 
                                   : report.averageScore >= 68 
@@ -2842,7 +3872,7 @@ export default function AssessmentTab({
                             </div>
 
                             <div className="flex flex-col justify-end items-end space-y-1.5 pr-6 relative">
-                              <div className="relative w-52 h-16 flex items-center justify-center">
+                              <div className={`relative ${scaling.signatureLine} h-16 flex items-center justify-center`}>
                                 {DbController.getSchoolInfo().stampUrl && (
                                   <img 
                                     src={DbController.getSchoolInfo().stampUrl} 
@@ -2855,14 +3885,14 @@ export default function AssessmentTab({
                                   <img 
                                     src={DbController.getSchoolInfo().signatureUrl} 
                                     alt="Headteacher Signature" 
-                                    className="absolute w-36 h-12 object-contain z-10" 
+                                    className={`absolute ${scaling.signatureSize} object-contain z-10`} 
                                     referrerPolicy="no-referrer"
                                   />
                                 ) : (
-                                  <div className="h-[1.5px] w-52 bg-slate-400 self-end"></div>
+                                  <div className={`h-[1.5px] ${scaling.signatureLine} bg-slate-400 self-end`}></div>
                                 )}
                               </div>
-                              {DbController.getSchoolInfo().signatureUrl && <div className="h-[1px] w-52 bg-slate-300"></div>}
+                              {DbController.getSchoolInfo().signatureUrl && <div className={`h-[1px] ${scaling.signatureLine} bg-slate-300`}></div>}
                               <div className="text-right">
                                 {DbController.getSchoolInfo().headteacherName && (
                                   <span className="font-bold text-[10px] text-slate-800 block leading-tight">{DbController.getSchoolInfo().headteacherName}</span>
@@ -2896,7 +3926,7 @@ export default function AssessmentTab({
               onClick={(e) => {
                 if (e.target === e.currentTarget) setReportCardPreviewMode(false);
               }}
-              className="fixed inset-0 bg-slate-900/95 backdrop-blur-md z-50 overflow-y-auto flex flex-col items-center py-6 px-4 no-scrollbar font-sans text-xs cursor-pointer"
+              className="fixed inset-0 bg-slate-900/95 backdrop-blur-md z-50 overflow-y-auto flex flex-col items-center py-6 px-4 no-scrollbar font-sans text-xs cursor-pointer no-print"
             >
               <div onClick={(e) => e.stopPropagation()} className="w-full max-w-4xl flex flex-col items-center cursor-default">
               
@@ -2976,6 +4006,20 @@ export default function AssessmentTab({
 
                   <button
                     type="button"
+                    disabled={teacherPermissions?.canExportReports === false}
+                    onClick={handleTriggerBulkPdfDownload}
+                    className={`flex items-center gap-1.5 px-3.5 py-1.5 ${
+                      teacherPermissions?.canExportReports === false
+                        ? 'bg-slate-300 text-slate-500 cursor-not-allowed opacity-65'
+                        : 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer active:translate-y-0.5'
+                    } transition font-bold rounded-lg text-xs text-center shadow-md`}
+                    title={`Trigger bulk PDF generation for all students in Class ${selectedClass}`}
+                  >
+                    <FileDown size={14} /> Download All (Class)
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={() => setReportCardPreviewMode(false)}
                     className="flex items-center gap-1.5 px-3.5 py-1.5 border border-slate-200 hover:bg-slate-100/90 text-slate-750 transition font-bold rounded-lg cursor-pointer active:translate-y-0.5 text-xs text-center bg-slate-50"
                   >
@@ -2985,19 +4029,19 @@ export default function AssessmentTab({
               </div>
 
               {/* Full-Scale A4 Visual Report Card Sheet (Target of print template) */}
-              <div className="w-full max-w-4xl bg-white p-12 md:p-16 shadow-2xl rounded-2xl border border-slate-200 font-sans leading-relaxed text-black/90 text-left report-card-print-container">
+              <div id="pristine-report-card-preview" className={`w-full max-w-4xl bg-white ${getReportCardScaling(sortedGrades.length).metaPadding} md:p-16 shadow-2xl rounded-2xl border border-slate-200 font-sans leading-relaxed text-black/90 text-left report-card-print-container ${singleSubjectCountClass}`}>
                 
                 {/* Professional School Profile Header with Crest, Logo & Info */}
-                <div className="flex flex-col sm:flex-row items-center justify-between border-b-2 border-slate-900 pb-5 mb-8 gap-4 font-sans text-left">
+                <div className={`flex flex-col sm:flex-row items-center justify-between border-b-2 border-slate-900 ${getReportCardScaling(sortedGrades.length).headerSpacing} gap-4 font-sans text-left`}>
                   {DbController.getSchoolInfo().logoUrl ? (
                     <img 
                       src={DbController.getSchoolInfo().logoUrl} 
                       alt="School Logo" 
-                      className="w-20 h-20 object-contain flex-shrink-0" 
+                      className={`${getReportCardScaling(sortedGrades.length).logoSize} object-contain flex-shrink-0`} 
                       referrerPolicy="no-referrer"
                     />
                   ) : (
-                    <div className="w-20 h-20 rounded-full bg-slate-50 flex items-center justify-center border border-slate-300 p-1 flex-shrink-0">
+                    <div className={`${getReportCardScaling(sortedGrades.length).logoSize} rounded-full bg-slate-50 flex items-center justify-center border border-slate-300 p-1 flex-shrink-0`}>
                       <div className="w-full h-full rounded-full border border-dashed border-slate-400 bg-white flex flex-col items-center justify-center text-[8px] text-slate-500 font-mono font-bold leading-normal">
                         <Award size={24} className="text-indigo-600 mb-1" />
                         <span className="scale-75 origin-center uppercase">CREST</span>
@@ -3005,13 +4049,13 @@ export default function AssessmentTab({
                     </div>
                   )}
                   <div className="flex-1 text-center space-y-0.5">
-                    <h2 className="text-2xl font-black text-slate-950 tracking-tight leading-tight uppercase font-display">
+                    <h2 className={`${getReportCardScaling(sortedGrades.length).titleSize} font-black text-slate-950 tracking-tight leading-tight uppercase font-display`}>
                       {DbController.getSchoolInfo().name}
                     </h2>
-                    <p className="text-xs italic font-serif text-slate-600">
+                    <p className={`${getReportCardScaling(sortedGrades.length).subTitleSize} italic font-serif text-slate-600`}>
                       Motto: "{DbController.getSchoolInfo().motto}"
                     </p>
-                    <div className="text-[10px] text-slate-500 font-sans flex flex-wrap justify-center gap-x-3 gap-y-0.5 mt-0.5">
+                    <div className={`${getReportCardScaling(sortedGrades.length).infoSize} text-slate-500 font-sans flex flex-wrap justify-center gap-x-3 gap-y-0.5 mt-0.5`}>
                       {DbController.getSchoolInfo().gpsAddress && <span>📍 {DbController.getSchoolInfo().gpsAddress}</span>}
                       {DbController.getSchoolInfo().telephone && <span>☎️ {DbController.getSchoolInfo().telephone}</span>}
                       {DbController.getSchoolInfo().email && <span>📧 {DbController.getSchoolInfo().email}</span>}
@@ -3028,11 +4072,11 @@ export default function AssessmentTab({
                     <img 
                       src={compiledReport.student.photoUrl} 
                       alt={`${compiledReport.student.firstName} ${compiledReport.student.lastName}`} 
-                      className="w-16 h-16 rounded border border-slate-300 object-cover flex-shrink-0" 
+                      className={`${getReportCardScaling(sortedGrades.length).photoSize} rounded border border-slate-300 object-cover flex-shrink-0`} 
                       referrerPolicy="no-referrer"
                     />
                   ) : (
-                    <div className="w-16 h-16 rounded border border-dashed border-slate-300 flex flex-col items-center justify-center bg-slate-50 p-1 flex-shrink-0 text-[7px] text-slate-400 font-mono text-center leading-normal select-none">
+                    <div className={`${getReportCardScaling(sortedGrades.length).photoSize} rounded border border-dashed border-slate-300 flex flex-col items-center justify-center bg-slate-50 p-1 flex-shrink-0 text-[7px] text-slate-400 font-mono text-center leading-normal select-none`}>
                       <div className="font-bold scale-90">PASSPORT</div>
                       <div className="scale-75">STAMP</div>
                     </div>
@@ -3040,28 +4084,28 @@ export default function AssessmentTab({
                 </div>
 
                 {/* Student Personal Data metadata */}
-                <div className="grid grid-cols-2 lg:grid-cols-6 gap-4 bg-slate-50 p-5 rounded-xl text-xs leading-relaxed border border-slate-100">
+                <div className={`grid grid-cols-2 lg:grid-cols-6 ${getReportCardScaling(sortedGrades.length).metaPadding} bg-slate-50 rounded-xl text-xs leading-relaxed border border-slate-100`}>
                   <div>
                     <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Student ID</span>
-                    <strong className="text-slate-800 font-mono text-sm">{compiledReport.student.id}</strong>
+                    <strong className={`text-slate-800 font-mono ${getReportCardScaling(sortedGrades.length).metaValSize}`}>{compiledReport.student.id}</strong>
                   </div>
                   <div>
                     <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Full Name</span>
-                    <strong className="text-slate-800 text-sm">{compiledReport.student.firstName} {compiledReport.student.lastName}</strong>
+                    <strong className={`text-slate-800 ${getReportCardScaling(sortedGrades.length).metaValSize}`}>{compiledReport.student.firstName} {compiledReport.student.lastName}</strong>
                   </div>
                   <div>
                     <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Academic Class</span>
-                    <strong className="text-slate-800 text-sm">{compiledReport.student.class} ({compiledReport.student.section})</strong>
+                    <strong className={`text-slate-800 ${getReportCardScaling(sortedGrades.length).metaValSize}`}>{compiledReport.student.class} ({compiledReport.student.section})</strong>
                   </div>
                   <div>
                     <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Report Term</span>
-                    <strong className="text-slate-800 text-sm font-mono">{selectedTerm} ({selectedYear})</strong>
+                    <strong className={`text-slate-800 ${getReportCardScaling(sortedGrades.length).metaValSize} font-mono`}>{selectedTerm} ({selectedYear})</strong>
                   </div>
                   <div className="relative group cursor-help bg-indigo-50/30 p-1.5 rounded-lg border border-indigo-100/50 transition-all hover:bg-indigo-50/80">
                     <span className="text-[10px] uppercase text-indigo-700 font-mono font-bold flex items-center gap-1 select-none">
                       Class Rank Standing <HelpCircle size={10} className="text-indigo-400" />
                     </span>
-                    <strong className="text-indigo-900 text-sm font-mono font-bold">{compiledReport.classRank || 'N/A'}</strong>
+                    <strong className={`text-indigo-900 ${getReportCardScaling(sortedGrades.length).metaValSize} font-mono font-bold`}>{compiledReport.classRank || 'N/A'}</strong>
                     <RankBreakdownTooltip 
                       term={selectedTerm} 
                       year={selectedYear} 
@@ -3071,61 +4115,72 @@ export default function AssessmentTab({
                   </div>
                   <div>
                     <span className="text-[10px] uppercase text-teal-700 font-mono font-bold block">Reopening Date</span>
-                    <strong className="text-teal-900 bg-teal-50 px-1.5 py-0.5 rounded border border-teal-100 text-sm">{formatReopeningDate(DbController.getSchoolInfo().reopeningDate)}</strong>
+                    <strong className={`text-teal-900 bg-teal-50 px-1.5 py-0.5 rounded border border-teal-100 ${getReportCardScaling(sortedGrades.length).metaValSize}`}>{formatReopeningDate(DbController.getSchoolInfo().reopeningDate)}</strong>
                   </div>
                 </div>
 
-                {/* Registered Subjects grades table */}
-                <table className="w-full text-left border-collapse border border-slate-200 text-xs mt-8">
+                <table className={`w-full text-left border-collapse border border-slate-200 text-xs ${getReportCardScaling(sortedGrades.length).tableMargin}`}>
                   <thead>
                     <tr className="bg-slate-100 border-b-2 border-slate-800">
-                      <th className="py-3 px-3 border border-slate-200 font-bold uppercase tracking-wider">Subject Course</th>
-                      <th className="py-3 px-2 border border-slate-200 font-bold text-center uppercase tracking-wider">Class 50%</th>
-                      <th className="py-3 px-2 border border-slate-200 font-bold text-center uppercase tracking-wider">Exams 50%</th>
-                      <th className="py-3 px-2 border border-slate-200 font-bold text-center uppercase tracking-wider">Total 100%</th>
-                      <th className="py-3 px-3 border border-slate-200 font-bold text-center uppercase tracking-wider">Remarks</th>
-                      <th className="py-3 px-2 border border-slate-200 font-bold text-center uppercase tracking-wider">Rank</th>
+                      <th className={`${getReportCardScaling(sortedGrades.length).tablePadding} border border-slate-200 font-bold uppercase tracking-wider`}>
+                        <div className="flex items-center justify-between gap-2 normal-case">
+                          <span>Subject Course</span>
+                          <button
+                            type="button"
+                            onClick={() => setSubjectSortMode(prev => prev === 'alphabetical' ? 'score' : 'alphabetical')}
+                            className="px-2 py-1 bg-white border border-slate-300 hover:bg-slate-50 rounded text-[9px] font-bold text-slate-600 flex items-center gap-1 transition cursor-pointer"
+                            title="Toggle between Alphabetical and Score-Based ranking"
+                          >
+                            <span>Sort: {subjectSortMode === 'alphabetical' ? 'A-Z' : 'Score 📊'}</span>
+                          </button>
+                        </div>
+                      </th>
+                      <th className={`${getReportCardScaling(sortedGrades.length).tablePadding} border border-slate-200 font-bold text-center uppercase tracking-wider`}>Class 50%</th>
+                      <th className={`${getReportCardScaling(sortedGrades.length).tablePadding} border border-slate-200 font-bold text-center uppercase tracking-wider`}>Exams 50%</th>
+                      <th className={`${getReportCardScaling(sortedGrades.length).tablePadding} border border-slate-200 font-bold text-center uppercase tracking-wider`}>Total 100%</th>
+                      <th className={`${getReportCardScaling(sortedGrades.length).tablePadding} border border-slate-200 font-bold text-center uppercase tracking-wider`}>Remarks</th>
+                      <th className={`${getReportCardScaling(sortedGrades.length).tablePadding} border border-slate-200 font-bold text-center uppercase tracking-wider`}>Rank</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {compiledReport.grades.map((item, index) => (
-                      <motion.tr 
-                        key={item.id} 
-                        className="hover:bg-slate-50/40"
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ duration: 0.2, delay: Math.min(index * 0.03, 0.4), ease: 'easeOut' }}
-                      >
-                        <td className="py-3 px-3 border border-slate-200 font-black text-slate-900 text-sm">{item.subject}</td>
-                        <td className="py-3 px-2 border border-slate-200 text-center font-mono font-bold text-slate-700 text-sm">{item.classScore50}</td>
-                        <td className="py-3 px-2 border border-slate-200 text-center font-mono font-bold text-slate-700 text-sm">{item.examScore50}</td>
-                        <td className="py-3 px-2 border border-slate-200 text-center font-mono font-black text-rose-700 bg-rose-50/10 text-sm">{item.totalScore}%</td>
-                        <td className="py-3 px-3 border border-slate-200 text-center">
-                          <span className={`inline-block px-2.5 py-1 rounded-full text-[10px] font-black ${item.gradeLevel === 'L1' ? 'bg-emerald-50 text-emerald-800 border border-emerald-100' : item.gradeLevel === 'L2' ? 'bg-blue-50 text-blue-800 border border-blue-100' : item.gradeLevel === 'L3' ? 'bg-amber-50 text-amber-800 border border-amber-100' : 'bg-red-50 text-red-800 border border-red-100'}`}>
-                            {item.remarks} ({item.gradeLevel})
-                          </span>
-                        </td>
-                        <td className="py-3 px-2 border border-slate-200 text-center font-mono font-black text-indigo-700 text-sm">{item.position ? `${item.position}` : 'N/A'}</td>
-                      </motion.tr>
-                    ))}
+                        {sortedGrades.map((item, index) => (
+                          <motion.tr 
+                            key={item.id} 
+                            className={`hover:bg-slate-50/40 ${getReportCardScaling(sortedGrades.length).rowHeight}`}
+                            initial={{ opacity: 0, y: 6 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.2, delay: Math.min(index * 0.03, 0.4), ease: 'easeOut' }}
+                          >
+                            <td className={`${getReportCardScaling(sortedGrades.length).tablePadding} border border-slate-200 font-black text-slate-900 ${getReportCardScaling(sortedGrades.length).tableFontSize}`}>{item.subject}</td>
+                            <td className={`${getReportCardScaling(sortedGrades.length).tablePadding} border border-slate-200 text-center font-mono font-bold text-slate-700 ${getReportCardScaling(sortedGrades.length).tableFontSize}`}>{item.classScore50}</td>
+                            <td className={`${getReportCardScaling(sortedGrades.length).tablePadding} border border-slate-200 text-center font-mono font-bold text-slate-700 ${getReportCardScaling(sortedGrades.length).tableFontSize}`}>{item.examScore50}</td>
+                            <td className={`${getReportCardScaling(sortedGrades.length).tablePadding} border border-slate-200 text-center font-mono font-black text-rose-700 bg-rose-50/10 ${getReportCardScaling(sortedGrades.length).tableFontSize}`}>{item.totalScore}%</td>
+                            <td className={`${getReportCardScaling(sortedGrades.length).tablePadding} border border-slate-200 text-center`}>
+                              <span className={`text-[10px] font-black uppercase ${item.gradeLevel === 'L1' ? 'text-emerald-700' : item.gradeLevel === 'L2' ? 'text-blue-700' : item.gradeLevel === 'L3' ? 'text-amber-600' : 'text-rose-700'}`}>
+                                {item.remarks} ({item.gradeLevel})
+                              </span>
+                            </td>
+                            <td className={`${getReportCardScaling(sortedGrades.length).tablePadding} border border-slate-200 text-center font-mono font-black text-indigo-700 ${getReportCardScaling(sortedGrades.length).tableFontSize}`}>{item.position ? `${item.position}` : 'N/A'}</td>
+                          </motion.tr>
+                        ))}
                   </tbody>
                 </table>
 
                 {/* Report Card Aggregates Footer summary */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-8 border-t border-slate-200 pt-6 text-xs text-center font-mono leading-relaxed">
-                  <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                <div className={`grid grid-cols-2 md:grid-cols-4 gap-4 ${getReportCardScaling(sortedGrades.length).footerSpacing} border-t border-slate-200 text-xs text-center font-mono leading-relaxed`}>
+                  <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
                     <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Subjects Graded</span>
                     <strong className="text-slate-800 text-sm">{compiledReport.totalSubjects} courses</strong>
                   </div>
-                  <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                  <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
                     <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Term Average Score</span>
                     <strong className="text-slate-800 text-sm italic">{compiledReport.averageScore}%</strong>
                   </div>
-                  <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                  <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
                     <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Attendance / School Open</span>
                     <strong className="text-slate-800 text-sm font-sans">{compiledReport.attendancePresent} / {compiledReport.schoolOpenDays} Days Present</strong>
                   </div>
-                  <div className="bg-slate-50/50 p-3 rounded-lg border border-slate-100">
+                  <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
                     <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Grade Rating</span>
                     <strong className="text-slate-800 text-sm uppercase">GES Certified</strong>
                   </div>
@@ -3133,7 +4188,7 @@ export default function AssessmentTab({
 
                 {/* Financial Ledger Section */}
                 {studentFinancials && (
-                  <div className="mt-6 bg-slate-50 border border-slate-200/80 rounded-xl p-4 font-sans text-xs flex flex-col md:flex-row justify-between gap-4 leading-normal print:bg-white print:border-slate-300">
+                  <div className={`${getReportCardScaling(sortedGrades.length).financialSpacing} bg-slate-50 border border-slate-200/80 rounded-xl font-sans text-xs flex flex-col md:flex-row justify-between leading-normal print:bg-white print:border-slate-300 report-card-financial-ledger`}>
                     <div className="space-y-1">
                       <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Current Balance Status</div>
                       <div className="flex items-baseline gap-2">
@@ -3164,10 +4219,10 @@ export default function AssessmentTab({
                 )}
 
                 {/* Remarks & Signatures desk */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-16 border-t border-slate-100 pt-8 text-xs">
+                <div className={`grid grid-cols-1 md:grid-cols-2 ${getReportCardScaling(sortedGrades.length).remarksSpacing} border-t border-slate-100 text-xs report-card-remarks-signatures`}>
                   <div className="space-y-2 text-left">
                     <span className="text-[10px] font-mono text-slate-500 uppercase font-black">Principal Headteacher Remarks</span>
-                    <p className="text-[11px] italic text-slate-700 bg-slate-50 p-4 rounded-xl border border-slate-200/50 leading-relaxed min-h-[70px] print:bg-white print:border-none">
+                    <p className={`${getReportCardScaling(sortedGrades.length).remarkBoxHeight} italic text-slate-700 bg-slate-50 rounded-xl border border-slate-200/50 leading-relaxed print:bg-white print:border-none`}>
                       {compiledReport.averageScore >= 80 
                         ? 'Excellent performance! The student reflects high mastery level standards on the GES curriculum benchmarks.' 
                         : compiledReport.averageScore >= 68 
@@ -3179,7 +4234,7 @@ export default function AssessmentTab({
                   </div>
 
                   <div className="flex flex-col justify-end items-end space-y-1.5 pr-6 relative">
-                    <div className="relative w-52 h-16 flex items-center justify-center">
+                    <div className={`relative ${getReportCardScaling(sortedGrades.length).signatureLine} h-16 flex items-center justify-center`}>
                       {DbController.getSchoolInfo().stampUrl && (
                         <img 
                           src={DbController.getSchoolInfo().stampUrl} 
@@ -3192,14 +4247,14 @@ export default function AssessmentTab({
                         <img 
                           src={DbController.getSchoolInfo().signatureUrl} 
                           alt="Headteacher Signature" 
-                          className="absolute w-36 h-12 object-contain z-10" 
+                          className={`absolute ${getReportCardScaling(sortedGrades.length).signatureSize} object-contain z-10`} 
                           referrerPolicy="no-referrer"
                         />
                       ) : (
-                        <div className="h-[1.5px] w-52 bg-slate-400 self-end"></div>
+                        <div className={`h-[1.5px] ${getReportCardScaling(sortedGrades.length).signatureLine} bg-slate-400 self-end`}></div>
                       )}
                     </div>
-                    {DbController.getSchoolInfo().signatureUrl && <div className="h-[1px] w-52 bg-slate-300"></div>}
+                    {DbController.getSchoolInfo().signatureUrl && <div className={`h-[1px] ${getReportCardScaling(sortedGrades.length).signatureLine} bg-slate-300`}></div>}
                     <div className="text-right">
                       {DbController.getSchoolInfo().headteacherName && (
                         <span className="font-bold text-[10px] text-slate-800 block leading-tight">{DbController.getSchoolInfo().headteacherName}</span>
@@ -3288,18 +4343,18 @@ export default function AssessmentTab({
                           ))
                         ) : (
                           <>
-                            <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40 border-l border-slate-200 font-mono">Ex 1 (10)</th>
-                            <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40 font-mono">Ex 2 (10)</th>
-                            <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40 font-mono">Ex 3 (10)</th>
-                            <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40 font-mono">Ex 4 (10)</th>
-                            <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-teal-50/40 border-l border-slate-200 font-mono">Ts 1 (20)</th>
-                            <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-teal-50/40 font-mono">Ts 2 (20)</th>
-                            <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-amber-50/40 border-l border-slate-200 font-mono">Proj (10)</th>
-                            <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-amber-50/40 font-mono">Grp (10)</th>
+                            <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40 border-l border-slate-200 font-mono">Ex 1 ({activeSubjectLimits.exercises})</th>
+                            <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40 font-mono">Ex 2 ({activeSubjectLimits.exercises})</th>
+                            <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40 font-mono">Ex 3 ({activeSubjectLimits.exercises})</th>
+                            <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-blue-50/40 font-mono">Ex 4 ({activeSubjectLimits.exercises})</th>
+                            <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-teal-50/40 border-l border-slate-200 font-mono">Ts 1 ({activeSubjectLimits.tests})</th>
+                            <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-teal-50/40 font-mono">Ts 2 ({activeSubjectLimits.tests})</th>
+                            <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-amber-50/40 border-l border-slate-200 font-mono">Proj ({activeSubjectLimits.projectWork})</th>
+                            <th className="py-2.5 px-1 font-bold text-slate-600 text-center bg-amber-50/40 font-mono">Grp ({activeSubjectLimits.groupWork})</th>
                           </>
                         )}
                         <th className="py-2.5 px-1 font-bold text-slate-700 text-center bg-slate-100 border-l border-slate-200 font-mono">Class 50%</th>
-                        <th className="py-2.5 px-1.5 font-bold text-slate-600 text-center bg-indigo-50 border-l border-slate-200 font-mono">Exam (100)</th>
+                        <th className="py-2.5 px-1.5 font-bold text-slate-600 text-center bg-indigo-50 border-l border-slate-200 font-mono">Exam ({activeSubjectLimits.examScore100})</th>
                         <th className="py-2.5 px-1 font-bold text-slate-700 text-center bg-indigo-50 font-mono">Exam 50%</th>
                         <th className="py-2.5 px-1 font-black text-slate-900 text-center border-l border-slate-200 font-mono">Total (100)</th>
                         <th className="py-2.5 px-1 font-bold text-slate-700 text-center bg-emerald-50">Remark</th>
@@ -3310,9 +4365,10 @@ export default function AssessmentTab({
                       {activeWorksheet.map((row, idx) => (
                         <motion.tr 
                           key={row.studentId} 
-                          className="hover:bg-slate-50/20 transition"
+                          className="transition-all duration-150 hover:bg-indigo-50/70 dark:hover:bg-indigo-950/40 hover:shadow-xs group border-b border-slate-100"
                           initial={{ opacity: 0, y: 8 }}
                           animate={{ opacity: 1, y: 0 }}
+                          whileHover={{ scale: 1.002, backgroundColor: "rgba(238, 242, 255, 0.75)" }}
                           transition={{ duration: 0.2, delay: Math.min(idx * 0.02, 0.4), ease: 'easeOut' }}
                         >
                           <td className="py-1 px-1.5 text-center font-mono text-slate-300 font-bold">{idx + 1}</td>
@@ -3327,8 +4383,10 @@ export default function AssessmentTab({
                                   type="number"
                                   min="0"
                                   max={comp.maxScore}
-                                  step="0.1"
-                                  value={row.customAssessments?.[exIdx] || 0}
+                                  step="any"
+                                  value={row.customAssessments?.[exIdx] === 0 ? '' : (row.customAssessments?.[exIdx] ?? '')}
+                                  placeholder="0"
+                                  onFocus={(e) => e.target.select()}
                                   onChange={(e) => handleScoreInput(row.studentId, 'customAssessments', exIdx, e.target.value)}
                                   className={`w-full text-center py-1 text-xs font-semibold bg-white border rounded focus:bg-slate-50 focus:border-indigo-400 focus:outline-none font-mono ${validationErrors[`${row.studentId}-customAssessments-${exIdx}`] ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200'}`}
                                   title={validationErrors[`${row.studentId}-customAssessments-${exIdx}`]}
@@ -3337,75 +4395,86 @@ export default function AssessmentTab({
                             ))
                           ) : (
                             <>
-                              {[0, 1, 2, 3].map(exIdx => (
-                                <td key={`ex-${exIdx}`} className="py-1 px-0.5 bg-blue-50/10 border-l border-slate-100">
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    max="10"
-                                    step="0.1"
-                                    value={row.exercises[exIdx] || 0}
-                                    onChange={(e) => handleScoreInput(row.studentId, 'exercises', exIdx, e.target.value)}
-                                    className={`w-full text-center py-1 text-xs font-semibold bg-white border rounded focus:bg-slate-50 focus:border-indigo-400 focus:outline-none font-mono ${validationErrors[`${row.studentId}-exercises-${exIdx}`] ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200'}`}
-                                    title={validationErrors[`${row.studentId}-exercises-${exIdx}`]}
-                                  />
-                                </td>
-                              ))}
-                              {[0, 1].map(tsIdx => (
-                                <td key={`ts-${tsIdx}`} className="py-1 px-0.5 bg-teal-50/10 border-l border-slate-100">
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    max="20"
-                                    step="0.1"
-                                    value={row.tests[tsIdx] || 0}
-                                    onChange={(e) => handleScoreInput(row.studentId, 'tests', tsIdx, e.target.value)}
-                                    className={`w-full text-center py-1 text-xs font-semibold bg-white border rounded focus:bg-slate-50 font-mono ${validationErrors[`${row.studentId}-tests-${tsIdx}`] ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200'}`}
-                                    title={validationErrors[`${row.studentId}-tests-${tsIdx}`]}
-                                  />
-                                </td>
-                              ))}
-                              <td className="py-1 px-0.5 bg-amber-50/10 border-l border-slate-100">
+                            {/* Exercises 4 Columns input with constraints */}
+                            {[0, 1, 2, 3].map(exIdx => (
+                              <td key={`ex-${exIdx}`} className="py-1 px-0.5 bg-blue-50/10 border-l border-slate-100">
                                 <input
                                   type="number"
                                   min="0"
-                                  max="10"
-                                  step="0.1"
-                                  value={row.projectWork || 0}
-                                  onChange={(e) => handleScoreInput(row.studentId, 'projectWork', 0, e.target.value)}
-                                  className={`w-full text-center py-1 text-xs font-semibold bg-white border rounded focus:bg-slate-50 font-mono ${validationErrors[`${row.studentId}-projectWork-0`] ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200'}`}
-                                  title={validationErrors[`${row.studentId}-projectWork-0`]}
+                                  max={activeSubjectLimits.exercises}
+                                  step="any"
+                                  value={row.exercises[exIdx] === 0 ? '' : (row.exercises[exIdx] ?? '')}
+                                  placeholder="0"
+                                  onFocus={(e) => e.target.select()}
+                                  onChange={(e) => handleScoreInput(row.studentId, 'exercises', exIdx, e.target.value)}
+                                  className={`w-full text-center py-1 text-xs font-semibold bg-white border rounded focus:bg-slate-50 focus:border-indigo-400 focus:outline-none font-mono ${validationErrors[`${row.studentId}-exercises-${exIdx}`] ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200'}`}
+                                  title={validationErrors[`${row.studentId}-exercises-${exIdx}`]}
                                 />
                               </td>
-                              <td className="py-1 px-0.5 bg-amber-50/10">
+                            ))}
+                            {[0, 1].map(tsIdx => (
+                              <td key={`ts-${tsIdx}`} className="py-1 px-0.5 bg-teal-50/10 border-l border-slate-100">
                                 <input
                                   type="number"
                                   min="0"
-                                  max="10"
-                                  step="0.1"
-                                  value={row.groupWork || 0}
-                                  onChange={(e) => handleScoreInput(row.studentId, 'groupWork', 0, e.target.value)}
-                                  className={`w-full text-center py-1 text-xs font-semibold bg-white border rounded font-mono ${validationErrors[`${row.studentId}-groupWork-0`] ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200'}`}
-                                  title={validationErrors[`${row.studentId}-groupWork-0`]}
+                                  max={activeSubjectLimits.tests}
+                                  step="any"
+                                  value={row.tests[tsIdx] === 0 ? '' : (row.tests[tsIdx] ?? '')}
+                                  placeholder="0"
+                                  onFocus={(e) => e.target.select()}
+                                  onChange={(e) => handleScoreInput(row.studentId, 'tests', tsIdx, e.target.value)}
+                                  className={`w-full text-center py-1 text-xs font-semibold bg-white border rounded focus:bg-slate-50 font-mono ${validationErrors[`${row.studentId}-tests-${tsIdx}`] ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200'}`}
+                                  title={validationErrors[`${row.studentId}-tests-${tsIdx}`]}
                                 />
                               </td>
-                            </>
-                          )}
-                          <td className="py-1 px-0.5 text-center font-bold text-slate-805 bg-slate-105 border-l border-slate-200 font-mono">
-                            {row.classScore50} <span className="text-[9px] text-slate-400 block font-normal">/{row.classScoreTotal}</span>
-                          </td>
-                          <td className="py-1 px-0.5 bg-indigo-50/10 border-l border-slate-200">
-                            <input
-                              type="number"
-                              min="0"
-                              max="100"
-                              step="0.1"
-                              value={row.examScore100 || 0}
-                              onChange={(e) => handleScoreInput(row.studentId, 'examScore100', 0, e.target.value)}
-                              className={`w-full text-center py-1 text-xs font-semibold bg-white border rounded text-indigo-700 font-mono ${validationErrors[`${row.studentId}-examScore100-0`] ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-250'}`}
-                              title={validationErrors[`${row.studentId}-examScore100-0`]}
-                            />
-                          </td>
+                            ))}
+                            <td className="py-1 px-0.5 bg-amber-50/10 border-l border-slate-100">
+                              <input
+                                type="number"
+                                min="0"
+                                max={activeSubjectLimits.projectWork}
+                                step="any"
+                                value={row.projectWork === 0 ? '' : (row.projectWork ?? '')}
+                                placeholder="0"
+                                onFocus={(e) => e.target.select()}
+                                onChange={(e) => handleScoreInput(row.studentId, 'projectWork', 0, e.target.value)}
+                                className={`w-full text-center py-1 text-xs font-semibold bg-white border rounded focus:bg-slate-50 font-mono ${validationErrors[`${row.studentId}-projectWork-0`] ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200'}`}
+                                title={validationErrors[`${row.studentId}-projectWork-0`]}
+                              />
+                            </td>
+                            <td className="py-1 px-0.5 bg-amber-50/10">
+                              <input
+                                type="number"
+                                min="0"
+                                max={activeSubjectLimits.groupWork}
+                                step="any"
+                                value={row.groupWork === 0 ? '' : (row.groupWork ?? '')}
+                                placeholder="0"
+                                onFocus={(e) => e.target.select()}
+                                onChange={(e) => handleScoreInput(row.studentId, 'groupWork', 0, e.target.value)}
+                                className={`w-full text-center py-1 text-xs font-semibold bg-white border rounded font-mono ${validationErrors[`${row.studentId}-groupWork-0`] ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200'}`}
+                                title={validationErrors[`${row.studentId}-groupWork-0`]}
+                              />
+                            </td>
+                          </>
+                        )}
+                        <td className="py-1 px-0.5 text-center font-bold text-slate-805 bg-slate-105 border-l border-slate-200 font-mono">
+                          {row.classScore50} <span className="text-[9px] text-slate-400 block font-normal">/{row.classScoreTotal}</span>
+                        </td>
+                        <td className="py-1 px-0.5 bg-indigo-50/10 border-l border-slate-200">
+                          <input
+                            type="number"
+                            min="0"
+                            max={activeSubjectLimits.examScore100}
+                            step="any"
+                            value={row.examScore100 === 0 ? '' : (row.examScore100 ?? '')}
+                            placeholder="0"
+                            onFocus={(e) => e.target.select()}
+                            onChange={(e) => handleScoreInput(row.studentId, 'examScore100', 0, e.target.value)}
+                            className={`w-full text-center py-1 text-xs font-semibold bg-white border rounded text-indigo-700 font-mono ${validationErrors[`${row.studentId}-examScore100-0`] ? 'border-rose-500 ring-1 ring-rose-500' : 'border-slate-200'}`}
+                            title={validationErrors[`${row.studentId}-examScore100-0`]}
+                          />
+                        </td>
                           <td className="py-1 px-0.5 text-center font-bold text-slate-700 bg-indigo-55 font-mono">
                             {row.examScore50}
                           </td>
@@ -3615,13 +4684,67 @@ export default function AssessmentTab({
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                   {/* Chart Area */}
                   <div className="md:col-span-2 bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
-                    <h4 className="font-bold text-slate-800 text-xs uppercase tracking-wider">Average Subject Scores (D3 Visualization)</h4>
-                    <div className="flex gap-2 mb-2">
-                        <button onClick={() => setChartView('Average')} className={`text-[10px] px-2 py-1 rounded ${chartView === 'Average' ? 'bg-indigo-600 text-white' : 'bg-slate-200'}`}>Average Grade</button>
-                        <button onClick={() => setChartView('Trend')} className={`text-[10px] px-2 py-1 rounded ${chartView === 'Trend' ? 'bg-indigo-600 text-white' : 'bg-slate-200'}`}>Grade Trend</button>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                      <div>
+                        <h4 className="font-bold text-slate-800 text-xs uppercase tracking-wider">Subject Performance Overview</h4>
+                        <p className="text-[10px] text-slate-400 mt-0.5">Analysis of class performance per educational unit</p>
+                      </div>
+                      
+                      {/* Engine Toggles */}
+                      <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                        <button
+                          type="button"
+                          onClick={() => setChartEngine('Recharts')}
+                          className={`text-[9px] font-bold px-2 py-1 rounded-md transition ${chartEngine === 'Recharts' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                        >
+                          Recharts Engine
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setChartEngine('D3')}
+                          className={`text-[9px] font-bold px-2 py-1 rounded-md transition ${chartEngine === 'D3' ? 'bg-white text-indigo-600 shadow-xs' : 'text-slate-500 hover:text-slate-800'}`}
+                        >
+                          D3 Engine
+                        </button>
+                      </div>
                     </div>
-                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex justify-center">
-                      <SubjectPerformanceChart data={chartView === 'Average' ? subjectAveragesData : subjectTrendData} viewType={chartView} />
+
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+                      <div className="flex gap-1.5">
+                        <button 
+                          type="button"
+                          onClick={() => setChartView('Average')} 
+                          className={`text-[10px] font-bold px-3 py-1.5 rounded-lg transition ${chartView === 'Average' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-50 text-slate-600 border border-slate-200 hover:bg-slate-100'}`}
+                        >
+                          Average Grade
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={() => setChartView('Trend')} 
+                          className={`text-[10px] font-bold px-3 py-1.5 rounded-lg transition ${chartView === 'Trend' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-slate-50 text-slate-600 border border-slate-200 hover:bg-slate-100'}`}
+                        >
+                          Grade Trend
+                        </button>
+                      </div>
+
+                      <div className="text-[10px] text-slate-500 font-medium">
+                        Showing data for <span className="font-semibold text-slate-700">{selectedClass}</span> &bull; <span className="font-semibold text-slate-700">{selectedTerm}</span>
+                      </div>
+                    </div>
+
+                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex justify-center items-center min-h-[340px]">
+                      {chartEngine === 'Recharts' ? (
+                        <RechartsPerformanceOverview 
+                          data={chartView === 'Average' ? subjectAveragesData : subjectTrendData} 
+                          viewType={chartView} 
+                          theme={theme}
+                        />
+                      ) : (
+                        <SubjectPerformanceChart 
+                          data={chartView === 'Average' ? subjectAveragesData : subjectTrendData} 
+                          viewType={chartView} 
+                        />
+                      )}
                     </div>
                   </div>
                   <div className="md:col-span-2 bg-slate-50 border border-slate-200 rounded-xl p-6 space-y-4">
@@ -3717,7 +4840,7 @@ export default function AssessmentTab({
               <button
                 type="button"
                 onClick={handleToggleFinalizeGrades}
-                className={`py-2 px-4 rounded-xl text-xs font-black shadow-xs cursor-pointer transition flex items-center justify-center gap-1.5 active:translate-y-0.5 font-sans ${
+                className={`py-1.5 px-3 w-full sm:w-auto rounded-lg text-[11px] font-bold shadow-sm cursor-pointer transition flex items-center justify-center gap-1.5 active:translate-y-0.5 font-sans ${
                   isCurrentGradesFinalized 
                     ? 'bg-rose-50 border border-rose-200 text-rose-700 hover:bg-rose-100'
                     : 'bg-emerald-600 hover:bg-emerald-700 text-white'
@@ -3768,10 +4891,11 @@ export default function AssessmentTab({
                   <p className="text-[9px] text-slate-400 italic">
                     Supported placeholder tags: <strong className="text-slate-600">[Parent]</strong>, <strong className="text-slate-600">[Student]</strong>, <strong className="text-slate-600">[ID]</strong>, <strong className="text-slate-600">[Link]</strong> (Auto-inserts cryptographic parent access portal url)
                   </p>
-                  <textarea
+                  <SmartTextarea
                     rows={3}
                     value={bulkSmsCustomMessage}
-                    onChange={(e) => setBulkSmsCustomMessage(e.target.value)}
+                    onChange={(e: any) => setBulkSmsCustomMessage(e.target.value)}
+                    spellCheck="true"
                     className="w-full text-xs p-3 border border-slate-200 rounded-xl bg-slate-50/50 focus:bg-white focus:outline-none transition leading-relaxed text-slate-700"
                     placeholder="Enter customized notification body text..."
                   />
@@ -3908,7 +5032,7 @@ export default function AssessmentTab({
                     type="button"
                     disabled={isBroadcastingSms || Object.values(selectedStudentsToNotify).filter(Boolean).length === 0}
                     onClick={handleBroadcastReportCardSms}
-                    className="py-2.5 px-5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black shadow-md cursor-pointer disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed transition flex items-center justify-center gap-1.5 active:translate-y-0.5 font-sans"
+                    className="py-2.5 px-5 w-full sm:w-auto bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black shadow-md cursor-pointer disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed transition flex items-center justify-center gap-1.5 active:translate-y-0.5 font-sans"
                   >
                     <Send size={12} /> Broadcast Notification Blast
                   </button>
@@ -4003,11 +5127,11 @@ export default function AssessmentTab({
               <p className="text-[10px] text-slate-400 mt-0.5">Statistical metrics, cognitive distribution curves, and intervention alert controls for {selectedClass}</p>
             </div>
             
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={() => setPerformancePreviewMode(!performancePreviewMode)}
-                className="py-1.5 px-3 bg-white border border-slate-200 text-slate-700 rounded-lg text-xs font-black shadow-xs cursor-pointer transition flex items-center justify-center gap-1 active:translate-y-0.5 self-start sm:self-auto"
+                className="py-1.5 px-3 bg-white border border-slate-200 text-slate-700 rounded-lg text-[11px] font-bold shadow-sm cursor-pointer transition flex items-center justify-center gap-1 active:translate-y-0.5"
               >
                 <Eye size={12} /> {performancePreviewMode ? 'Hide' : 'Show'} Preview Mode
               </button>
@@ -4016,13 +5140,175 @@ export default function AssessmentTab({
                 <button
                   type="button"
                   onClick={() => handlePrintElement('teacher-subject-performance-report', `Teacher Subject Performance - ${selectedClass}`, false)}
-                  className="py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-black shadow-xs cursor-pointer transition flex items-center justify-center gap-1 active:translate-y-0.5 self-start sm:self-auto"
+                  className="py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[11px] font-bold shadow-sm cursor-pointer transition flex items-center justify-center gap-1 active:translate-y-0.5"
                 >
                   <FileDown size={12} /> Export Subject PDF
                 </button>
               )}
             </div>
           </div>
+
+          {/* Submode Tabs: General Analytics vs. Performance Trends */}
+          <div className="flex border-b border-slate-200">
+            <button
+              type="button"
+              onClick={() => setAnalyticsSubTab('general')}
+              className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all cursor-pointer ${
+                analyticsSubTab === 'general'
+                  ? 'border-indigo-600 text-indigo-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <BarChart3 size={14} /> General Analytics
+            </button>
+            <button
+              type="button"
+              onClick={() => setAnalyticsSubTab('trends')}
+              className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs transition-all cursor-pointer ${
+                analyticsSubTab === 'trends'
+                  ? 'border-indigo-600 text-indigo-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <TrendingUp size={14} /> Performance Trends Evolution
+            </button>
+          </div>
+
+          {analyticsSubTab === 'trends' ? (
+            <div className="space-y-6">
+              {/* Multi-Term Performance Line Chart with Interactive Controls */}
+              <MultiTermPerformanceLineChart 
+                data={assessmentTermOverTermData}
+                title="Multi-Term Student & Subject Performance Line Graph"
+                subtitle={`Comparative term line chart tracking Term 1, Term 2, and Term 3 performance across core subjects (${selectedClass} • ${selectedYear})`}
+                theme={theme}
+                selectedClass={selectedClass}
+                selectedStudentId={selectedAnalyticsStudentId}
+                onStudentChange={(id) => setSelectedAnalyticsStudentId(id)}
+                studentsList={students.filter(s => s.class === selectedClass).map(s => ({ id: s.id, name: `${s.firstName} ${s.lastName}` }))}
+              />
+
+              {/* Subject-Specific Learning Gaps Analysis */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-left">
+                <div className="md:col-span-2 bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4">
+                  <h3 className="font-bold text-slate-800 text-xs flex items-center gap-1.5 uppercase font-sans tracking-wide border-b border-slate-100 pb-2">
+                    🔍 Subject-Specific Learning Gaps & Growth Analysis
+                  </h3>
+                  
+                  {(() => {
+                    const subjectsAnalysis = SUBJECTS.map(subj => {
+                      const termScores = subjectEvolutionTrendData.map(d => d[subj]).filter(score => score !== null && score !== undefined);
+                      if (termScores.length < 2) {
+                        return { subject: subj, status: 'Insufficient Data', change: 0, latest: termScores[0] || null };
+                      }
+                      const first = termScores[0];
+                      const latest = termScores[termScores.length - 1];
+                      const change = parseFloat((latest - first).toFixed(1));
+                      let status = 'Stable';
+                      if (change >= 3) status = 'Growth';
+                      else if (change <= -3) status = 'Gap Identified';
+                      
+                      return { subject: subj, status, change, latest };
+                    }).filter(s => s.latest !== null);
+
+                    if (subjectsAnalysis.length === 0) {
+                      return (
+                        <p className="text-[11px] text-slate-500 italic text-left">
+                          No trend growth stats can be compiled yet. Ensure students have grades entered across different terms.
+                        </p>
+                      );
+                    }
+
+                    return (
+                      <div className="space-y-3.5 text-left">
+                        <p className="text-[10px] text-slate-500 leading-relaxed">
+                          This panel identifies critical educational learning gaps by measuring average mark variance between Term 1 and the latest evaluated Term.
+                        </p>
+                        
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                          {subjectsAnalysis.map((item) => {
+                            let statusColor = 'bg-slate-50 text-slate-700 border-slate-200';
+                            let icon = '⚖️';
+                            let statusText = 'Stable';
+                            
+                            if (item.status === 'Growth') {
+                              statusColor = 'bg-emerald-50 text-emerald-800 border-emerald-100';
+                              icon = '📈';
+                              statusText = `Growth (+${item.change}%)`;
+                            } else if (item.status === 'Gap Identified') {
+                              statusColor = 'bg-rose-50 text-rose-800 border-rose-100';
+                              icon = '⚠️';
+                              statusText = `Gap Identified (${item.change}%)`;
+                            } else if (item.status === 'Stable') {
+                              statusColor = 'bg-slate-50 text-slate-800 border-slate-150';
+                              icon = '✨';
+                              statusText = 'Stable';
+                            }
+
+                            return (
+                              <div key={item.subject} className="p-3 bg-white rounded-xl border border-slate-200/60 shadow-3xs flex flex-col justify-between space-y-2">
+                                <div className="flex items-center justify-between gap-1.5">
+                                  <strong className="text-[11px] font-bold text-slate-800 truncate">{item.subject}</strong>
+                                  <span className={`px-2 py-0.5 rounded text-[8px] font-mono font-black border ${statusColor}`}>
+                                    {icon} {statusText}
+                                  </span>
+                                </div>
+                                <div className="flex items-center justify-between border-t border-slate-100/50 pt-2 text-[10px] text-slate-500">
+                                  <span>Latest Avg: <strong className="font-mono text-slate-800 font-black">{item.latest}%</strong></span>
+                                  <span>Variance: <strong className="font-mono text-slate-800 font-black">{item.change > 0 ? `+${item.change}` : item.change}%</strong></span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4">
+                  <h3 className="font-bold text-slate-800 text-xs flex items-center gap-1.5 uppercase font-sans tracking-wide border-b border-slate-100 pb-2 text-left">
+                    🎓 Strategic Interventions & Recommendations
+                  </h3>
+                  <div className="space-y-3.5 text-left leading-relaxed">
+                    <p className="text-[10px] text-slate-500">
+                      Pedagogical recovery actions recommended for identified subject-specific learning gaps in {selectedClass}:
+                    </p>
+                    
+                    <div className="space-y-3">
+                      <div className="p-2.5 bg-rose-50/50 border border-rose-100 rounded-lg space-y-1">
+                        <strong className="text-[11px] font-bold text-rose-950 flex items-center gap-1.5">
+                          <span>🛠️</span> Targeted Academic Support
+                        </strong>
+                        <p className="text-[10px] text-rose-800 leading-snug">
+                          For subjects showing declining trends, schedule 30-minute bi-weekly diagnostic remediation hours focusing on core foundational elements.
+                        </p>
+                      </div>
+
+                      <div className="p-2.5 bg-indigo-50/50 border border-indigo-100 rounded-lg space-y-1">
+                        <strong className="text-[11px] font-bold text-indigo-950 flex items-center gap-1.5">
+                          <span>📂</span> Curricular Material Review
+                        </strong>
+                        <p className="text-[10px] text-indigo-800 leading-snug">
+                          Re-align course materials and introduce visual worksheets, localized practical scenarios, and peer teaching workshops.
+                        </p>
+                      </div>
+
+                      <div className="p-2.5 bg-amber-50/50 border border-amber-100 rounded-lg space-y-1">
+                        <strong className="text-[11px] font-bold text-amber-950 flex items-center gap-1.5">
+                          <span>📊</span> Continuous Assessment Drills
+                        </strong>
+                        <p className="text-[10px] text-amber-800 leading-snug">
+                          Integrate standard weekly cognitive quizzes and formative checkpoints to gauge micro-improvements before end-of-term.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <>
 
           {/* Real-time KPI Statistics Ribbons */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -4076,6 +5362,31 @@ export default function AssessmentTab({
               <div className="w-9 h-9 bg-slate-100 text-slate-600 rounded-lg flex items-center justify-center font-sans text-sm">
                 👥
               </div>
+            </div>
+          </div>
+
+          {/* Class-wide Subject Averages Overview (Recharts) */}
+          <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3 text-left">
+              <div>
+                <h3 className="font-bold text-slate-800 text-xs flex items-center gap-1.5 uppercase tracking-wider">
+                  📊 Class-wide Average Grades per Subject
+                </h3>
+                <p className="text-[10px] text-slate-400 mt-0.5">
+                  Mean average percentage scores achieved by the class across all academic subjects in {selectedTerm}
+                </p>
+              </div>
+              <div className="text-[10px] font-mono font-black bg-indigo-50 text-indigo-700 px-2.5 py-1 rounded-lg border border-indigo-100 self-start sm:self-auto">
+                {subjectAveragesData.filter(d => d.average !== null).length} Subjects Graded
+              </div>
+            </div>
+
+            <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
+              <RechartsPerformanceOverview 
+                data={subjectAveragesData} 
+                viewType="Average" 
+                theme={theme}
+              />
             </div>
           </div>
 
@@ -4149,6 +5460,125 @@ export default function AssessmentTab({
                     <p className="text-[10px] text-slate-500">Critical struggle in outcomes. Strong tutoring required.</p>
                   </div>
                 </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Student Rankings & Percentile Distribution Section */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {/* Rankings Bar Chart Card */}
+            <div className="md:col-span-2 bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                <div>
+                  <h3 className="font-bold text-slate-800 text-xs flex items-center gap-1.5 uppercase tracking-wider">
+                    🏆 Student Ranking & Cohort Distribution
+                  </h3>
+                  <p className="text-[10px] text-slate-400 mt-0.5">
+                    Class-wide student ranking split based on their overall term cumulative averages
+                  </p>
+                </div>
+                <div className="text-[10px] font-mono font-black bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded border border-indigo-100">
+                  {broadsheetData.length} Students Ranked
+                </div>
+              </div>
+
+              <div className="h-64 font-sans text-[10px]">
+                <ResponsiveContainer width="100%" height="100%" aspect={1.8}>
+                  <BarChart data={studentRankingsDistributionStats} margin={{ top: 10, right: 10, left: -25, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                    <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#64748b', fontWeight: 'bold' }} />
+                    <YAxis allowDecimals={false} tick={{ fontSize: 9, fill: '#64748b' }} />
+                    <Tooltip 
+                      formatter={(value: any) => [`${value} Student(s)`, 'Count']}
+                      labelStyle={{ fontWeight: 'bold', color: '#1e293b', fontSize: '10px' }}
+                      contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: '10px' }}
+                    />
+                    <Bar dataKey="value" name="Total Students" radius={[4, 4, 0, 0]}>
+                      {studentRankingsDistributionStats.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.fill} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            {/* Cohort Insights & Leaderboard Card */}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 space-y-5 shadow-2xs flex flex-col justify-between">
+              <div className="space-y-4">
+                <h4 className="font-bold text-slate-700 flex items-center gap-1 text-xs uppercase tracking-wider">
+                  💡 Cohort Definition & Key Insights
+                </h4>
+                <div className="space-y-3 text-[11px] leading-relaxed">
+                  <div className="flex items-start gap-2.5 p-1.5 bg-emerald-50/60 rounded-lg border border-emerald-100">
+                    <div className="w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center font-bold text-[9px] shrink-0">10%</div>
+                    <div className="min-w-0">
+                      <strong className="text-emerald-950 font-bold text-[10px]">Top 10% (Elite Performance)</strong>
+                      <p className="text-[10px] text-emerald-800 leading-tight mt-0.5">
+                        Leading percentile. Highly independent learners. ({rankingCohorts.top10.length} students)
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-2.5 p-1.5 bg-blue-50/60 rounded-lg border border-blue-100">
+                    <div className="w-5 h-5 rounded-full bg-blue-500 text-white flex items-center justify-center font-bold text-[9px] shrink-0">25%</div>
+                    <div className="min-w-0">
+                      <strong className="text-blue-950 font-bold text-[10px]">Top 25% (High Performance)</strong>
+                      <p className="text-[10px] text-blue-800 leading-tight mt-0.5">
+                        Consistent academic output. Well above average. ({rankingCohorts.top25.length} students)
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-2.5 p-1.5 bg-indigo-50/60 rounded-lg border border-indigo-100">
+                    <div className="w-5 h-5 rounded-full bg-indigo-500 text-white flex items-center justify-center font-bold text-[9px] shrink-0">Avg</div>
+                    <div className="min-w-0">
+                      <strong className="text-indigo-950 font-bold text-[10px]">Average (Middle 50%)</strong>
+                      <p className="text-[10px] text-indigo-800 leading-tight mt-0.5">
+                        Steady performance meeting general class milestones. ({rankingCohorts.average.length} students)
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-2.5 p-1.5 bg-rose-50/60 rounded-lg border border-rose-100">
+                    <div className="w-5 h-5 rounded-full bg-rose-500 text-white flex items-center justify-center font-bold text-[9px] shrink-0">Bel</div>
+                    <div className="min-w-0">
+                      <strong className="text-rose-950 font-bold text-[10px]">Below Average (Remediation)</strong>
+                      <p className="text-[10px] text-rose-800 leading-tight mt-0.5">
+                        Targeted for early alerts and tailored plans. ({rankingCohorts.belowAverage.length} students)
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Class Leaders List */}
+              <div className="space-y-3 border-t border-slate-200/60 pt-4">
+                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                  🏆 Class Leaders (Top Performers)
+                </div>
+                {rankingCohorts.top10.length === 0 && rankingCohorts.top25.length === 0 ? (
+                  <p className="text-[10px] text-slate-500 italic">No rankings compiled yet. Ensure grades are entered.</p>
+                ) : (
+                  <div className="space-y-1.5 max-h-[110px] overflow-y-auto pr-1">
+                    {[...rankingCohorts.top10, ...rankingCohorts.top25].slice(0, 3).map((item, idx) => (
+                      <div key={item.student.id} className="flex items-center justify-between p-1.5 bg-white border border-slate-200/50 rounded-lg shadow-2xs">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-[9px] font-black text-slate-400 font-mono w-4">#{item.rank}</span>
+                          <span className="text-[10px] font-bold text-slate-700 truncate">{item.student.firstName} {item.student.lastName}</span>
+                        </div>
+                        <span className="text-[9px] font-mono font-bold bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded shrink-0">
+                          {item.averageOverallScore.toFixed(1)}%
+                        </span>
+                      </div>
+                    ))}
+                    {rankingCohorts.top10.length + rankingCohorts.top25.length > 3 && (
+                      <p className="text-[9px] text-slate-400 text-right font-medium">
+                        + {rankingCohorts.top10.length + rankingCohorts.top25.length - 3} more high performers
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -4393,11 +5823,19 @@ export default function AssessmentTab({
                     className="py-1 px-2 border border-slate-200 rounded-md text-[11px] focus:outline-hidden focus:ring-1 focus:ring-indigo-550 bg-slate-50 font-bold"
                   >
                     <option value="All">All Subjects (Average)</option>
-                    {SUBJECTS.map(subj => (
-                      <option key={subj} value={subj}>
-                        {subj}
-                      </option>
-                    ))}
+                    {capturedSubjectsForTrendStudent.length > 0 ? (
+                      capturedSubjectsForTrendStudent.map(subj => (
+                        <option key={subj} value={subj}>
+                          {subj}
+                        </option>
+                      ))
+                    ) : (
+                      SUBJECTS.map(subj => (
+                        <option key={subj} value={subj}>
+                          {subj}
+                        </option>
+                      ))
+                    )}
                   </select>
                 </div>
               </div>
@@ -4592,6 +6030,8 @@ export default function AssessmentTab({
               )}
             </div>
           </div>
+            </>
+          )}
 
         </div>
       )}
@@ -4630,7 +6070,7 @@ export default function AssessmentTab({
               <button
                 type="button"
                 onClick={() => handlePrintElement('student-strengths-weaknesses-report-card', `Student Strengths & Weaknesses - ${students.find(s => s.id === selectedStudentId)?.firstName || 'Report'}`, false)}
-                className="py-1.5 px-3.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-black shadow-xs cursor-pointer transition flex items-center justify-center gap-1.5 active:translate-y-0.5"
+                className="py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[11px] font-bold shadow-sm cursor-pointer transition flex items-center justify-center gap-1.5 active:translate-y-0.5"
               >
                 <Printer size={12} /> Print Diagnostic Report
               </button>
@@ -4933,7 +6373,12 @@ export default function AssessmentTab({
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-sans">
                       {studentStrengthsWeaknesses.allSubjectsAnalysis.map((row, idx) => (
-                        <tr key={idx} className="hover:bg-slate-50/50 transition">
+                        <motion.tr 
+                          key={idx} 
+                          whileHover={{ scale: 1.002, x: 2, backgroundColor: "rgba(238, 242, 255, 0.65)" }}
+                          transition={{ duration: 0.15 }}
+                          className="hover:bg-indigo-50/60 dark:hover:bg-indigo-950/40 transition-all duration-150"
+                        >
                           <td className="p-3 font-semibold text-slate-800">{row.subject}</td>
                           <td className="p-3 text-center font-mono text-slate-600">{row.termScores['Term 1'] !== undefined ? `${row.termScores['Term 1']}%` : '-'}</td>
                           <td className="p-3 text-center font-mono text-slate-600">{row.termScores['Term 2'] !== undefined ? `${row.termScores['Term 2']}%` : '-'}</td>
@@ -4954,7 +6399,7 @@ export default function AssessmentTab({
                               {row.category === 'strength' ? 'Strength' : row.category === 'weakness' ? 'Needs Help' : 'Steady'}
                             </span>
                           </td>
-                        </tr>
+                        </motion.tr>
                       ))}
                     </tbody>
                   </table>
@@ -4963,6 +6408,616 @@ export default function AssessmentTab({
 
             </div>
           )}
+
+        </div>
+      )}
+
+      {/* SUBMODE F: STUDENT ACADEMIC PORTFOLIO TRANSCRIPT */}
+      {subMode === 'Transcript' && (
+        <div className="space-y-6 no-print font-sans">
+          
+          {/* Top Selector Ribbon */}
+          <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-50/50">
+            <div>
+              <h3 className="font-bold text-slate-800 text-sm flex items-center gap-1.5 font-sans">
+                🎓 Student Academic Portfolio Transcript
+              </h3>
+              <p className="text-[10px] text-slate-400 mt-0.5 font-sans">
+                Cumulative year-over-year registry transcript and terminal assessment logs for {selectedClass}
+              </p>
+            </div>
+            
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-500 font-medium font-sans">Select Student:</span>
+                <select
+                  value={selectedStudentId}
+                  onChange={(e) => setSelectedStudentId(e.target.value)}
+                  className="text-xs px-3 py-1.5 border border-slate-200 rounded-lg bg-white font-semibold focus:outline-none cursor-pointer font-sans"
+                >
+                  {students.filter(s => s.class === selectedClass).map(s => (
+                    <option key={s.id} value={s.id}>
+                      {s.firstName} {s.lastName} ({s.id})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const s = students.find(st => st.id === selectedStudentId);
+                    if ((window as any).printTarget) {
+                      (window as any).printTarget('pristine-transcript-preview', `Official Academic Transcript - ${s?.firstName || ''} ${s?.lastName || ''}`, false);
+                    } else {
+                      window.print();
+                    }
+                  }}
+                  className="py-1.5 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[11px] font-bold shadow-sm cursor-pointer transition flex items-center justify-center gap-1.5 active:translate-y-0.5 font-sans"
+                  title="Print or export the current student's transcript as PDF"
+                >
+                  <Printer size={12} /> Print Selected
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if ((window as any).printTarget) {
+                      (window as any).printTarget('bulk-transcripts-print-page', `Bulk Class Transcripts - ${selectedClass}`, false);
+                    } else {
+                      window.print();
+                    }
+                  }}
+                  className="py-1.5 px-3 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-[11px] font-bold shadow-sm cursor-pointer transition flex items-center justify-center gap-1.5 active:translate-y-0.5 font-sans"
+                  title="Print transcripts of all students in this class in a bulk run"
+                >
+                  <Layers size={12} /> Print All (Class Batch)
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Transcript Content Board */}
+          {(() => {
+            const currentStudent = students.find(s => s.id === selectedStudentId);
+            const trends = DbController.getStudentAcademicTrends(selectedStudentId);
+            const schoolInfo = DbController.getSchoolInfo();
+
+            if (!currentStudent) {
+              return (
+                <div className="bg-white p-12 text-center rounded-2xl border border-slate-200 shadow-sm space-y-3 font-sans">
+                  <div className="w-16 h-16 bg-slate-50 text-slate-400 rounded-full flex items-center justify-center mx-auto text-2xl">
+                    👥
+                  </div>
+                  <h4 className="font-bold text-slate-700 text-sm">No Student Selected</h4>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto">
+                    Please select a student from the dropdown menu to compile their academic portfolio transcript.
+                  </p>
+                </div>
+              );
+            }
+
+            if (trends.length === 0) {
+              return (
+                <div className="bg-white p-12 text-center rounded-2xl border border-slate-200 shadow-sm space-y-3 font-sans">
+                  <div className="w-16 h-16 bg-slate-50 text-slate-400 rounded-full flex items-center justify-center mx-auto text-2xl">
+                    📚
+                  </div>
+                  <h4 className="font-bold text-slate-700 text-sm">No Assessment Data Found</h4>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto font-sans">
+                    There are no term-by-term academic records registered in the system database for {currentStudent.firstName} {currentStudent.lastName}.
+                    Add scores in the Marks Input Sheet to generate a transcript portfolio automatically.
+                  </p>
+                </div>
+              );
+            }
+
+            // Group trends by year then term
+            const groups: Record<string, Record<string, StudentAssessment[]>> = {};
+            trends.forEach(item => {
+              if (!groups[item.academicYear]) groups[item.academicYear] = {};
+              if (!groups[item.academicYear][item.term]) groups[item.academicYear][item.term] = [];
+              groups[item.academicYear][item.term].push(item);
+            });
+
+            // Calculate overall stats
+            const totalAssessmentsCount = trends.length;
+            const overallAverage = parseFloat(
+              (trends.reduce((sum, item) => sum + item.totalScore, 0) / totalAssessmentsCount).toFixed(2)
+            );
+
+            // Construct progression chart data chronologically
+            const chartData: { name: string; Average: number }[] = [];
+            Object.keys(groups).sort().forEach(year => {
+              Object.keys(groups[year]).sort().forEach(term => {
+                const termAssessments = groups[year][term];
+                const termAverage = parseFloat(
+                  (termAssessments.reduce((sum, a) => sum + a.totalScore, 0) / termAssessments.length).toFixed(1)
+                );
+                chartData.push({
+                  name: `${year.replace('Academic Year', '').trim()} - ${term}`,
+                  Average: termAverage
+                });
+              });
+            });
+
+            return (
+              <div className="flex flex-col xl:flex-row gap-6 font-sans w-full">
+                
+                {/* Visual Preview Window (Actual component to print/export) */}
+                <div className="flex-1 bg-slate-100 p-2 sm:p-4 md:p-8 rounded-2xl border border-slate-200 flex justify-center overflow-x-auto w-full">
+                  <div 
+                    id="pristine-transcript-preview" 
+                    className="w-full max-w-[800px] min-w-[280px] min-h-[900px] bg-white p-4 sm:p-8 md:p-16 border-4 md:border-[8px] border-double border-slate-900 shadow-2xl rounded-sm font-sans text-black leading-relaxed text-left space-y-6 overflow-x-auto"
+                  >
+                    
+                    {/* Transcript Official Header / Letterhead */}
+                    <div className="flex flex-col sm:flex-row items-center justify-between border-b pb-4 gap-4 leading-normal text-center sm:text-left transcript-header-flex">
+                      {schoolInfo.logoUrl ? (
+                        <img 
+                          src={schoolInfo.logoUrl} 
+                          alt="School Logo" 
+                          className="w-20 h-20 object-contain animate-none" 
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        <div className="w-20 h-20 rounded-full bg-slate-50 flex items-center justify-center border border-slate-300 p-1 flex-shrink-0">
+                          <div className="w-full h-full rounded-full border border-dashed border-slate-400 bg-white flex flex-col items-center justify-center text-[7px] text-slate-500 font-mono font-bold leading-none">
+                            <Award size={22} className="text-indigo-600 mb-0.5" />
+                            <span className="scale-75 origin-center uppercase">CREST</span>
+                          </div>
+                        </div>
+                      )}
+                      
+                      <div className="flex-1 text-center space-y-1">
+                        <h2 className="text-xl font-black text-slate-950 tracking-tight leading-tight uppercase font-display">
+                          {schoolInfo.name}
+                        </h2>
+                        {schoolInfo.motto && (
+                          <p className="text-xs italic font-serif text-slate-600">
+                            Motto: "{schoolInfo.motto}"
+                          </p>
+                        )}
+                        <div className="text-[10px] text-slate-500 flex flex-wrap justify-center gap-x-3 gap-y-0.5 font-sans font-medium">
+                          {schoolInfo.gpsAddress && <span>📍 {schoolInfo.gpsAddress}</span>}
+                          {schoolInfo.telephone && <span>☎️ {schoolInfo.telephone}</span>}
+                          {schoolInfo.email && <span>📧 {schoolInfo.email}</span>}
+                        </div>
+                      </div>
+                      
+                      <div className="w-24 h-12 text-[8px] text-slate-400 border border-slate-300 bg-slate-50 rounded flex flex-col items-center justify-center font-mono font-bold select-none text-center leading-normal">
+                        OFFICIAL
+                        <span>REGISTRY</span>
+                        <span>PORTFOLIO</span>
+                      </div>
+                    </div>
+
+                    {/* Document Title Bar */}
+                    <div className="text-center bg-slate-900 text-white py-2 rounded font-black text-sm uppercase tracking-widest font-display">
+                      Official Academic Transcript of Records
+                    </div>
+
+                    {/* Student Bio Metadata Details Card */}
+                    <div className="bg-slate-50/80 p-3 sm:p-5 rounded-lg border border-slate-200 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-3 text-xs leading-normal font-sans transcript-bio-grid">
+                      <div>
+                        <span className="text-[9px] uppercase font-black tracking-wider text-slate-400 block font-mono">Full Student Name</span>
+                        <strong className="text-slate-900 text-xs font-bold block">{currentStudent.firstName} {currentStudent.middleName ? currentStudent.middleName + ' ' : ''}{currentStudent.lastName}</strong>
+                      </div>
+                      <div>
+                        <span className="text-[9px] uppercase font-black tracking-wider text-slate-400 block font-mono">Student Identification ID</span>
+                        <strong className="text-slate-900 font-bold block font-mono">{currentStudent.id}</strong>
+                      </div>
+                      <div>
+                        <span className="text-[9px] uppercase font-black tracking-wider text-slate-400 block font-mono">Gender / Sex</span>
+                        <strong className="text-slate-900 font-bold block">{currentStudent.gender}</strong>
+                      </div>
+                      <div>
+                        <span className="text-[9px] uppercase font-black tracking-wider text-slate-400 block font-mono">Date of Birth</span>
+                        <strong className="text-slate-900 font-bold block">
+                          {currentStudent.dateOfBirth || 'N/A'}
+                          {currentStudent.dateOfBirth && (() => {
+                            const ageObj = calculateAgeFromDob(currentStudent.dateOfBirth);
+                            return ageObj ? ` (${ageObj.formatted})` : '';
+                          })()}
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="text-[9px] uppercase font-black tracking-wider text-slate-400 block font-mono">Active Class Cohort</span>
+                        <strong className="text-slate-900 font-bold block">{currentStudent.class} ({currentStudent.section})</strong>
+                      </div>
+                      <div>
+                        <span className="text-[9px] uppercase font-black tracking-wider text-slate-400 block font-mono">Date of Issue</span>
+                        <strong className="text-slate-900 font-bold block">{new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}</strong>
+                      </div>
+                    </div>
+
+                    {/* Grade Progression Trend Chart */}
+                    <div className="p-4 bg-slate-50/50 rounded-lg border border-slate-200 space-y-2 overflow-x-auto">
+                      <span className="text-[9px] uppercase font-black tracking-wider text-slate-500 block font-mono font-bold">Academic Performance Trend (Term-over-Term Progression)</span>
+                      <div className="h-44 font-sans text-[10px] pt-1 flex justify-center w-full min-w-[500px]">
+                        <ResponsiveContainer width="100%" height={160}>
+                          <LineChart 
+                            data={chartData}
+                            margin={{ top: 10, right: 20, bottom: 5, left: -20 }}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#cbd5e1" />
+                            <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#334155' }} />
+                            <YAxis domain={[0, 100]} tick={{ fontSize: 9, fill: '#334155' }} />
+                            <Tooltip contentStyle={{ fontSize: 10, borderRadius: '4px', border: '1px solid #cbd5e1' }} />
+                            <Line 
+                              type="monotone" 
+                              dataKey="Average" 
+                              stroke="#4f46e5" 
+                              strokeWidth={2.5} 
+                              dot={{ r: 4, strokeWidth: 1.5, fill: '#fff' }}
+                              activeDot={{ r: 6 }} 
+                            />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    {/* Academic Portfolio Timelines (chronological list) */}
+                    <div className="space-y-6">
+                      {Object.keys(groups).sort().map(year => (
+                        <div key={year} className="space-y-4">
+                          <h3 className="font-black text-sm text-indigo-900 uppercase tracking-wide border-b border-indigo-200 pb-1 font-display">
+                            Academic Year: {year}
+                          </h3>
+                          
+                          {Object.keys(groups[year]).sort().map(term => {
+                            const termAssessments = groups[year][term];
+                            const termAverage = parseFloat(
+                              (termAssessments.reduce((sum, a) => sum + a.totalScore, 0) / termAssessments.length).toFixed(2)
+                            );
+                            
+                            return (
+                              <div key={term} className="space-y-2 sm:pl-2">
+                                <div className="flex justify-between items-center bg-slate-100 px-3 py-1 rounded">
+                                  <span className="text-xs font-bold text-slate-800 uppercase tracking-wider font-mono">{term} Performance</span>
+                                  <span className="text-[10px] font-bold text-indigo-800 font-mono">GPA Average: {termAverage}%</span>
+                                </div>
+                                
+                                <div className="overflow-x-auto w-full border border-slate-300 rounded shadow-xs transcript-table-container">
+                                  <table className="w-full min-w-[500px] border-collapse text-[10.5px]">
+                                    <thead>
+                                      <tr className="bg-slate-50 font-bold border-b border-slate-300">
+                                        <th className="p-2 border-r border-slate-300 text-left w-2/5 font-bold text-slate-800 uppercase">Subject</th>
+                                        <th className="p-2 border-r border-slate-300 text-center w-1/5 font-bold text-slate-800 uppercase">SBA Score (50%)</th>
+                                        <th className="p-2 border-r border-slate-300 text-center w-1/5 font-bold text-slate-800 uppercase">Exam Mark (50%)</th>
+                                        <th className="p-2 border-r border-slate-300 text-center w-1/5 font-bold text-slate-800 uppercase">Final Total (100%)</th>
+                                        <th className="p-2 border-r border-slate-300 text-center w-1/10 font-bold text-slate-800 uppercase">Grade</th>
+                                        <th className="p-2 text-left w-1/4 font-bold text-slate-800 uppercase font-sans">Proficiency level</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {termAssessments.map(item => (
+                                        <motion.tr 
+                                          key={item.id} 
+                                          whileHover={{ backgroundColor: "rgba(238, 242, 255, 0.6)", scale: 1.001 }}
+                                          transition={{ duration: 0.15 }}
+                                          className="border-b border-slate-200 hover:bg-indigo-50/50 transition-colors duration-150"
+                                        >
+                                          <td className="p-2 border-r border-slate-200 font-semibold text-slate-900">{item.subject}</td>
+                                          <td className="p-2 border-r border-slate-200 text-center font-mono font-medium">{item.classScore50}</td>
+                                          <td className="p-2 border-r border-slate-200 text-center font-mono font-medium">{item.examScore50}</td>
+                                          <td className="p-2 border-r border-slate-200 text-center font-black text-slate-900 font-mono bg-slate-50/30">{item.totalScore}%</td>
+                                          <td className="p-2 border-r border-slate-200 text-center font-black font-mono text-slate-800">{item.gradeLevel}</td>
+                                          <td className="p-2 text-left font-medium text-slate-700">{item.remarks}</td>
+                                        </motion.tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Official Stamp & Signatures */}
+                    <div className="pt-10 grid grid-cols-2 gap-10 text-xs leading-normal text-left font-sans">
+                      <div className="space-y-1">
+                        <div className="h-[1px] bg-slate-400 w-3/4"></div>
+                        <span className="font-bold text-slate-800 block">Academic Registrar / Coordinator</span>
+                        <span className="text-[9px] text-slate-400 uppercase tracking-wider block font-mono">Official Registry Verification Signature</span>
+                      </div>
+                      
+                      <div className="space-y-1 text-right flex flex-col items-end">
+                        <div className="h-[1px] bg-slate-400 w-3/4"></div>
+                        <span className="font-bold text-slate-800 block">{schoolInfo.headteacherName || 'Headteacher'}</span>
+                        <span className="text-[9px] text-slate-400 uppercase tracking-wider block font-mono">Headmistress / Headteacher Endorsement</span>
+                      </div>
+                    </div>
+
+                    {/* Registry Footer Disclaimer */}
+                    <div className="text-[8px] text-slate-400 text-center border-t pt-4 leading-normal select-none">
+                      Ghana Education Service Academic Portfolio Transcript Records • Continuous assessment based on GES curriculum standards. Alterations void this official transcript.
+                    </div>
+
+                  </div>
+                </div>
+
+                {/* Right Sidebar Stats & Analysis */}
+                <div className="w-full lg:w-[320px] space-y-6">
+                  
+                  {/* Summary Metric Profile */}
+                  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4 text-left">
+                    <h4 className="font-bold text-slate-800 text-xs uppercase font-mono tracking-wider font-sans">Cumulative Portfolio Analysis</h4>
+                    
+                    <div className="space-y-3.5">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                        <span className="text-xs text-slate-500 font-medium">Recorded Assessments</span>
+                        <strong className="text-xs font-mono font-bold text-slate-900">{totalAssessmentsCount} subject entries</strong>
+                      </div>
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                        <span className="text-xs text-slate-500 font-medium">Completed Terms</span>
+                        <strong className="text-xs font-mono font-bold text-slate-900">
+                          {(() => {
+                            let termsCount = 0;
+                            Object.keys(groups).forEach(year => {
+                              termsCount += Object.keys(groups[year]).length;
+                            });
+                            return `${termsCount} terms`;
+                          })()}
+                        </strong>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-slate-500 font-medium font-sans">Cumulative Average</span>
+                        <strong className={`text-sm font-mono font-black ${
+                          overallAverage >= 80 ? 'text-emerald-600' :
+                          overallAverage >= 68 ? 'text-indigo-600' : 'text-slate-800'
+                        }`}>{overallAverage}%</strong>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Transcript Help Guide */}
+                  <div className="bg-gradient-to-br from-indigo-50/40 to-slate-50 p-5 rounded-2xl border border-indigo-100 shadow-3xs text-left space-y-3">
+                    <div className="flex items-center gap-1.5 text-indigo-950 font-bold text-xs uppercase font-mono">
+                      <Info size={14} className="text-indigo-600 shrink-0" />
+                      About Portfolio Transcripts
+                    </div>
+                    <p className="text-[10.5px] text-slate-600 leading-relaxed font-sans">
+                      Transcripts combine recorded marks from the <strong>Marks Input Sheet</strong> across multiple academic terms and years.
+                    </p>
+                    <p className="text-[10.5px] text-slate-600 leading-relaxed font-sans">
+                      Clicking <strong>"Print Selected"</strong> or <strong>"Print All"</strong> utilizes the high-fidelity A4 page rendering engine to output registry-ready documents complete with headers, borders, margins, and signature blocks.
+                    </p>
+                  </div>
+
+                </div>
+
+              </div>
+            );
+          })()}
+
+          {/* HIDDEN INACTIVE BULK CONTAINER FOR PRINTING / BATCH PDF EXPORTS */}
+          <div className="hidden">
+            <div id="bulk-transcripts-print-page" className="w-[800px] bg-white text-black space-y-8 font-sans p-2">
+              {students.filter(s => s.class === selectedClass).map((student) => {
+                const trends = DbController.getStudentAcademicTrends(student.id);
+                const schoolInfo = DbController.getSchoolInfo();
+                if (trends.length === 0) return null;
+
+                // Group trends
+                const groups: Record<string, Record<string, StudentAssessment[]>> = {};
+                trends.forEach(item => {
+                  if (!groups[item.academicYear]) groups[item.academicYear] = {};
+                  if (!groups[item.academicYear][item.term]) groups[item.academicYear][item.term] = [];
+                  groups[item.academicYear][item.term].push(item);
+                });
+
+                // Construct progression chart data chronologically for bulk student
+                const studentChartData: { name: string; Average: number }[] = [];
+                Object.keys(groups).sort().forEach(year => {
+                  Object.keys(groups[year]).sort().forEach(term => {
+                    const termAssessments = groups[year][term];
+                    const termAverage = parseFloat(
+                      (termAssessments.reduce((sum, a) => sum + a.totalScore, 0) / termAssessments.length).toFixed(1)
+                    );
+                    studentChartData.push({
+                      name: `${year.replace('Academic Year', '').trim()} - ${term}`,
+                      Average: termAverage
+                    });
+                  });
+                });
+
+                return (
+                  <div 
+                    key={student.id} 
+                    className="bg-white p-6 sm:p-12 md:p-16 border-[4px] sm:border-[8px] border-double border-slate-900 relative transcript-print-page space-y-4 sm:space-y-6"
+                    style={{ pageBreakAfter: 'always', breakAfter: 'page', minHeight: '1100px' }}
+                  >
+                    {/* Transcript Official Header / Letterhead */}
+                    <div className="flex items-center justify-between border-b pb-4 gap-4 leading-normal">
+                      {schoolInfo.logoUrl ? (
+                        <img 
+                          src={schoolInfo.logoUrl} 
+                          alt="School Logo" 
+                          className="w-20 h-20 object-contain" 
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        <div className="w-20 h-20 rounded-full bg-slate-50 flex items-center justify-center border border-slate-300 p-1 flex-shrink-0">
+                          <div className="w-full h-full rounded-full border border-dashed border-slate-400 bg-white flex flex-col items-center justify-center text-[7px] text-slate-500 font-mono font-bold leading-none">
+                            <Award size={22} className="text-indigo-600 mb-0.5" />
+                            <span className="scale-75 origin-center uppercase">CREST</span>
+                          </div>
+                        </div>
+                      )}
+                      
+                      <div className="flex-1 text-center space-y-1">
+                        <h2 className="text-xl font-black text-slate-950 tracking-tight leading-tight uppercase font-display">
+                          {schoolInfo.name}
+                        </h2>
+                        {schoolInfo.motto && (
+                          <p className="text-xs italic font-serif text-slate-600">
+                            Motto: "{schoolInfo.motto}"
+                          </p>
+                        )}
+                        <div className="text-[10px] text-slate-500 flex flex-wrap justify-center gap-x-3 gap-y-0.5 font-sans font-medium">
+                          {schoolInfo.gpsAddress && <span>📍 {schoolInfo.gpsAddress}</span>}
+                          {schoolInfo.telephone && <span>☎️ {schoolInfo.telephone}</span>}
+                          {schoolInfo.email && <span>📧 {schoolInfo.email}</span>}
+                        </div>
+                      </div>
+                      
+                      <div className="w-24 h-12 text-[8px] text-slate-400 border border-slate-300 bg-slate-50 rounded flex flex-col items-center justify-center font-mono font-bold select-none text-center leading-normal">
+                        OFFICIAL
+                        <span>REGISTRY</span>
+                        <span>PORTFOLIO</span>
+                      </div>
+                    </div>
+
+                    {/* Document Title Bar */}
+                    <div className="text-center bg-slate-900 text-white py-2 rounded font-black text-sm uppercase tracking-widest font-display">
+                      Official Academic Transcript of Records
+                    </div>
+
+                    {/* Student Bio Metadata Details Card */}
+                    <div className="bg-slate-50/80 p-5 rounded-lg border border-slate-200 grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-3 text-xs leading-normal font-sans">
+                      <div>
+                        <span className="text-[9px] uppercase font-black tracking-wider text-slate-400 block font-mono">Full Student Name</span>
+                        <strong className="text-slate-900 text-xs font-bold block font-sans">{student.firstName} {student.middleName ? student.middleName + ' ' : ''}{student.lastName}</strong>
+                      </div>
+                      <div>
+                        <span className="text-[9px] uppercase font-black tracking-wider text-slate-400 block font-mono">Student Identification ID</span>
+                        <strong className="text-slate-900 font-bold block font-mono">{student.id}</strong>
+                      </div>
+                      <div>
+                        <span className="text-[9px] uppercase font-black tracking-wider text-slate-400 block font-mono">Gender / Sex</span>
+                        <strong className="text-slate-900 font-bold block font-sans">{student.gender}</strong>
+                      </div>
+                      <div>
+                        <span className="text-[9px] uppercase font-black tracking-wider text-slate-400 block font-mono">Date of Birth</span>
+                        <strong className="text-slate-900 font-bold block font-sans">
+                          {student.dateOfBirth || 'N/A'}
+                          {student.dateOfBirth && (() => {
+                            const ageObj = calculateAgeFromDob(student.dateOfBirth);
+                            return ageObj ? ` (${ageObj.formatted})` : '';
+                          })()}
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="text-[9px] uppercase font-black tracking-wider text-slate-400 block font-mono">Active Class Cohort</span>
+                        <strong className="text-slate-900 font-bold block font-sans">{student.class} ({student.section})</strong>
+                      </div>
+                      <div>
+                        <span className="text-[9px] uppercase font-black tracking-wider text-slate-400 block font-mono">Date of Issue</span>
+                        <strong className="text-slate-900 font-bold block font-sans">{new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}</strong>
+                      </div>
+                    </div>
+
+                    {/* Grade Progression Trend Chart */}
+                    <div className="p-4 bg-slate-50/50 rounded-lg border border-slate-200 space-y-2 overflow-hidden">
+                      <span className="text-[9px] uppercase font-black tracking-wider text-slate-500 block font-mono font-bold">Academic Performance Trend (Term-over-Term Progression)</span>
+                      <div className="h-44 font-sans text-[10px] pt-1 flex justify-center w-full">
+                        <ResponsiveContainer width="100%" height={160}>
+                          <LineChart 
+                            data={studentChartData}
+                            margin={{ top: 10, right: 20, bottom: 5, left: -20 }}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#cbd5e1" />
+                            <XAxis dataKey="name" tick={{ fontSize: 9, fill: '#334155' }} />
+                            <YAxis domain={[0, 100]} tick={{ fontSize: 9, fill: '#334155' }} />
+                            <Tooltip contentStyle={{ fontSize: 10, borderRadius: '4px', border: '1px solid #cbd5e1' }} />
+                            <Line 
+                              type="monotone" 
+                              dataKey="Average" 
+                              stroke="#4f46e5" 
+                              strokeWidth={2.5} 
+                              dot={{ r: 4, strokeWidth: 1.5, fill: '#fff' }}
+                              activeDot={{ r: 6 }} 
+                            />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    {/* Academic Portfolio Timelines (chronological list) */}
+                    <div className="space-y-6">
+                      {Object.keys(groups).sort().map(year => (
+                        <div key={year} className="space-y-4">
+                          <h3 className="font-black text-sm text-indigo-900 uppercase tracking-wide border-b border-indigo-200 pb-1 font-display">
+                            Academic Year: {year}
+                          </h3>
+                          
+                          {Object.keys(groups[year]).sort().map(term => {
+                            const termAssessments = groups[year][term];
+                            const termAverage = parseFloat(
+                              (termAssessments.reduce((sum, a) => sum + a.totalScore, 0) / termAssessments.length).toFixed(2)
+                            );
+                            
+                            return (
+                              <div key={term} className="space-y-2 pl-2">
+                                <div className="flex justify-between items-center bg-slate-100 px-3 py-1 rounded">
+                                  <span className="text-xs font-bold text-slate-800 uppercase tracking-wider font-mono">{term} Performance</span>
+                                  <span className="text-[10px] font-bold text-indigo-800 font-mono">GPA Average: {termAverage}%</span>
+                                </div>
+                                
+                                <table className="w-full border-collapse text-[10.5px] border border-slate-300">
+                                  <thead>
+                                    <tr className="bg-slate-50 font-bold border-b border-slate-300">
+                                      <th className="p-2 border-r border-slate-300 text-left w-2/5 font-bold text-slate-800 uppercase">Subject</th>
+                                      <th className="p-2 border-r border-slate-300 text-center w-1/5 font-bold text-slate-800 uppercase font-sans">SBA Score (50%)</th>
+                                      <th className="p-2 border-r border-slate-300 text-center w-1/5 font-bold text-slate-800 uppercase font-sans">Exam Mark (50%)</th>
+                                      <th className="p-2 border-r border-slate-300 text-center w-1/5 font-bold text-slate-800 uppercase font-sans">Final Total (100%)</th>
+                                      <th className="p-2 border-r border-slate-300 text-center w-1/10 font-bold text-slate-800 uppercase font-mono">Grade</th>
+                                      <th className="p-2 text-left w-1/4 font-bold text-slate-800 uppercase font-sans">Proficiency level</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {termAssessments.map(item => (
+                                      <motion.tr 
+                                        key={item.id} 
+                                        whileHover={{ backgroundColor: "rgba(238, 242, 255, 0.6)", scale: 1.001 }}
+                                        transition={{ duration: 0.15 }}
+                                        className="border-b border-slate-200 hover:bg-indigo-50/50 transition-colors duration-150"
+                                      >
+                                        <td className="p-2 border-r border-slate-200 font-semibold text-slate-900">{item.subject}</td>
+                                        <td className="p-2 border-r border-slate-200 text-center font-mono font-medium">{item.classScore50}</td>
+                                        <td className="p-2 border-r border-slate-200 text-center font-mono font-medium">{item.examScore50}</td>
+                                        <td className="p-2 border-r border-slate-200 text-center font-black text-slate-900 font-mono bg-slate-50/30">{item.totalScore}%</td>
+                                        <td className="p-2 border-r border-slate-200 text-center font-black font-mono text-slate-800">{item.gradeLevel}</td>
+                                        <td className="p-2 text-left font-medium text-slate-700">{item.remarks}</td>
+                                      </motion.tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Official Stamp & Signatures */}
+                    <div className="pt-10 grid grid-cols-2 gap-10 text-xs leading-normal text-left font-sans">
+                      <div className="space-y-1">
+                        <div className="h-[1px] bg-slate-400 w-3/4"></div>
+                        <span className="font-bold text-slate-800 block">Academic Registrar / Coordinator</span>
+                        <span className="text-[9px] text-slate-400 uppercase tracking-wider block font-mono">Official Registry Verification Signature</span>
+                      </div>
+                      
+                      <div className="space-y-1 text-right flex flex-col items-end">
+                        <div className="h-[1px] bg-slate-400 w-3/4"></div>
+                        <span className="font-bold text-slate-800 block">{schoolInfo.headteacherName || 'Headteacher'}</span>
+                        <span className="text-[9px] text-slate-400 uppercase tracking-wider block font-mono">Headmistress / Headteacher Endorsement</span>
+                      </div>
+                    </div>
+
+                    {/* Registry Footer Disclaimer */}
+                    <div className="text-[8px] text-slate-400 text-center border-t pt-4 leading-normal select-none">
+                      Ghana Education Service Academic Portfolio Transcript Records • Continuous assessment based on GES curriculum standards. Alterations void this official transcript.
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
 
         </div>
       )}
@@ -4995,7 +7050,7 @@ export default function AssessmentTab({
         {showPdfGuide && (
           <>
           {/* Always Render Print/PDF Target templates in a stable offscreen environment for jsPDF canvas engine */}
-          <div className="fixed left-[-9999px] top-[-9999px] pointer-events-none z-[-100] select-none opacity-0 bg-white no-print" aria-hidden="true">
+          <div className="fixed left-0 top-0 -z-[999999] opacity-0 pointer-events-none select-none bg-white no-print" aria-hidden="true">
             {/* Target A: Portrait Report Card Template */}
             <div id="assessment-report-preview-portrait" className="w-[800px] bg-white p-12 text-black border-[8px] border-double border-slate-900 space-y-6 font-sans report-card-print-container">
               {/* Professional Letterhead */}
@@ -5079,20 +7134,32 @@ export default function AssessmentTab({
               <table className="w-full text-left text-xs border-collapse border border-slate-300 leading-normal font-sans">
                 <thead>
                   <tr className="bg-slate-100 font-bold border-b-2 border-slate-900 text-slate-900 uppercase">
-                    <th className="p-2 border border-slate-300">Subject Course Courseware</th>
+                    <th className="p-2 border border-slate-300">
+                      <div className="flex items-center justify-between gap-2 normal-case">
+                        <span>Subject Course Courseware</span>
+                        <button
+                          type="button"
+                          onClick={() => setSubjectSortMode(prev => prev === 'alphabetical' ? 'score' : 'alphabetical')}
+                          className="px-2 py-1 bg-white border border-slate-300 hover:bg-slate-50 rounded text-[9px] font-bold text-slate-600 flex items-center gap-1 transition cursor-pointer"
+                          title="Toggle between Alphabetical and Score-Based ranking"
+                        >
+                          <span>Sort: {subjectSortMode === 'alphabetical' ? 'A-Z' : 'Score 📊'}</span>
+                        </button>
+                      </div>
+                    </th>
                     <th className="p-2 border border-slate-300 text-center">Class Score (50%)</th>
                     <th className="p-2 border border-slate-300 text-center">Exam Score (50%)</th>
                     <th className="p-2 border border-slate-300 text-center">Total Cumulative (100)</th>
                     <th className="p-2 border border-slate-300 text-center">NTC Remarks & Grade</th>
                   </tr>
                 </thead>
-                <tbody>
-                  {!compiledReport || compiledReport.grades.length === 0 ? (
+                <tbody className="divide-y divide-slate-100">
+                  {!compiledReport || sortedGrades.length === 0 ? (
                     <tr>
                       <td colSpan={5} className="p-4 text-center text-slate-400 italic font-medium">No assessment summaries found to render.</td>
                     </tr>
                   ) : (
-                    compiledReport.grades.map(g => (
+                    sortedGrades.map(g => (
                       <tr key={g.subject} className="border-b border-slate-200">
                         <td className="p-2.5 border border-slate-200 font-bold text-slate-950">{g.subject}</td>
                         <td className="p-2.5 border border-slate-200 text-center font-mono font-medium text-slate-700">{g.classScore50.toFixed(1)}</td>
@@ -5268,22 +7335,32 @@ export default function AssessmentTab({
                 <tbody>
                   {subMode === 'Broadsheet' ? (
                     broadsheetData.map((row, idx) => (
-                      <tr key={row.student.id} className="border-b border-slate-200 hover:bg-slate-50/40">
+                      <motion.tr 
+                        key={row.student.id} 
+                        whileHover={{ backgroundColor: "rgba(238, 242, 255, 0.65)", scale: 1.001 }}
+                        transition={{ duration: 0.15 }}
+                        className="border-b border-slate-200 hover:bg-indigo-50/50 transition-colors duration-150"
+                      >
                         <td className="py-2 px-3 border border-slate-200 font-bold text-slate-950">{row.student.firstName} {row.student.lastName} ({row.student.id})</td>
                         <td className="py-2 px-3 border border-slate-200 text-center font-medium">{row.subjectsCount} registered courses</td>
                         <td className="py-2 px-3 border border-slate-200 text-center font-mono font-black text-indigo-700">{row.averageOverallScore.toFixed(1)}%</td>
                         <td className="py-2 px-3 border border-slate-200 text-center font-mono font-semibold">Rank Standings #{idx + 1}</td>
-                      </tr>
+                      </motion.tr>
                     ))
                   ) : (
                     activeWorksheet.map(row => (
-                      <tr key={row.studentId} className="border-b border-slate-200 hover:bg-slate-50/40">
+                      <motion.tr 
+                        key={row.studentId} 
+                        whileHover={{ backgroundColor: "rgba(238, 242, 255, 0.65)", scale: 1.001 }}
+                        transition={{ duration: 0.15 }}
+                        className="border-b border-slate-200 hover:bg-indigo-50/50 transition-colors duration-150"
+                      >
                         <td className="py-2 px-3 border border-slate-200 font-bold text-slate-950">{row.studentName} ({row.studentId})</td>
                         <td className="py-2 px-3 border border-slate-200 text-center font-mono text-slate-705">{row.classScore50.toFixed(1)}</td>
                         <td className="py-2 px-3 border border-slate-200 text-center font-mono text-slate-705">{row.examScore50.toFixed(1)}</td>
                         <td className="py-2 px-3 border border-slate-200 text-center font-mono font-black text-rose-700 bg-rose-50/10">{row.totalScore.toFixed(1)}%</td>
                         <td className="py-2 px-3 border border-slate-200 text-center font-semibold text-slate-800">{row.remarks} ({row.gradeLevel})</td>
-                      </tr>
+                      </motion.tr>
                     ))
                   )}
                 </tbody>
@@ -5392,7 +7469,7 @@ export default function AssessmentTab({
             animate={{ opacity: 1, scale: 1, y: 0, x: 0 }}
             exit={{ opacity: 0, scale: 0.9, y: 50, x: 0 }}
             transition={{ type: "spring", stiffness: 300, damping: 25 }}
-            className={`fixed bottom-6 right-6 z-40 no-print flex flex-col bg-white rounded-[24px] border border-slate-150 shadow-2xl transition-all duration-300 ${pdfFloatingMinimized ? 'w-80 h-14' : showPreviewPane ? 'w-full max-w-5xl h-[80vh] md:h-[620px]' : 'w-96 md:w-[440px] h-auto max-h-[85vh]'} overflow-hidden`}
+            className={`fixed bottom-3 right-3 sm:bottom-6 sm:right-6 left-3 sm:left-auto z-40 no-print flex flex-col bg-white rounded-[24px] border border-slate-150 shadow-2xl transition-all duration-300 ${pdfFloatingMinimized ? 'w-full sm:w-80 h-14' : showPreviewPane ? 'w-full max-w-5xl h-[85vh] sm:h-[80vh] md:h-[620px]' : 'w-full sm:w-96 md:w-[440px] h-auto max-h-[85vh]'} overflow-hidden max-w-[calc(100vw-1.5rem)]`}
           >
             
             {/* Header / Window Manager controls */}
@@ -5812,13 +7889,14 @@ export default function AssessmentTab({
                       Chars: {smsCustomMessage.length} ({(Math.ceil(smsCustomMessage.length / 160))} SMS)
                     </span>
                   </div>
-                  <textarea
+                  <SmartTextarea
                     rows={4}
                     value={smsCustomMessage}
-                    onChange={(e) => {
+                    onChange={(e: any) => {
                       setSmsCustomMessage(e.target.value);
                       setSmsSuccessMessage(null);
                     }}
+                    spellCheck="true"
                     className="w-full text-xs p-4 border border-slate-200 rounded-2xl bg-slate-50 font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white text-slate-700 leading-relaxed max-h-[140px]"
                   />
                   
@@ -6009,10 +8087,38 @@ export default function AssessmentTab({
               </button>
             </div>
 
+            {/* Mobile Tabs */}
+            <div className="flex md:hidden bg-slate-950 border-b border-slate-850 p-1.5 gap-1.5 z-20 no-print flex-shrink-0">
+              <button
+                type="button"
+                onClick={() => setMobileActiveTab('preview')}
+                className={`flex-1 py-2 text-xs font-bold rounded-lg border text-center transition cursor-pointer ${
+                  mobileActiveTab === 'preview'
+                    ? 'bg-indigo-600/20 border-indigo-500/50 text-indigo-300 shadow-inner font-extrabold'
+                    : 'bg-slate-900/40 border-slate-800 text-slate-400 hover:text-slate-300'
+                }`}
+              >
+                Live Preview
+              </button>
+              <button
+                type="button"
+                onClick={() => setMobileActiveTab('settings')}
+                className={`flex-1 py-2 text-xs font-bold rounded-lg border text-center transition cursor-pointer ${
+                  mobileActiveTab === 'settings'
+                    ? 'bg-indigo-600/20 border-indigo-500/50 text-indigo-300 shadow-inner font-extrabold'
+                    : 'bg-slate-900/40 border-slate-800 text-slate-400 hover:text-slate-300'
+                }`}
+              >
+                Page Options
+              </button>
+            </div>
+
             {/* Split layout: Sidebar controls & Interactive A4 Sheet View */}
             <div className="flex-1 overflow-hidden flex flex-col md:flex-row">
               {/* Left Sidebar Section */}
-              <div className="w-full md:w-[350px] bg-slate-950/40 p-5 border-b md:border-b-0 md:border-r border-slate-800 overflow-y-auto space-y-5 text-left flex-shrink-0">
+              <div className={`w-full md:w-[350px] bg-slate-950/40 p-5 border-b md:border-b-0 md:border-r border-slate-800 overflow-y-auto space-y-5 text-left flex-shrink-0 ${
+                mobileActiveTab === 'settings' ? 'block' : 'hidden md:block'
+              }`}>
                 
                 {/* Print Verification Checklist */}
                 <div className="space-y-3">
@@ -6161,6 +8267,50 @@ export default function AssessmentTab({
                         </button>
                       </div>
                     </div>
+
+                    {/* Max Subjects to Print */}
+                    <div className="space-y-1">
+                      <label className="text-[9px] text-slate-400 uppercase font-mono tracking-wider">Max Subjects on Page</label>
+                      <div className="grid grid-cols-4 gap-1">
+                        {[7, 10, 12, 15].map((num) => (
+                          <button 
+                            key={num}
+                            type="button"
+                            onClick={() => setMaxSubjectsToPrint(num)}
+                            className={`py-1 text-[9.5px] rounded-lg border transition font-semibold cursor-pointer text-center ${maxSubjectsToPrint === num ? 'bg-indigo-600 border-indigo-500 text-white animate-pulse' : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-white'}`}
+                          >
+                            {num} Subjects
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Auto-Fit Page Compression */}
+                    <div className="space-y-1 pt-1">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[9px] text-slate-400 uppercase font-mono tracking-wider">A4 Single Page Auto-Fit</label>
+                        <span className="text-[8px] text-emerald-400 font-mono font-bold uppercase tracking-wider bg-emerald-950/45 px-1.5 py-0.5 rounded border border-emerald-900/20">Highly Recommended</span>
+                      </div>
+                      <button 
+                        type="button"
+                        onClick={() => setIsAutoFitA4(!isAutoFitA4)}
+                        className={`w-full py-1.5 px-3 rounded-lg border text-xs font-semibold flex items-center justify-between cursor-pointer transition ${
+                          isAutoFitA4 
+                            ? 'bg-emerald-950/40 border-emerald-800 text-emerald-300 shadow-inner' 
+                            : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <Sparkles size={11} className={isAutoFitA4 ? "text-emerald-400" : "text-slate-500"} />
+                          <span>Scale rows & layout elements</span>
+                        </span>
+                        <span className={`text-[9px] px-1.5 py-0.5 rounded font-black ${
+                          isAutoFitA4 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-500'
+                        }`}>
+                          {isAutoFitA4 ? 'ACTIVE' : 'OFF'}
+                        </span>
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -6179,15 +8329,22 @@ export default function AssessmentTab({
               </div>
 
               {/* Right Canvas: Professional simulated A4 view */}
-              <div className="flex-1 bg-slate-950 p-6 md:p-10 flex items-start justify-center overflow-y-auto h-full">
+              <div ref={previewContainerRef} className={`flex-1 bg-slate-950 p-6 md:p-10 flex items-start justify-center overflow-y-auto h-full relative ${
+                mobileActiveTab === 'preview' ? 'flex' : 'hidden md:flex'
+              }`}>
+
                 <div 
-                  className={`bg-white text-slate-900 shadow-[0_20px_50px_rgba(0,0,0,0.5)] border border-slate-100/10 transition-all duration-300 transform rounded-sm relative origin-top ${
-                    previewOrientation === 'portrait' ? 'w-full max-w-[760px] aspect-[1/1.414]' : 'w-full max-w-[1000px] aspect-[1.414/1]'
-                  } ${
+                  id="report-center-preview-content"
+                  className={`bg-white text-slate-900 shadow-[0_20px_50px_rgba(0,0,0,0.5)] border border-slate-100/10 transition-all duration-300 rounded-sm relative ${
                     previewThemePreset === 'charcoal' ? 'ring-1 ring-slate-400' : previewThemePreset === 'grayscale' ? 'filter grayscale contrast-125' : ''
                   }`}
                   style={{
-                    padding: previewMarginSize === 'normal' ? '40px' : previewMarginSize === 'narrow' ? '24px' : '12px'
+                    width: previewOrientation === 'portrait' ? '760px' : '1000px',
+                    minHeight: previewOrientation === 'portrait' ? '1075px' : '707px',
+                    padding: previewMarginSize === 'normal' ? '40px' : previewMarginSize === 'narrow' ? '24px' : '12px',
+                    transform: `scale(${previewScale})`,
+                    transformOrigin: 'top center',
+                    marginBottom: `-${(1 - previewScale) * (previewOrientation === 'portrait' ? 1075 : 707)}px`
                   }}
                 >
                   {/* Top-Right Simulated Paper Dimensions Tag */}
@@ -6200,26 +8357,38 @@ export default function AssessmentTab({
                     
                     {/* Header Structure */}
                     <div>
-                      <div className="flex items-center justify-between border-b pb-4 mb-5 gap-3">
+                      <div className={`flex items-center justify-between border-b gap-3 ${
+                        isAutoFitA4 && maxSubjectsToPrint > 7 ? 'pb-2 mb-2' : 'pb-4 mb-5'
+                      }`}>
                         <div className="flex items-center gap-2.5">
                           {DbController.getSchoolInfo().logoUrl ? (
                             <img 
                               src={DbController.getSchoolInfo().logoUrl} 
                               alt="Logo" 
-                              className="w-11 h-11 object-contain flex-shrink-0"
+                              className={`${
+                                isAutoFitA4 && maxSubjectsToPrint > 7 ? 'w-8 h-8' : 'w-11 h-11'
+                              } object-contain flex-shrink-0`}
                               referrerPolicy="no-referrer"
                             />
                           ) : (
-                            <div className="w-11 h-11 bg-slate-100 rounded-full flex items-center justify-center border p-1 border-slate-200">
-                              <Award size={16} className="text-indigo-600" />
+                            <div className={`${
+                              isAutoFitA4 && maxSubjectsToPrint > 7 ? 'w-8 h-8' : 'w-11 h-11'
+                            } bg-slate-100 rounded-full flex items-center justify-center border p-1 border-slate-200`}>
+                              <Award size={isAutoFitA4 && maxSubjectsToPrint > 7 ? 12 : 16} className="text-indigo-600" />
                             </div>
                           )}
                           <div>
-                            <h2 className="text-[13px] font-black uppercase tracking-tight text-slate-950 font-display">
+                            <h2 className={`${
+                              isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[11px]' : 'text-[13px]'
+                            } font-black uppercase tracking-tight text-slate-950 font-display`}>
                               {DbController.getSchoolInfo().name}
                             </h2>
-                            <p className="text-[9px] italic text-slate-500">Motto: "{DbController.getSchoolInfo().motto}"</p>
-                            <span className="text-[8px] text-slate-400 block mt-0.5 font-sans">📍 {DbController.getSchoolInfo().gpsAddress || 'GPS Info N/A'} • ☎️ {DbController.getSchoolInfo().telephone || 'N/A'}</span>
+                            <p className={`${
+                              isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7.5px]' : 'text-[9px]'
+                            } italic text-slate-500`}>Motto: "{DbController.getSchoolInfo().motto}"</p>
+                            <span className={`${
+                              isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[8px]'
+                            } text-slate-400 block mt-0.5 font-sans`}>📍 {DbController.getSchoolInfo().gpsAddress || 'GPS Info N/A'} • ☎️ {DbController.getSchoolInfo().telephone || 'N/A'}</span>
                           </div>
                         </div>
 
@@ -6227,38 +8396,46 @@ export default function AssessmentTab({
                           <img 
                             src={compiledReport.student.photoUrl} 
                             alt="Student" 
-                            className="w-10 h-10 rounded object-cover border border-slate-200 flex-shrink-0"
+                            className={`${
+                              isAutoFitA4 && maxSubjectsToPrint > 7 ? 'w-8 h-8' : 'w-10 h-10'
+                            } rounded object-cover border border-slate-200 flex-shrink-0`}
                             referrerPolicy="no-referrer"
                           />
                         ) : (
-                          <div className="w-10 h-10 border border-dashed border-slate-300 flex flex-col items-center justify-center bg-slate-50 text-[6px] text-slate-400 font-mono flex-shrink-0 text-center leading-tight">
-                            <span>PASSPORT</span>
+                          <div className={`${
+                            isAutoFitA4 && maxSubjectsToPrint > 7 ? 'w-8 h-8 text-[5px]' : 'w-10 h-10 text-[6px]'
+                          } border border-dashed border-slate-300 flex flex-col items-center justify-center bg-slate-50 font-mono flex-shrink-0 text-center leading-tight`}>
+                            <span>PHOTO</span>
                           </div>
                         )}
                       </div>
 
                       {/* Title Banners */}
-                      <div className="bg-slate-100 px-3 py-1.5 rounded-lg flex items-center justify-between text-[9px] font-medium text-slate-705 select-none">
+                      <div className={`bg-slate-100 rounded-lg flex items-center justify-between text-slate-705 select-none ${
+                        isAutoFitA4 && maxSubjectsToPrint > 7 ? 'px-2.5 py-1 text-[8px]' : 'px-3 py-1.5 text-[9px]'
+                      }`}>
                         <span>OFFICIAL STUDENT PROGRESS STATEMENT</span>
                         <span className="font-mono bg-slate-300 text-slate-950 px-2 py-0.5 rounded font-black text-slate-900">{selectedTerm} ({selectedYear})</span>
                       </div>
 
                       {/* Metadata Cards */}
-                      <div className="grid grid-cols-4 gap-2.5 mt-3 bg-slate-50/50 p-2.5 rounded-lg border border-slate-100 text-[10px]">
+                      <div className={`grid grid-cols-4 gap-2.5 bg-slate-50/50 rounded-lg border border-slate-100 ${
+                        isAutoFitA4 && maxSubjectsToPrint > 7 ? 'mt-2 p-1.5 text-[8.5px]' : 'mt-3 p-2.5 text-[10px]'
+                      }`}>
                         <div>
-                          <span className="text-[8px] uppercase text-slate-400 font-mono font-medium block">STUDENT ID</span>
+                          <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[8px]'} uppercase text-slate-400 font-mono font-medium block`}>STUDENT ID</span>
                           <span className="font-mono font-black text-slate-900">{compiledReport.student.id}</span>
                         </div>
                         <div>
-                          <span className="text-[8px] uppercase text-slate-400 font-mono font-medium block">FULL NAME</span>
+                          <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[8px]'} uppercase text-slate-400 font-mono font-medium block`}>FULL NAME</span>
                           <strong className="text-slate-800">{compiledReport.student.firstName} {compiledReport.student.lastName}</strong>
                         </div>
                         <div>
-                          <span className="text-[8px] uppercase text-slate-400 font-mono font-medium block">CLASS</span>
+                          <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[8px]'} uppercase text-slate-400 font-mono font-medium block`}>CLASS</span>
                           <span className="text-slate-800 font-bold">{compiledReport.student.class} ({compiledReport.student.section})</span>
                         </div>
                         <div className="relative group cursor-help bg-indigo-50/30 p-1 rounded-lg border border-indigo-100/30 transition-all hover:bg-indigo-50/60">
-                          <span className="text-[8px] uppercase text-indigo-700 font-mono font-bold flex items-center gap-1 select-none">
+                          <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[8px]'} uppercase text-indigo-700 font-mono font-bold flex items-center gap-1 select-none`}>
                             CLASS RANK <HelpCircle size={9} className="text-indigo-400" />
                           </span>
                           <strong className="text-indigo-900 font-bold font-mono block mt-0.5">{compiledReport.classRank || 'N/A'}</strong>
@@ -6272,90 +8449,110 @@ export default function AssessmentTab({
                       </div>
 
                       {/* Grades Table */}
-                      <div className="mt-4">
-                        <table className="w-full text-left border-collapse border border-slate-200 text-[9px]">
+                      <div className={isAutoFitA4 && maxSubjectsToPrint > 7 ? 'mt-2' : 'mt-4'}>
+                        <table className={`w-full text-left border-collapse border border-slate-200 ${
+                          isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8px]' : 'text-[9px]'
+                        }`}>
                           <thead>
-                            <tr className="bg-slate-50 border-b border-slate-300 font-mono text-[8px] font-black text-slate-500 uppercase tracking-wider animate-pulse">
-                              <th className="py-1 px-2 border border-slate-200 font-black">Course Subject</th>
-                              <th className="py-1 px-1.5 border border-slate-200 text-center font-black">Class (50%)</th>
-                              <th className="py-1 px-1.5 border border-slate-200 text-center font-black">Exams (50%)</th>
-                              <th className="py-1 px-1.5 border border-slate-200 text-center font-black">Total (100)</th>
-                              <th className="py-1 px-2 border border-slate-200 text-center font-black">Grade Descriptor</th>
-                              <th className="py-1 px-1.5 border border-slate-200 text-center font-black">Rank</th>
+                            <tr className="bg-slate-50 border-b border-slate-300 font-mono text-[8px] font-black text-slate-500 uppercase tracking-wider">
+                              <th className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5 px-1.5' : 'py-1 px-2'} border border-slate-200 font-black`}>Course Subject</th>
+                              <th className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5 px-1' : 'py-1 px-1.5'} border border-slate-200 text-center font-black`}>Class (50%)</th>
+                              <th className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5 px-1' : 'py-1 px-1.5'} border border-slate-200 text-center font-black`}>Exams (50%)</th>
+                              <th className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5 px-1' : 'py-1 px-1.5'} border border-slate-200 text-center font-black`}>Total (100)</th>
+                              <th className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5 px-1.5' : 'py-1 px-2'} border border-slate-200 text-center font-black`}>Grade Descriptor</th>
+                              <th className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5 px-1' : 'py-1 px-1.5'} border border-slate-200 text-center font-black`}>Rank</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {compiledReport.grades.slice(0, 7).map((item) => (
+                            {compiledReport.grades.slice(0, maxSubjectsToPrint).map((item) => (
                               <tr key={item.id} className="border-b border-slate-100 hover:bg-slate-50/10">
-                                <td className="py-1 px-2 font-bold text-slate-800">{item.subject}</td>
-                                <td className="py-1 px-1.5 text-center font-mono text-slate-600">{item.classScore50}</td>
-                                <td className="py-1 px-1.5 text-center font-mono text-slate-600">{item.examScore50}</td>
-                                <td className="py-1 px-1.5 text-center font-mono font-black text-indigo-700">{item.totalScore}%</td>
-                                <td className="py-1 px-2 text-center">
-                                  <span className={`inline-block px-1.5 py-0.5 rounded text-[7.5px] font-black uppercase font-mono ${
-                                    item.totalScore >= 80 ? 'bg-emerald-50 text-emerald-800 border border-emerald-110' : item.totalScore >= 60 ? 'bg-blue-50 text-blue-800 border border-blue-110' : 'bg-rose-50 text-rose-800 border border-rose-110'
+                                <td className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5 px-1.5 font-bold text-slate-850' : 'py-1 px-2 font-bold text-slate-800'}`}>{item.subject}</td>
+                                <td className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5 px-1' : 'py-1 px-1.5'} text-center font-mono text-slate-600`}>{item.classScore50}</td>
+                                <td className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5 px-1' : 'py-1 px-1.5'} text-center font-mono text-slate-600`}>{item.examScore50}</td>
+                                <td className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5 px-1' : 'py-1 px-1.5'} text-center font-mono font-black text-indigo-700`}>{item.totalScore}%</td>
+                                <td className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5 px-1.5' : 'py-1 px-2'} text-center`}>
+                                  <span className={`font-black uppercase font-mono ${
+                                    isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[6.5px]' : 'text-[7.5px]'
+                                  } ${
+                                    item.totalScore >= 80 ? 'text-emerald-700' : item.totalScore >= 60 ? 'text-blue-700' : 'text-rose-700'
                                   }`}>
                                     {item.remarks} ({item.gradeLevel})
                                   </span>
                                 </td>
-                                <td className="py-1 px-1.5 text-center font-mono font-bold text-slate-700">{item.position || 'N/A'}</td>
+                                <td className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5 px-1' : 'py-1 px-1.5'} text-center font-mono font-bold text-slate-700`}>{item.position || 'N/A'}</td>
                               </tr>
                             ))}
                           </tbody>
                         </table>
-                        {compiledReport.grades.length > 7 && (
-                          <div className="text-[8px] italic text-slate-400 mt-1 select-none font-mono text-center">
-                            (+ {compiledReport.grades.length - 7} remaining subjects in compilation roster)
+                        {compiledReport.grades.length > maxSubjectsToPrint && (
+                          <div className={`italic text-slate-400 mt-1 select-none font-mono text-center ${
+                            isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[8px]'
+                          }`}>
+                            (+ {compiledReport.grades.length - maxSubjectsToPrint} remaining subjects in compilation roster)
                           </div>
                         )}
                       </div>
                     </div>
 
                     {/* Footer Aggregates, Fees ledger and Principal Sign-off Columns */}
-                    <div className="mt-4 pt-3 border-t space-y-3">
+                    <div className={`border-t ${
+                      isAutoFitA4 && maxSubjectsToPrint > 7 ? 'mt-2 pt-2 space-y-2' : 'mt-4 pt-3 space-y-3'
+                    }`}>
                       {/* Course statistics card */}
-                      <div className="grid grid-cols-4 gap-2 text-center text-[9px]">
-                        <div className="bg-slate-50 p-1 rounded border border-slate-100 text-slate-600 leading-normal">
-                          <span className="text-[7.5px] uppercase text-slate-400 block font-mono">Total Courses</span>
-                          <strong className="text-slate-800 text-[10px] font-mono leading-tight">{compiledReport.totalSubjects}</strong>
+                      <div className={`grid grid-cols-4 gap-2 text-center ${
+                        isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8.5px]' : 'text-[9px]'
+                      }`}>
+                        <div className={`bg-slate-50 p-1 rounded border border-slate-100 text-slate-600 leading-normal ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5' : ''}`}>
+                          <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[7.5px]'} uppercase text-slate-400 block font-mono`}>Total Courses</span>
+                          <strong className={`text-slate-800 font-mono leading-tight ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8.5px]' : 'text-[10px]'}`}>{compiledReport.totalSubjects}</strong>
                         </div>
-                        <div className="bg-slate-50 p-1 rounded border border-slate-100 text-slate-600 leading-normal">
-                          <span className="text-[7.5px] uppercase text-slate-400 block font-mono">Weighted Average</span>
-                          <strong className="text-slate-800 text-[10px] font-mono leading-tight">{compiledReport.averageScore}%</strong>
+                        <div className={`bg-slate-50 p-1 rounded border border-slate-100 text-slate-600 leading-normal ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5' : ''}`}>
+                          <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[7.5px]'} uppercase text-slate-400 block font-mono`}>Weighted Average</span>
+                          <strong className={`text-slate-800 font-mono leading-tight ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8.5px]' : 'text-[10px]'}`}>{compiledReport.averageScore}%</strong>
                         </div>
-                        <div className="bg-slate-50 p-1 rounded border border-slate-100 text-slate-600 leading-normal">
-                          <span className="text-[7.5px] uppercase text-slate-400 block font-mono">Total Attendance</span>
-                          <strong className="text-slate-800 text-[9px] leading-tight">{compiledReport.attendancePresent} / {compiledReport.schoolOpenDays} days</strong>
+                        <div className={`bg-slate-50 p-1 rounded border border-slate-100 text-slate-600 leading-normal ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5' : ''}`}>
+                          <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[7.5px]'} uppercase text-slate-400 block font-mono`}>Total Attendance</span>
+                          <strong className={`text-slate-800 leading-tight ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8px]' : 'text-[9px]'}`}>{compiledReport.attendancePresent} / {compiledReport.schoolOpenDays} days</strong>
                         </div>
-                        <div className="bg-slate-50 p-1 rounded border border-slate-100 text-indigo-750 leading-normal">
-                          <span className="text-[7.5px] uppercase text-indigo-400 block font-mono">Academic Status</span>
-                          <strong className="text-indigo-805 text-[9px] uppercase leading-tight font-bold">GES Certified</strong>
+                        <div className={`bg-slate-50 p-1 rounded border border-slate-100 text-indigo-750 leading-normal ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5' : ''}`}>
+                          <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[7.5px]'} uppercase text-indigo-400 block font-mono`}>Academic Status</span>
+                          <strong className={`text-indigo-805 uppercase leading-tight font-bold ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8px]' : 'text-[9px]'}`}>GES Certified</strong>
                         </div>
                       </div>
 
                       {/* Direct Ledger Integration */}
                       {studentFinancials && (
-                        <div className="grid grid-cols-2 gap-3.5 bg-slate-100/40 p-2.5 rounded text-[8.5px] leading-normal border border-slate-200">
+                        <div className={`grid grid-cols-2 gap-3.5 bg-slate-100/40 p-2 text-slate-650 leading-normal border border-slate-200 rounded-lg ${
+                          isAutoFitA4 && maxSubjectsToPrint > 7 ? 'p-1.5' : ''
+                        }`}>
                           <div>
-                            <span className="text-[7.5px] uppercase text-slate-500 font-mono block">Current Balance status</span>
-                            <strong className={`${studentFinancials.totalOutstanding > 0 ? 'text-rose-700' : 'text-emerald-700'} font-bold text-[9.5px]`}>
+                            <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[7.5px]'} uppercase text-slate-500 font-mono block`}>Current Balance status</span>
+                            <strong className={`${studentFinancials.totalOutstanding > 0 ? 'text-rose-700' : 'text-emerald-700'} font-bold ${
+                              isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8.5px]' : 'text-[9.5px]'
+                            }`}>
                               GHS {studentFinancials.totalOutstanding.toFixed(2)}
                             </strong>
-                            <div className="text-[7px] text-slate-400 leading-none mt-0.5">Includes outstanding system invoice history.</div>
+                            <div className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[6.5px]' : 'text-[7px]'} text-slate-400 leading-none mt-0.5`}>Includes outstanding system invoice history.</div>
                           </div>
                           <div>
-                            <span className="text-[7.5px] uppercase text-slate-500 font-mono block">Estimated Next Term Projected</span>
-                            <strong className="text-slate-800 font-bold text-[9.5px]">GHS {studentFinancials.nextTermBillSum.toFixed(2)}</strong>
-                            <div className="text-[7px] text-slate-400 leading-none mt-0.5 font-sans">Next reopens: {formatReopeningDate(DbController.getSchoolInfo().reopeningDate)}</div>
+                            <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[7.5px]'} uppercase text-slate-500 font-mono block`}>Estimated Next Term Projected</span>
+                            <strong className={`text-slate-800 font-bold ${
+                              isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8.5px]' : 'text-[9.5px]'
+                            }`}>GHS {studentFinancials.nextTermBillSum.toFixed(2)}</strong>
+                            <div className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[6.5px]' : 'text-[7px]'} text-slate-400 leading-none mt-0.5 font-sans`}>Next reopens: {formatReopeningDate(DbController.getSchoolInfo().reopeningDate)}</div>
                           </div>
                         </div>
                       )}
 
                       {/* Headteacher Endorsements desk */}
-                      <div className="grid grid-cols-2 gap-4 text-[9px] leading-relaxed">
+                      <div className={`grid grid-cols-2 gap-4 report-card-remarks-signatures ${
+                        isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8px] leading-snug mt-1' : 'text-[9px] leading-relaxed mt-2'
+                      }`}>
                         <div className="space-y-1">
-                          <span className="text-[7.5px] font-mono text-slate-400 uppercase font-black">Principal Headteacher Remarks</span>
-                          <p className="p-2 bg-slate-50 rounded border border-slate-100 italic text-slate-650 min-h-[40px] text-[8px] leading-relaxed">
+                          <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[7.5px]'} font-mono text-slate-400 uppercase font-black`}>Principal Headteacher Remarks</span>
+                          <p className={`p-2 bg-slate-50 rounded border border-slate-100 italic text-slate-650 leading-relaxed ${
+                            isAutoFitA4 && maxSubjectsToPrint > 7 ? 'min-h-[30px] py-1 text-[7.5px] leading-snug' : 'min-h-[40px] text-[8px] leading-relaxed'
+                          }`}>
                             {compiledReport.averageScore >= 80 
                               ? 'Excellent performance! The student reflects high mastery level standards on the GES curriculum benchmarks.' 
                               : compiledReport.averageScore >= 68 
@@ -6365,13 +8562,15 @@ export default function AssessmentTab({
                               : 'Underperforming benchmarks. Urgent tutoring is recommended to foster remediation.'}
                           </p>
                         </div>
-                        <div className="flex flex-col items-center justify-end text-center relative mt-2">
+                        <div className="flex flex-col items-center justify-end text-center relative">
                           <div className="relative w-full h-8 flex items-center justify-center">
                             {DbController.getSchoolInfo().stampUrl && (
                               <img 
                                 src={DbController.getSchoolInfo().stampUrl} 
                                 alt="Stamp" 
-                                className="absolute w-10 h-10 object-contain opacity-40 transform -rotate-12 translate-x-[-15%]" 
+                                className={`absolute ${
+                                  isAutoFitA4 && maxSubjectsToPrint > 7 ? 'w-8 h-8' : 'w-10 h-10'
+                                } object-contain opacity-40 transform -rotate-12 translate-x-[-15%]`} 
                                 referrerPolicy="no-referrer"
                               />
                             )}
@@ -6379,7 +8578,9 @@ export default function AssessmentTab({
                               <img 
                                 src={DbController.getSchoolInfo().signatureUrl} 
                                 alt="Signature" 
-                                className="absolute w-20 h-6 object-contain" 
+                                className={`absolute ${
+                                  isAutoFitA4 && maxSubjectsToPrint > 7 ? 'w-16 h-5' : 'w-20 h-6'
+                                } object-contain`} 
                                 referrerPolicy="no-referrer"
                               />
                             ) : (
@@ -6398,22 +8599,43 @@ export default function AssessmentTab({
             </div>
 
             {/* Modal Bottom control panel bar */}
-            <div className="flex items-center justify-between px-6 py-4 bg-slate-950 border-t border-slate-800 flex-shrink-0">
-              <span className="hidden sm:inline text-[10px] text-slate-400 text-left">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between px-4 sm:px-6 py-4 bg-slate-950 border-t border-slate-800 gap-3 flex-shrink-0">
+              <span className="hidden lg:inline text-[10px] text-slate-400 text-left">
                 Ensure all verification checkboxes on the left are reviewed for safety compliance
               </span>
-              <div className="flex items-center gap-3 ml-auto">
+              <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto justify-end">
                 <button
                   type="button"
                   onClick={() => setShowPrintPreviewModal(false)}
-                  className="px-4 py-2 hover:bg-slate-800 text-slate-300 hover:text-white font-bold transition rounded-xl text-xs cursor-pointer select-none"
+                  className="px-4 py-2 hover:bg-slate-850 text-slate-300 hover:text-white font-bold transition rounded-xl text-xs cursor-pointer select-none border border-slate-800"
                 >
                   Cancel & Adjust
                 </button>
                 <button
                   type="button"
+                  onClick={async () => {
+                    const filename = compiledReport 
+                      ? formatIdentifiableFilename({
+                          docType: 'Students Report Card',
+                          studentName: `${compiledReport.student.firstName} ${compiledReport.student.lastName}`,
+                          studentId: compiledReport.student.id,
+                          term: selectedTerm,
+                          academicYear: selectedYear,
+                          extension: 'pdf'
+                        })
+                      : 'Students Report Card.pdf';
+                    await handlePdfDownloadElement('report-center-preview-content', filename, previewOrientation === 'landscape');
+                  }}
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white font-bold transition rounded-xl text-xs flex items-center gap-1.5 cursor-pointer select-none border border-indigo-550/30"
+                  title="Download Current Report Card as PDF file"
+                >
+                  <FileDown size={13} />
+                  <span>Download PDF</span>
+                </button>
+                <button
+                  type="button"
                   onClick={executeNativePrint}
-                  className="px-6 py-2 bg-emerald-600 hover:bg-emerald-500 hover:scale-[1.01] active:scale-[0.99] text-white font-black transition rounded-xl text-xs flex items-center gap-1.5 cursor-pointer shadow-md shadow-emerald-950/20 select-none animate-bounce"
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 hover:scale-[1.01] active:scale-[0.99] text-white font-black transition rounded-xl text-xs flex items-center gap-1.5 cursor-pointer shadow-md shadow-emerald-950/20 select-none"
                 >
                   <Printer size={13} /> Confirm & Proceed to Print
                 </button>
@@ -6544,6 +8766,141 @@ export default function AssessmentTab({
                 className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-sm transition active:scale-95"
               >
                 Save & Apply Template
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+
+    {/* Subject-Specific Mark Limits Modal */}
+    <AnimatePresence>
+      {showSubjectLimitsModal && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs z-[80] flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full overflow-hidden flex flex-col font-sans"
+          >
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+              <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                <Sliders size={18} className="text-indigo-600" />
+                Subject-Specific Mark Limits
+              </h3>
+              <button 
+                onClick={() => setShowSubjectLimitsModal(false)}
+                className="text-slate-400 hover:text-slate-700 transition"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-5 overflow-y-auto max-h-[70vh]">
+              <div className="bg-indigo-50 border border-indigo-100 text-indigo-850 p-3.5 rounded-xl space-y-1 text-[11px]">
+                <strong className="text-indigo-900">Enforcing Rules for: {selectedSubject}</strong>
+                <p className="text-indigo-700 leading-relaxed">Customize the maximum allowed marks for this specific subject. Any score entries higher than these defined thresholds will trigger real-time validation errors, highlight inputs in red, and block gradesheet saves.</p>
+              </div>
+
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] uppercase font-bold text-slate-500">Exercises Max</label>
+                    <input 
+                      type="number" 
+                      min="1"
+                      max="100"
+                      value={activeSubjectLimits.exercises}
+                      onChange={(e) => {
+                        const val = Math.max(1, parseInt(e.target.value) || 0);
+                        updateSubjectLimit(selectedSubject, 'exercises', val);
+                      }}
+                      className="w-full bg-white border border-slate-200 rounded px-3 py-2 text-xs font-semibold focus:outline-none focus:border-indigo-400 font-mono"
+                    />
+                  </div>
+                  
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] uppercase font-bold text-slate-500">Class Tests Max</label>
+                    <input 
+                      type="number" 
+                      min="1"
+                      max="100"
+                      value={activeSubjectLimits.tests}
+                      onChange={(e) => {
+                        const val = Math.max(1, parseInt(e.target.value) || 0);
+                        updateSubjectLimit(selectedSubject, 'tests', val);
+                      }}
+                      className="w-full bg-white border border-slate-200 rounded px-3 py-2 text-xs font-semibold focus:outline-none focus:border-indigo-400 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] uppercase font-bold text-slate-500">Project Work Max</label>
+                    <input 
+                      type="number" 
+                      min="1"
+                      max="100"
+                      value={activeSubjectLimits.projectWork}
+                      onChange={(e) => {
+                        const val = Math.max(1, parseInt(e.target.value) || 0);
+                        updateSubjectLimit(selectedSubject, 'projectWork', val);
+                      }}
+                      className="w-full bg-white border border-slate-200 rounded px-3 py-2 text-xs font-semibold focus:outline-none focus:border-indigo-400 font-mono"
+                    />
+                  </div>
+                  
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] uppercase font-bold text-slate-500">Group Work Max</label>
+                    <input 
+                      type="number" 
+                      min="1"
+                      max="100"
+                      value={activeSubjectLimits.groupWork}
+                      onChange={(e) => {
+                        const val = Math.max(1, parseInt(e.target.value) || 0);
+                        updateSubjectLimit(selectedSubject, 'groupWork', val);
+                      }}
+                      className="w-full bg-white border border-slate-200 rounded px-3 py-2 text-xs font-semibold focus:outline-none focus:border-indigo-400 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[11px] uppercase font-bold text-slate-500">Terminal Exam Max</label>
+                  <input 
+                    type="number" 
+                    min="10"
+                    max="1000"
+                    value={activeSubjectLimits.examScore100}
+                    onChange={(e) => {
+                      const val = Math.max(10, parseInt(e.target.value) || 0);
+                      updateSubjectLimit(selectedSubject, 'examScore100', val);
+                    }}
+                    className="w-full bg-white border border-slate-200 rounded px-3 py-2 text-xs font-semibold focus:outline-none focus:border-indigo-400 font-mono"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex items-center justify-end gap-3">
+              <button
+                onClick={() => {
+                  const nextLimits = { ...subjectLimits };
+                  delete nextLimits[selectedSubject];
+                  setSubjectLimits(nextLimits);
+                  localStorage.setItem('school_subject_mark_limits', JSON.stringify(nextLimits));
+                }}
+                className="px-4 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50 rounded-lg transition"
+              >
+                Reset Default
+              </button>
+              <button
+                onClick={() => setShowSubjectLimitsModal(false)}
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-sm transition active:scale-95"
+              >
+                Close & Enforce Rules
               </button>
             </div>
           </motion.div>

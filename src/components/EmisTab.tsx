@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { AcademicYearType, ACADEMIC_YEARS, CLASSES, ClassType, EmisData } from '../types';
 import { DbController } from '../db';
 import { ThemeStyles } from './ThemeWrapper';
@@ -147,53 +147,103 @@ export default function EmisTab({ theme }: Props) {
   // Load report on academic year switch
   useEffect(() => {
     const loaded = DbController.getEmisReportByYear(selectedYear);
-    if (loaded) {
-      // Ensure all classes exist in loaded structures (safeguard)
-      const sanitized = { ...loaded };
-      if (!sanitized.boysEnrolled) sanitized.boysEnrolled = {};
-      if (!sanitized.girlsEnrolled) sanitized.girlsEnrolled = {};
-      if (!sanitized.repeatersBoys) sanitized.repeatersBoys = {};
-      if (!sanitized.repeatersGirls) sanitized.repeatersGirls = {};
-      if (!sanitized.disabledBoys) sanitized.disabledBoys = {};
-      if (!sanitized.disabledGirls) sanitized.disabledGirls = {};
-      
-      CLASSES.forEach(c => {
-        if (sanitized.boysEnrolled[c] === undefined) sanitized.boysEnrolled[c] = 0;
-        if (sanitized.girlsEnrolled[c] === undefined) sanitized.girlsEnrolled[c] = 0;
-        if (sanitized.repeatersBoys[c] === undefined) sanitized.repeatersBoys[c] = 0;
-        if (sanitized.repeatersGirls[c] === undefined) sanitized.repeatersGirls[c] = 0;
-        if (sanitized.disabledBoys[c] === undefined) sanitized.disabledBoys[c] = 0;
-        if (sanitized.disabledGirls[c] === undefined) sanitized.disabledGirls[c] = 0;
-      });
+    const sanitized = loaded ? { ...loaded } : generateEmptyReport(selectedYear);
+    
+    // Auto-sync students into enrolment dynamically
+    const students = DbController.getStudents();
+    const teachers = DbController.getTeachers();
 
-      // Sourcing & Sanitisations Fallbacks
-      if (sanitized.locationType === undefined) sanitized.locationType = 'Urban';
-      if (sanitized.yearFounded === undefined) sanitized.yearFounded = 2004;
-      if (sanitized.isSchoolFeedingBeneficiary === undefined) sanitized.isSchoolFeedingBeneficiary = false;
-      if (sanitized.studentsFedDailyCount === undefined) sanitized.studentsFedDailyCount = 0;
-      if (sanitized.hasSeparateStaffToilets === undefined) sanitized.hasSeparateStaffToilets = false;
-      if (sanitized.hasHandwashingStations === undefined) sanitized.hasHandwashingStations = false;
-      if (sanitized.hasFunctionalSickBay === undefined) sanitized.hasFunctionalSickBay = false;
-      if (sanitized.hasActiveSmc === undefined) sanitized.hasActiveSmc = true;
-      if (sanitized.hasActivePta === undefined) sanitized.hasActivePta = true;
-      if (sanitized.ptaMeetingsHeldCount === undefined) sanitized.ptaMeetingsHeldCount = 0;
-      if (sanitized.hasFunctionalLibrary === undefined) sanitized.hasFunctionalLibrary = false;
-      if (sanitized.totalLibraryBooks === undefined) sanitized.totalLibraryBooks = 0;
-      if (sanitized.hasScienceKit === undefined) sanitized.hasScienceKit = false;
-      if (sanitized.isCompoundFenced === undefined) sanitized.isCompoundFenced = false;
-      if (sanitized.hasSecurityGuard === undefined) sanitized.hasSecurityGuard = false;
+    const newBoys: Record<string, number> = {};
+    const newGirls: Record<string, number> = {};
+    const newRepB: Record<string, number> = {};
+    const newRepG: Record<string, number> = {};
+    const newDisB: Record<string, number> = {};
+    const newDisG: Record<string, number> = {};
+    
+    CLASSES.forEach(c => {
+      newBoys[c] = 0;
+      newGirls[c] = 0;
+      newRepB[c] = 0;
+      newRepG[c] = 0;
+      newDisB[c] = 0;
+      newDisG[c] = 0;
+    });
 
-      const totBoys = CLASSES.reduce((acc, c) => acc + (sanitized.boysEnrolled[c] || 0), 0);
-      const totGirls = CLASSES.reduce((acc, c) => acc + (sanitized.girlsEnrolled[c] || 0), 0);
-      const totEnrolled = totBoys + totGirls;
-      if (sanitized.targetCommunityPopulation === undefined || sanitized.targetCommunityPopulation === 0) {
-        sanitized.targetCommunityPopulation = Math.max(250, Math.round(totEnrolled * 1.15));
+    // Populate enrollment from student database
+    students.forEach(s => {
+      const cls = s.class;
+      if (CLASSES.includes(cls)) {
+        if (s.gender === 'Male') {
+          newBoys[cls] = (newBoys[cls] || 0) + 1;
+          if (s.residentialAddress?.toLowerCase().includes('repeater')) {
+            newRepB[cls] = (newRepB[cls] || 0) + 1;
+          }
+        } else {
+          newGirls[cls] = (newGirls[cls] || 0) + 1;
+          if (s.residentialAddress?.toLowerCase().includes('repeater')) {
+            newRepG[cls] = (newRepG[cls] || 0) + 1;
+          }
+        }
       }
+    });
 
-      setReport(sanitized);
-    } else {
-      setReport(generateEmptyReport(selectedYear));
+    // Staffing statistics evaluation
+    let trMale = 0;
+    let trFemale = 0;
+    let untrMale = 0;
+    let untrFemale = 0;
+    teachers.forEach(t => {
+      const isProfessional = t.professionalQualifications && 
+        (t.professionalQualifications.toLowerCase().includes('diploma') || 
+         t.professionalQualifications.toLowerCase().includes('degree') || 
+         t.professionalQualifications.toLowerCase().includes('b.ed') ||
+         t.professionalQualifications.toLowerCase().includes('cert'));
+      const isFemale = t.gender?.toLowerCase() === 'female';
+      if (isProfessional) {
+        if (isFemale) trFemale++;
+        else trMale++;
+      } else {
+        if (isFemale) untrFemale++;
+        else untrMale++;
+      }
+    });
+
+    sanitized.boysEnrolled = newBoys;
+    sanitized.girlsEnrolled = newGirls;
+    sanitized.repeatersBoys = newRepB;
+    sanitized.repeatersGirls = newRepG;
+    sanitized.disabledBoys = newDisB;
+    sanitized.disabledGirls = newDisG;
+    sanitized.trainedMaleTeachers = trMale;
+    sanitized.trainedFemaleTeachers = trFemale;
+    sanitized.untrainedMaleTeachers = untrMale;
+    sanitized.untrainedFemaleTeachers = untrFemale;
+
+    // Sourcing & Sanitisations Fallbacks
+    if (sanitized.locationType === undefined) sanitized.locationType = 'Urban';
+    if (sanitized.yearFounded === undefined) sanitized.yearFounded = 2004;
+    if (sanitized.isSchoolFeedingBeneficiary === undefined) sanitized.isSchoolFeedingBeneficiary = false;
+    if (sanitized.studentsFedDailyCount === undefined) sanitized.studentsFedDailyCount = 0;
+    if (sanitized.hasSeparateStaffToilets === undefined) sanitized.hasSeparateStaffToilets = false;
+    if (sanitized.hasHandwashingStations === undefined) sanitized.hasHandwashingStations = false;
+    if (sanitized.hasFunctionalSickBay === undefined) sanitized.hasFunctionalSickBay = false;
+    if (sanitized.hasActiveSmc === undefined) sanitized.hasActiveSmc = true;
+    if (sanitized.hasActivePta === undefined) sanitized.hasActivePta = true;
+    if (sanitized.ptaMeetingsHeldCount === undefined) sanitized.ptaMeetingsHeldCount = 0;
+    if (sanitized.hasFunctionalLibrary === undefined) sanitized.hasFunctionalLibrary = false;
+    if (sanitized.totalLibraryBooks === undefined) sanitized.totalLibraryBooks = 0;
+    if (sanitized.hasScienceKit === undefined) sanitized.hasScienceKit = false;
+    if (sanitized.isCompoundFenced === undefined) sanitized.isCompoundFenced = false;
+    if (sanitized.hasSecurityGuard === undefined) sanitized.hasSecurityGuard = false;
+
+    const totBoys = CLASSES.reduce((acc, c) => acc + (sanitized.boysEnrolled[c] || 0), 0);
+    const totGirls = CLASSES.reduce((acc, c) => acc + (sanitized.girlsEnrolled[c] || 0), 0);
+    const totEnrolled = totBoys + totGirls;
+    if (sanitized.targetCommunityPopulation === undefined || sanitized.targetCommunityPopulation === 0) {
+      sanitized.targetCommunityPopulation = Math.max(250, Math.round(totEnrolled * 1.15));
     }
+
+    setReport(sanitized);
   }, [selectedYear]);
 
   if (!report) return null;
@@ -444,85 +494,7 @@ export default function EmisTab({ theme }: Props) {
   const ageGroupTotals = getAgeTotals();
 
   const handlePrint = () => {
-    const printArea = document.getElementById('emis-census-print-area');
-    if (!printArea) {
-      window.print();
-      return;
-    }
-    try {
-      const printWindow = window.open('', '_blank');
-      if (!printWindow) {
-        window.print();
-        return;
-      }
-
-      let stylesHtml = '';
-      const styleSheets = document.head.querySelectorAll('style, link[rel="stylesheet"]');
-      styleSheets.forEach((el) => {
-        stylesHtml += el.outerHTML;
-      });
-
-      const printHtml = printArea.innerHTML;
-
-      printWindow.document.write(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>GES EMIS Census Return Report - ${schoolInfo.name || 'School'}</title>
-            ${stylesHtml}
-            <style>
-              body {
-                margin: 0;
-                padding: 30px;
-                background-color: #ffffff;
-                color: #0f172a;
-                font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
-              }
-              #emis-census-print-area {
-                display: block !important;
-                border: none !important;
-                padding: 0 !important;
-                box-shadow: none !important;
-                max-width: 100% !important;
-              }
-              @media print {
-                @page {
-                  size: 210mm 297mm;
-                  margin: 10mm;
-                }
-                body {
-                  padding: 0 !important;
-                  margin: 0 !important;
-                }
-                .no-print {
-                  display: none !important;
-                }
-              }
-            </style>
-          </head>
-          <body>
-            <div id="emis-census-print-area" class="bg-white text-slate-900 space-y-5 text-xs leading-normal font-sans">
-              ${printHtml}
-            </div>
-            <script>
-              window.addEventListener('load', () => {
-                setTimeout(() => {
-                  window.focus();
-                  window.print();
-                  window.onafterprint = () => {
-                    window.close();
-                  };
-                }, 600);
-              });
-            </script>
-          </body>
-        </html>
-      `);
-      printWindow.document.close();
-    } catch (e) {
-      console.warn("Popup blocked or direct print restricted:", e);
-      window.print();
-    }
+    window.print();
   };
 
   return (

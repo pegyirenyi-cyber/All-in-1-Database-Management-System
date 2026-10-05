@@ -33,6 +33,7 @@ export interface SchoolInfo {
   smsRate?: number;
   crestUrl?: string;
   schoolId?: string;
+  assignedTeacherId?: string;
 }
 
 export type ClassType =
@@ -68,9 +69,30 @@ export const CLASSES: ClassType[] = [
   'Basic 9'
 ];
 
-export type SectionType = 'None' | 'Faith' | 'Harmony' | 'Humility' | 'Peace';
+export type SectionType = 'None' | 'Faith' | 'Harmony' | 'Humility' | 'Peace' | string;
 
 export const SECTIONS: SectionType[] = ['None', 'Faith', 'Harmony', 'Humility', 'Peace'];
+
+export const COMMON_MEDICAL_CONDITIONS = [
+  'None',
+  'Asthma',
+  'Sickle Cell Disease / Trait',
+  'Peanut / Tree Nut Allergy',
+  'Lactose Intolerance / Dairy Allergy',
+  'Egg Allergy',
+  'Seafood / Fish Allergy',
+  'Penicillin / Drug Allergy',
+  'Diabetes (Type 1 / Type 2)',
+  'Epilepsy / Seizures',
+  'Chronic Respiratory / Bronchitis',
+  'Skin Allergy / Eczema',
+  'G6PD Deficiency',
+  'Eye / Vision Impairment',
+  'Hearing Impairment',
+  'Other (Specify condition)'
+] as const;
+
+export type MedicalConditionType = (typeof COMMON_MEDICAL_CONDITIONS)[number] | string;
 
 export interface Student {
   id: string;
@@ -90,10 +112,24 @@ export interface Student {
   guardianEmail?: string;
   email?: string;
   residentialAddress: string;
+  ghanaPostGps?: string;
+  // Parent Info (Mother & Father)
+  motherName?: string;
+  motherTelephone?: string;
+  motherOccupation?: string;
+  motherStatus?: 'Alive' | 'Death' | string;
+  fatherName?: string;
+  fatherTelephone?: string;
+  fatherOccupation?: string;
+  fatherStatus?: 'Alive' | 'Death' | string;
   photoUrl: string; // Base64 or local path
   createdAt: string;
   academicYear?: AcademicYearType;
   term?: TermType;
+  medicalCondition?: MedicalConditionType;
+  medicalConditionOther?: string;
+  medicalNotes?: string;
+  formerSchool?: string; // Formal School / Previous school attended
 }
 
 export type TeacherRank =
@@ -138,6 +174,7 @@ export interface Teacher {
   dateOfFirstAppointment: string;
   dateOfPostingToCurrentStation: string;
   staffId: string;
+  tinNumber?: string; // Taxpayer Identification Number
   ntcNumber: string;
   ssnitNumber: string;
   district: string;
@@ -146,6 +183,7 @@ export interface Teacher {
   createdAt: string;
   schoolId?: string;
   email?: string;
+  phone?: string;
   subjectSpecialization?: string;
   assignedClass?: ClassType | 'None';
   assignedClasses?: ClassType[];
@@ -155,6 +193,11 @@ export interface Teacher {
     canApproveAttendance?: boolean;
     canExportReports?: boolean;
   };
+  status?: string;
+  title?: string;
+  isClassTeacher?: boolean;
+  classTeacherOf?: string;
+  sectionTeacherOf?: string;
 }
 
 export type AttendanceStatus = 'Present' | 'Holiday' | 'Absent' | 'Unmarked';
@@ -166,6 +209,7 @@ export interface AttendanceRecord {
   studentName: string;
   class: ClassType;
   status: AttendanceStatus;
+  schoolId?: string;
 }
 
 export type StaffAttendanceStatus = 'Present' | 'Absent' | 'On Leave' | 'Unmarked';
@@ -288,6 +332,9 @@ export interface StudentAssessment {
   // Custom assessments
   isCustomAssessment?: boolean;
   customAssessments?: number[]; // Scores for custom components
+  isArchived?: boolean;
+  archivedAt?: string;
+  schoolId?: string;
 }
 
 export interface AssessmentTemplate {
@@ -302,15 +349,20 @@ export interface UserAccount {
   email: string;
   name: string;
   role: UserRole;
+  staffId?: string;
   schoolId?: string;
   createdAt: string;
   licenseType?: 'trial' | 'activated' | 'unlimited';
   licensePeriod?: number; // Number of years: 1, 2, 3, or 5
   registeredOn?: string;
+  trialEndDate?: string;
   lastActivatedOn?: string;
   activationCode?: string;
   requestCode?: string;
   promoDiscountRate?: number;
+  autoRenew?: boolean;
+  isSuspended?: boolean;
+  usedCodes?: string[];
 }
 
 export interface WebAuthnCredential {
@@ -329,7 +381,7 @@ export interface FeePayment {
   id: string; // transaction ID
   amount: number;
   date: string; // YYYY-MM-DD
-  component: 'School Fees' | 'Utility Bill' | 'Sports Fees' | 'PTA dues' | 'Transportation Bill' | 'Other Fee';
+  component: 'School Fees' | 'Utility Bill' | 'Sports Fees' | 'PTA dues' | 'Transportation Bill' | 'Other Fee' | (string & {});
   method: 'Cash' | 'Mobile Money' | 'Bank Transfer' | 'Cheque';
   receiptNo: string;
   remarks?: string;
@@ -501,6 +553,7 @@ export interface BehavioralRemark {
   date: string; // ISO String
   academicYear: string;
   term: string;
+  schoolId?: string;
 }
 
 export interface TeacherReflection {
@@ -518,6 +571,7 @@ export interface TeacherReflection {
   academicYear: AcademicYearType;
   term: TermType;
   createdAt: string; // ISO string
+  schoolId?: string;
 }
 
 export interface AutoBackupConfig {
@@ -563,6 +617,13 @@ export interface DutyAssignment {
   term: TermType;
 }
 
+export interface AttachedGoogleFile {
+  id: string;
+  name: string;
+  url: string;
+  mimeType: string;
+}
+
 export interface StaffHandbookDocument {
   id: string;
   title: string;
@@ -570,6 +631,380 @@ export interface StaffHandbookDocument {
   category: 'Policy' | 'Mission Statement' | 'Pedagogical Guideline' | 'Other';
   lastUpdated: string;
   updatedBy: string;
+  attachedFiles?: AttachedGoogleFile[];
 }
+
+export interface LeaveRequest {
+  id: string;
+  teacherId: string;
+  teacherName: string;
+  startDate: string; // YYYY-MM-DD
+  endDate: string; // YYYY-MM-DD
+  reason: string;
+  status: 'Pending' | 'Approved' | 'Rejected';
+  requestDate: string; // ISO Date String
+  approverComments?: string;
+  schoolId?: string;
+}
+
+export interface CustomTask {
+  id: string;
+  title: string;
+  description: string;
+  dueDate?: string;
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  isCompleted: boolean;
+  completedAt?: string;
+  isArchived: boolean;
+  archivedAt?: string;
+  createdAt: string;
+  createdBy: string;
+  schoolId?: string;
+}
+
+export type NoteCategory = 'General' | 'Academic' | 'Finance' | 'Personnel' | 'Events' | 'Maintenance';
+
+export interface QuickNote {
+  id: string;
+  title: string;
+  content: string;
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  color: 'amber' | 'blue' | 'emerald' | 'rose' | 'purple' | 'slate';
+  category?: NoteCategory;
+  dueDate?: string;
+  isPinned: boolean;
+  createdAt: string;
+  updatedAt?: string;
+  schoolId?: string;
+  author?: string;
+  // Recipient targeting & Notice/Meeting fields for Class Teachers
+  targetAudience?: 'all' | 'class_teachers' | 'specific_class';
+  targetClass?: ClassType;
+  isMeetingNotice?: boolean;
+  meetingDate?: string;
+  meetingTime?: string;
+  meetingVenue?: string;
+  acknowledgedBy?: {
+    teacherId: string;
+    teacherName: string;
+    acknowledgedAt: string;
+  }[];
+}
+
+export interface CommunicationTemplate {
+  id: string;
+  name: string;
+  type: 'email' | 'whatsapp';
+  subject?: string;
+  text: string;
+  createdAt: string;
+  updatedBy: string;
+  badge?: string;
+  description?: string;
+}
+
+// ==========================================
+// FINANCES & BUSINESS ACCOUNTING MODULE TYPES
+// ==========================================
+
+export interface TransportRoute {
+  id: string;
+  name: string;
+  driverName: string;
+  driverPhone: string;
+  vehicleNumber: string;
+  feePerTerm: number;
+  capacity?: number;
+  stops?: string[];
+  notes?: string;
+}
+
+export interface StudentTransportRecord {
+  id: string;
+  studentId: string;
+  studentName: string;
+  studentClass: ClassType;
+  routeId: string;
+  routeName: string;
+  tripType: 'Two-Way' | 'One-Way (Morning)' | 'One-Way (Afternoon)';
+  term: TermType;
+  academicYear: AcademicYearType;
+  feeAmount: number;
+  paidAmount: number;
+  balance: number;
+  status: 'Paid' | 'Partial' | 'Unpaid';
+  lastPaymentDate?: string;
+  receiptNumber?: string;
+}
+
+export interface CanteenPlan {
+  id: string;
+  name: string;
+  rate: number;
+  frequency: 'Daily' | 'Weekly' | 'Termly';
+  description?: string;
+}
+
+export interface CanteenPaymentRecord {
+  id: string;
+  studentId: string;
+  studentName: string;
+  studentClass: ClassType;
+  planId: string;
+  planName: string;
+  term: TermType;
+  academicYear: AcademicYearType;
+  date: string;
+  amountPaid: number;
+  paymentMethod: 'Cash' | 'Mobile Money' | 'Bank' | 'Cheque';
+  receiptNumber: string;
+  remarks?: string;
+}
+
+export interface SchoolExcursion {
+  id: string;
+  title: string;
+  destination: string;
+  targetClasses: string[];
+  eventDate: string;
+  feePerStudent: number;
+  description?: string;
+  status: 'Upcoming' | 'Completed' | 'Cancelled';
+  estimatedLogisticsCost?: number;
+}
+
+export interface ExcursionParticipant {
+  id: string;
+  excursionId: string;
+  studentId: string;
+  studentName: string;
+  studentClass: ClassType;
+  emergencyContact: string;
+  feeAmount: number;
+  paidAmount: number;
+  balance: number;
+  status: 'Paid' | 'Partial' | 'Unpaid';
+  paymentDate?: string;
+  receiptNumber?: string;
+  consentSigned: boolean;
+}
+
+export interface SportsActivity {
+  id: string;
+  title: string;
+  category: 'Annual Levy' | 'Sports Kit' | 'Tournament Fee' | 'Club Dues';
+  amount: number;
+  term: TermType;
+  academicYear: AcademicYearType;
+  description?: string;
+}
+
+export interface StudentSportsRecord {
+  id: string;
+  activityId: string;
+  activityTitle: string;
+  studentId: string;
+  studentName: string;
+  studentClass: ClassType;
+  house?: string;
+  feeAmount: number;
+  paidAmount: number;
+  balance: number;
+  status: 'Paid' | 'Partial' | 'Unpaid';
+  paymentDate?: string;
+  receiptNumber?: string;
+}
+
+export interface TextbookItem {
+  id: string;
+  title: string;
+  subject: string;
+  targetClass: ClassType;
+  salePrice: number;
+  rentalPrice?: number;
+  stockQty: number;
+  isbn?: string;
+  publisher?: string;
+}
+
+export interface StudentTextbookTransaction {
+  id: string;
+  bookId: string;
+  bookTitle: string;
+  studentId: string;
+  studentName: string;
+  studentClass: ClassType;
+  type: 'Purchase' | 'Rental';
+  amount: number;
+  paidAmount: number;
+  balance: number;
+  status: 'Paid' | 'Partial' | 'Unpaid';
+  date: string;
+  returned?: boolean;
+  returnDate?: string;
+  receiptNumber?: string;
+}
+
+export type ExpenseCategory =
+  | 'Salaries & Staff Allowances'
+  | 'Utilities (Electricity / Water / Internet)'
+  | 'Maintenance & Repairs'
+  | 'Teaching & Learning Materials'
+  | 'Vehicle Fuel & Transportation Logistics'
+  | 'Kitchen & Canteen Supplies'
+  | 'Sanitation & Health Supplies'
+  | 'Sports & Co-Curricular'
+  | 'Events & Excursions'
+  | 'Administrative & Bank Charges'
+  | 'ICT & Software Licensing'
+  | 'Other Operations'
+  | (string & {});
+
+export interface CustomExpenseCategory {
+  id: string;
+  name: string;
+  code: string;
+  description?: string;
+  budgetCap?: number;
+  color?: string;
+  iconName?: string;
+  isSystem?: boolean;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type VoucherApprovalStatus = 'Draft' | 'Pending Approval' | 'Approved' | 'Disbursed' | 'Rejected';
+
+export interface SchoolExpense {
+  id: string;
+  voucherNumber: string;
+  title: string;
+  category: ExpenseCategory;
+  amount: number;
+  payee: string;
+  paymentMethod: 'Cash' | 'Mobile Money' | 'Bank Transfer' | 'Cheque';
+  paymentDate: string;
+  term: TermType;
+  academicYear: AcademicYearType;
+  approvedBy: string;
+  preparedBy?: string;
+  approvalStatus?: VoucherApprovalStatus;
+  approvalDate?: string;
+  disbursedDate?: string;
+  budgetAllocated?: number;
+  referenceNo?: string;
+  description?: string;
+  receiptUrl?: string;
+  billComponentId?: string; // Links this expense to a specific Bill Component ('fees', 'transportation', 'canteen', 'excursion', 'sports', 'textbooks', or CustomBillComponent ID)
+  billComponentName?: string; // Display name of the associated bill component
+}
+
+export type BillComponentCategory = 
+  | 'Academic' 
+  | 'Facilities & Utilities' 
+  | 'Welfare & Feeding' 
+  | 'Extra-Curricular' 
+  | 'Logistics & Transport' 
+  | 'Materials & Books' 
+  | 'Special Projects'
+  | (string & {});
+
+export interface CustomBillComponent {
+  id: string;
+  name: string;
+  code?: string;
+  category: BillComponentCategory;
+  defaultAmount: number;
+  expenseBudgetCap?: number;
+  frequency: 'Per Term' | 'Per Year' | 'One-Time' | 'Optional';
+  applicableClasses: ('All' | ClassType)[];
+  isRequired: boolean;
+  isActive: boolean;
+  description?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FinancialAuditLog {
+  id: string;
+  action: 'CREATE_EXPENSE' | 'UPDATE_EXPENSE' | 'APPROVE_EXPENSE' | 'DISBURSE_EXPENSE' | 'REJECT_EXPENSE' | 'DELETE_EXPENSE' | 'CREATE_COMPONENT' | 'UPDATE_COMPONENT' | 'OVER_BUDGET_WARNING';
+  entityId: string;
+  entityType: 'expense' | 'bill_component' | 'fee_bill';
+  entityTitle: string;
+  performedBy: string;
+  role: string;
+  details: string;
+  amount?: number;
+  timestamp: number;
+}
+
+export interface StaffPayslip {
+  id: string;
+  staffId: string;
+  staffName: string;
+  staffRole: string;
+  staffEmail?: string;
+  staffPhone?: string;
+  staffBankName?: string;
+  staffAccountNumber?: string;
+  staffBankBranch?: string;
+  staffSsnitNumber?: string;
+  staffTin?: string;
+  month: string; // e.g. "September 2026"
+  paymentDate: string; // YYYY-MM-DD
+  academicYear: AcademicYearType;
+  term: TermType;
+  
+  // Earnings
+  basicSalary: number;
+  transportAllowance: number;
+  responsibilityAllowance: number;
+  overtimeAllowance: number;
+  housingAllowance: number;
+  otherAllowances: number;
+  otherAllowancesDescription?: string;
+  grossSalary: number;
+
+  // Deductions
+  ssnitTier1: number; // 5.5% employee SSNIT
+  payeTax: number; // PAYE Income Tax
+  staffWelfare: number; // Staff Welfare dues
+  loanRepayment: number;
+  providentFund: number;
+  otherDeductions: number;
+  otherDeductionsDescription?: string;
+  totalDeductions: number;
+
+  // Net Take-Home Pay
+  netSalary: number;
+
+  // Employer Contributions
+  employerSsnitTier1: number; // 13.0% employer SSNIT
+  employerProvidentFund: number;
+
+  paymentMethod: 'Bank Transfer' | 'Mobile Money' | 'Cash' | 'Cheque';
+  momoNetwork?: 'MTN MoMo' | 'Telecel Cash' | 'AT Money' | string;
+  momoNumber?: string;
+  momoAccountName?: string;
+  chequeNumber?: string;
+  chequeBankName?: string;
+  chequeIssueDate?: string;
+  paymentStatus: 'Draft' | 'Approved' | 'Disbursed' | 'Paid';
+  disbursedDate?: string;
+  voucherNumber?: string;
+  expenseId?: string; // Links this to a SchoolExpense in the Expenses ledger
+  remarks?: string;
+  preparedBy?: string;
+  approvedBy?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+
+
+
+
+
 
 

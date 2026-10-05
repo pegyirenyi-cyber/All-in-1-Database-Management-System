@@ -55,25 +55,32 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Cache-First Strategy for all intercepted requests
+  // For navigation requests (loading index.html / app root), use Network-First strategy
+  // to ensure users always receive the newest code updates when online, with an offline fallback.
+  if (request.mode === 'navigate') {
+    event.respondWith(
+      fetch(request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const responseToCache = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put('/', responseToCache));
+          }
+          return networkResponse;
+        })
+        .catch(() => {
+          // If offline, fall back to cached root
+          return caches.match('/');
+        })
+    );
+    return;
+  }
+
+  // Cache-First with Network-Fallback Strategy for non-navigation static resources
   event.respondWith(
     caches.match(request).then((cachedResponse) => {
-      // If we found a match in the cache, return it immediately
       if (cachedResponse) {
-        // For navigation requests, we still attempt a background update to keep the shell fresh
-        if (request.mode === 'navigate') {
-          fetch(request).then((networkResponse) => {
-            if (networkResponse && networkResponse.status === 200) {
-              caches.open(CACHE_NAME).then((cache) => cache.put('/', networkResponse));
-            }
-          }).catch(() => {
-            /* ignore background fetch errors when offline */
-          });
-        }
         return cachedResponse;
       }
-
-      // If not in cache, fetch from network
       return fetch(request)
         .then((networkResponse) => {
           // Check if we received a valid response
@@ -84,21 +91,13 @@ self.addEventListener('fetch', (event) => {
           // Clone the response before caching it
           const responseToCache = networkResponse.clone();
           caches.open(CACHE_NAME).then((cache) => {
-            // For navigation requests, we always cache them at the root '/'
-            const cacheKey = request.mode === 'navigate' ? '/' : request;
-            cache.put(cacheKey, responseToCache);
+            cache.put(request, responseToCache);
           });
 
           return networkResponse;
         })
         .catch((err) => {
           console.log('[Service Worker] Fetch failed, and no cache match for:', url.pathname);
-          
-          // If navigation fails and no cache match, try root fallback
-          if (request.mode === 'navigate') {
-            return caches.match('/');
-          }
-          
           return undefined;
         });
     })

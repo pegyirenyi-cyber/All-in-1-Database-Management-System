@@ -1,10 +1,10 @@
-import { useState, ChangeEvent } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { SchoolInfo } from '../types';
+import { useState, ChangeEvent, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { SchoolInfo, Teacher } from '../types';
 import { DbController } from '../db';
 import { compressImage, getWatermarkHtml } from '../utils';
 import { ThemeStyles } from './ThemeWrapper';
-import { Printer, Save, CheckCircle, Info, Landmark, ShieldCheck, FileDown, Trash2, RotateCcw, Eraser, Eye } from 'lucide-react';
+import { Printer, Save, CheckCircle, Info, Landmark, ShieldCheck, FileDown, Trash2, RotateCcw, Eraser, Eye, User, Link } from 'lucide-react';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 
 export function DefaultCrest({ className = "h-12 w-12" }: { className?: string }) {
@@ -43,11 +43,92 @@ interface Props {
   onUpdate: (info: SchoolInfo) => void;
   isAutoSave: boolean;
   onManualSave: () => void;
+  teachers?: Teacher[];
 }
 
-export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSave, onManualSave }: Props) {
+export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSave, onManualSave, teachers = [] }: Props) {
   const [formData, setFormData] = useState<SchoolInfo>({ ...schoolInfo });
   const [savedMessage, setSavedMessage] = useState(false);
+
+  useEffect(() => {
+    if (formData.assignedTeacherId) {
+      const selectedTeacher = teachers.find(t => t.id === formData.assignedTeacherId);
+      if (selectedTeacher) {
+        const fullName = `${selectedTeacher.firstName} ${selectedTeacher.middleName ? selectedTeacher.middleName + ' ' : ''}${selectedTeacher.lastName}`.trim();
+        const teacherPhone = selectedTeacher.phone || '';
+        const teacherEmail = selectedTeacher.email || '';
+        const teacherQual = selectedTeacher.professionalQualifications || '';
+        const teacherHighestQual = selectedTeacher.highestAcademicQualifications || '';
+        const teacherDistrict = selectedTeacher.district || '';
+        const teacherCircuit = selectedTeacher.circuit || '';
+
+        const needsSync = 
+          formData.headteacherName !== fullName ||
+          (teacherPhone && formData.telephone !== teacherPhone) ||
+          (teacherEmail && formData.email !== teacherEmail) ||
+          (teacherQual && formData.qualifications !== teacherQual) ||
+          (teacherHighestQual && formData.highestAcademicQualifications !== teacherHighestQual) ||
+          (teacherDistrict && formData.district !== teacherDistrict) ||
+          (teacherCircuit && formData.circuit !== teacherCircuit);
+
+        if (needsSync) {
+          const updated = {
+            ...formData,
+            headteacherName: fullName,
+            telephone: teacherPhone || formData.telephone,
+            email: teacherEmail || formData.email,
+            qualifications: teacherQual || formData.qualifications,
+            highestAcademicQualifications: teacherHighestQual || formData.highestAcademicQualifications,
+            district: teacherDistrict || formData.district,
+            circuit: teacherCircuit || formData.circuit,
+          };
+          setFormData(updated);
+          onUpdate(updated);
+          if (isAutoSave) {
+            DbController.saveSchoolInfo(updated);
+          }
+        }
+      }
+    }
+  }, [teachers, formData.assignedTeacherId]);
+
+  const handleSelectTeacher = (teacherId: string) => {
+    if (!teacherId) {
+      const updated = {
+        ...formData,
+        assignedTeacherId: '',
+      };
+      setFormData(updated);
+      onUpdate(updated);
+      if (isAutoSave) {
+        DbController.saveSchoolInfo(updated);
+      }
+      return;
+    }
+
+    const selectedTeacher = teachers.find(t => t.id === teacherId);
+    if (selectedTeacher) {
+      const fullName = `${selectedTeacher.firstName} ${selectedTeacher.middleName ? selectedTeacher.middleName + ' ' : ''}${selectedTeacher.lastName}`.trim();
+      
+      const updated = {
+        ...formData,
+        assignedTeacherId: teacherId,
+        headteacherName: fullName,
+        telephone: selectedTeacher.phone || formData.telephone || '',
+        email: selectedTeacher.email || formData.email || '',
+        highestAcademicQualifications: selectedTeacher.highestAcademicQualifications || formData.highestAcademicQualifications || '',
+        qualifications: selectedTeacher.professionalQualifications || formData.qualifications || '',
+        district: selectedTeacher.district || formData.district || '',
+        circuit: selectedTeacher.circuit || formData.circuit || '',
+      };
+
+      setFormData(updated);
+      onUpdate(updated);
+      if (isAutoSave) {
+        DbController.saveSchoolInfo(updated);
+      }
+    }
+  };
 
   const handleInputChange = (key: keyof SchoolInfo, val: string) => {
     const updated = { ...formData, [key]: val };
@@ -386,6 +467,37 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
               <Info size={16} className="text-slate-400" /> Headship & Leadership Desk
             </h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="md:col-span-2 bg-indigo-50/50 p-4 rounded-xl border border-indigo-100 mb-2">
+                <label className="block text-xs font-bold text-indigo-900 mb-1 flex items-center gap-1.5">
+                  <Link size={14} className="text-indigo-600" />
+                  Link Headteacher to Registered Faculty Member
+                </label>
+                <p className="text-[11px] text-indigo-700/80 mb-3 font-sans">
+                  Select a teacher from your school roster to automatically fill and dynamically synchronize their credentials, qualifications, contact lines, and administrative jurisdiction boundaries in real-time.
+                </p>
+                <div className="flex flex-col sm:flex-row items-center gap-3">
+                  <select
+                    value={formData.assignedTeacherId || ''}
+                    onChange={(e) => handleSelectTeacher(e.target.value)}
+                    className="w-full sm:w-auto flex-grow text-xs px-3 py-2 border border-slate-250 bg-white rounded-lg focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 font-medium text-slate-800"
+                  >
+                    <option value="">-- Manual Mode (No registered Teacher assigned) --</option>
+                    {teachers.map((teacher) => (
+                      <option key={teacher.id} value={teacher.id}>
+                        {teacher.firstName} {teacher.middleName ? teacher.middleName + ' ' : ''}{teacher.lastName} ({teacher.staffId || 'No ID'})
+                      </option>
+                    ))}
+                  </select>
+                  
+                  {formData.assignedTeacherId && (
+                    <div className="flex items-center gap-1 bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2.5 py-1.5 rounded-lg border border-emerald-200 uppercase tracking-wide">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                      Live Sync Active
+                    </div>
+                  )}
+                </div>
+              </div>
+
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1">Headteacher Name *</label>
                 <input
@@ -709,7 +821,12 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
               </div>
               <div className="pt-2 text-[11px] font-sans">
                 <span className="block text-slate-400 font-mono text-[10px] uppercase">Headteacher Contact:</span>
-                <strong className="block text-slate-800 font-medium mt-0.5">{formData.headteacherName}</strong>
+                <strong className="block text-slate-800 font-medium mt-0.5">
+                  {formData.headteacherName}
+                  {formData.assignedTeacherId && (
+                    <span className="ml-1 text-[9px] text-indigo-600 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded font-bold font-mono">Linked</span>
+                  )}
+                </strong>
                 <span className="text-slate-500 text-xs block">{formData.telephone} | {formData.email}</span>
                 <span className="text-slate-400 italic text-[10px] block mt-1">{formData.highestAcademicQualifications}</span>
               </div>
@@ -873,7 +990,7 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
                 </span>
               </div>
               
-              <div id="school-profile-preview-card" className="relative w-full max-w-[450px] aspect-[1/1.414] bg-white p-8 text-black border-4 border-double border-slate-800 shadow-2xl text-[9px] space-y-3 font-serif rounded-none overflow-y-auto">
+              <div id="school-profile-preview-card" className="relative w-full max-w-[450px] min-h-[636px] bg-white p-8 text-black border-4 border-double border-slate-800 shadow-2xl text-[9px] space-y-3 font-serif rounded-none overflow-y-auto">
                 {/* Transparent School Crest Watermark */}
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none opacity-[0.045] z-0">
                   {formData.crestUrl ? (
@@ -937,7 +1054,7 @@ export default function SchoolProfileTab({ theme, schoolInfo, onUpdate, isAutoSa
             </div>
 
             {/* Right: Setup Manual & Control */}
-            <div className="w-full md:w-[400px] p-6 bg-white flex flex-col justify-between overflow-y-auto max-h-none md:max-h-[90vh]">
+            <div className="w-full md:w-[400px] p-6 bg-white flex flex-col justify-between overflow-y-auto max-h-none md:max-h-[90vh] no-print">
               <div className="space-y-4">
                 <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
                   <div className="w-10 h-10 bg-indigo-50 rounded-lg flex items-center justify-center text-indigo-600 flex-shrink-0">

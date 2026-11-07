@@ -153,7 +153,7 @@ export default function DailyFinancialSummaryTab({
     };
   }, [filterType, singleDate, selectedMonth, selectedQuarter, customStartDate, customEndDate, currentYear, todayStr]);
 
-  // 1. Gather all student fee payments (with multi-month demo fallback if none exist)
+  // 1. Gather all student fee payments from live registered bills
   const allFeePayments = useMemo(() => {
     const bills = DbController.getStudentFeeBills();
     const payments: FlattenedFeePayment[] = [];

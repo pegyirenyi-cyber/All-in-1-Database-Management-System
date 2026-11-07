@@ -23,7 +23,6 @@ import {
   GraduationCap,
   CalendarDays,
   Target,
-  Sparkles,
   Zap,
   Plus,
   Send,
@@ -55,7 +54,8 @@ import {
   Bell,
   MapPin,
   CheckSquare,
-  BellRing
+  BellRing,
+  Key
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import { Teacher, Student, AttendanceRecord, AcademicCalendarConfig, ClassType, SubjectType, StudentAssessment, TeacherReflection, SchoolInfo, CustomTask, QuickNote, NoteCategory } from '../types';
@@ -658,8 +658,9 @@ export default function TeacherDashboardTab({
       if (existingIdx >= 0) {
         assessmentToUpdate = { ...allAssessments[existingIdx] };
       } else {
+        const compoundId = `${student.id}_${year}_${term}_${(qaSubject || '').replace(/\s+/g, '')}`.replace(/\//g, '-');
         assessmentToUpdate = {
-          id: `ass_${student.id}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+          id: compoundId,
           studentId: student.id,
           studentName: `${student.firstName} ${student.lastName}`,
           class: student.class,
@@ -939,6 +940,13 @@ export default function TeacherDashboardTab({
                 <span className="bg-indigo-600 text-white px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider shadow-sm">
                   {schoolInfo.schoolType || 'Public'} School
                 </span>
+                <span className="bg-amber-50 text-amber-900 border border-amber-300 px-2.5 py-0.5 rounded-full text-[10px] font-black font-mono tracking-wider shadow-xs flex items-center gap-1">
+                  <Key size={11} className="text-amber-600" /> School Code ID: {teacherProfile.schoolCode || teacherProfile.schoolId || schoolInfo.schoolCode || schoolInfo.schoolId || DbController.resolveActiveSchoolId()}
+                </span>
+                <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full text-[9px] font-bold tracking-tight shadow-xs flex items-center gap-1" title="Real-time bidirectional sync between Teacher & User ID">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                  Data Sharing Active with User ID
+                </span>
                 {schoolInfo.emisCode && (
                   <span className="bg-amber-100 text-amber-900 border border-amber-200 px-2 py-0.5 rounded-md text-[10px] font-bold font-mono">
                     EMIS: {schoolInfo.emisCode}
@@ -1033,7 +1041,7 @@ export default function TeacherDashboardTab({
                 return (
                   <div className="bg-amber-50 border border-amber-200 p-3 rounded-2xl flex items-center gap-3 animate-bounce-subtle">
                     <div className="p-2 bg-amber-400 text-white rounded-xl shadow-sm">
-                      <Sparkles size={16} />
+                      <Cake size={16} />
                     </div>
                     <div>
                       <p className="text-[10px] font-black text-amber-700 uppercase tracking-widest">Birthday Alert!</p>
@@ -1131,8 +1139,8 @@ export default function TeacherDashboardTab({
             <Save size={100} className="text-indigo-600" />
           </div>
           <div>
-            <h4 className="text-sm font-extrabold text-slate-850 uppercase tracking-wider flex items-center gap-2">
-              <Sparkles size={16} className="text-indigo-500" />
+            <h4 className="text-sm font-extrabold text-slate-855 uppercase tracking-wider flex items-center gap-2">
+              <Zap size={16} className="text-indigo-500" />
               Quick Actions Center
             </h4>
             <p className="text-xs text-slate-500 mt-1 font-sans">

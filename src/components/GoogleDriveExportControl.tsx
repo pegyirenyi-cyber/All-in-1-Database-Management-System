@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { 
-  FileDown, Cloud, CloudLightning, RefreshCw, CheckCircle2, AlertCircle, LogOut 
+  FileDown, Cloud, CloudLightning, RefreshCw, CheckCircle2, AlertCircle, LogOut, Database 
 } from 'lucide-react';
+import { DbController } from '../db';
 import { 
   initGoogleAuth, googleSignIn, googleSignOut, uploadPdfToDrive 
 } from '../googleDriveService';
@@ -78,6 +79,45 @@ export default function GoogleDriveExportControl({
     }
   };
 
+  const handleSaveToFirebase = async () => {
+    setIsLoading(true);
+    setStatus('generating');
+    setFeedback('Compiling page elements into PDF document...');
+    try {
+      const pdfResult = await generatePdfFromHtml(elementId, customFilename, isLandscape);
+      setStatus('uploading');
+      setFeedback('Saving document directly to Google Cloud Firebase...');
+
+      const reader = new FileReader();
+      const base64Promise = new Promise<string>((resolve, reject) => {
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(pdfResult.blob);
+      });
+      const dataUrl = await base64Promise;
+
+      const docId = `DOC_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      await DbController.saveCloudDocument({
+        id: docId,
+        name: pdfResult.filename,
+        mimeType: 'application/pdf',
+        dataUrl,
+        sizeBytes: pdfResult.blob.size,
+        createdAt: new Date().toISOString()
+      });
+
+      setStatus('success');
+      setFeedback('Document successfully saved to Cloud Firebase!');
+      setTimeout(() => setStatus('idle'), 4500);
+    } catch (error: any) {
+      console.error(error);
+      setStatus('failed');
+      setFeedback(error.message || 'Failed to save document to Cloud Firebase.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleSaveToDrive = async () => {
     if (!isAuthenticated) return;
     setIsLoading(true);
@@ -113,6 +153,18 @@ export default function GoogleDriveExportControl({
           placeholder="e.g. Report.pdf"
           className="w-full px-3 py-1.5 border border-slate-200 rounded-lg bg-white text-slate-900 focus:outline-none focus:border-indigo-500 font-medium"
         />
+      </div>
+
+      {/* Primary Cloud Firebase Storage Button */}
+      <div className="space-y-2 text-left">
+        <button
+          type="button"
+          onClick={handleSaveToFirebase}
+          disabled={isLoading}
+          className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-semibold shadow-xs transition flex items-center justify-center gap-2 cursor-pointer active:translate-y-0.5 disabled:opacity-50 disabled:pointer-events-none"
+        >
+          <Database size={14} /> Save Document to Cloud Firebase
+        </button>
       </div>
 
       {/* Primary Local Download Trigger */}

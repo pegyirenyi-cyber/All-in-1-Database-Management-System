@@ -28,9 +28,44 @@
         "twilioFromNumber": { "type": "string" },
         "twilioEnabled": { "type": "boolean" },
         "smsBalance": { "type": "number" },
-        "smsSenderId": { "type": "string" }
+        "smsSenderId": { "type": "string" },
+        "schoolName": { "type": "string" },
+        "schoolCode": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "address": { "type": "string" },
+        "officialAddress": { "type": "string" },
+        "phone": { "type": "string" },
+        "whatsappNumber": { "type": "string" },
+        "headteacherEmail": { "type": "string" },
+        "headteacherPhone": { "type": "string" },
+        "bursarName": { "type": "string" },
+        "professionalCertificate": { "type": "string" },
+        "crestUrl": { "type": "string" },
+        "watermarkUrl": { "type": "string" },
+        "stampUrl": { "type": "string" },
+        "headteacherSignatureUrl": { "type": "string" },
+        "signatureUrl": { "type": "string" },
+        "bursarSignatureUrl": { "type": "string" },
+        "region": { "type": "string" },
+        "academicYear": { "type": "string" },
+        "currentTerm": { "type": "string" },
+        "termStartDate": { "type": "string" },
+        "termEndDate": { "type": "string" },
+        "reopeningDate": { "type": "string" },
+        "nextTermStartDate": { "type": "string" },
+        "currency": { "type": "string" },
+        "gradingSystem": { "type": "string" },
+        "defaultTermFee": { "type": "number" },
+        "bankName": { "type": "string" },
+        "bankAccountNum": { "type": "string" },
+        "momoMerchantNumber": { "type": "string" },
+        "primaryColor": { "type": "string" },
+        "setupWizardCompleted": { "type": "boolean" },
+        "selectedClasses": { "type": "array", "items": { "type": "string" } },
+        "updatedAt": { "type": "string" }
       },
-      "required": ["id", "name", "schoolType", "headteacherName"]
+      "required": ["id"]
     },
     "Student": {
       "title": "Student",
@@ -332,6 +367,24 @@
         "updatedBy": { "type": "string" }
       },
       "required": ["id", "name", "type", "text", "createdAt"]
+    },
+    "UserBackup": {
+      "title": "UserBackup",
+      "description": "Full database JSON snapshot file and metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "schoolId": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "version": { "type": "string" },
+        "fileName": { "type": "string" },
+        "fileSize": { "type": "number" },
+        "payload": { "type": "string" },
+        "stats": { "type": "object" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "timestamp", "payload"]
     }
   },
   "firestore": {
@@ -394,6 +447,22 @@
     "/schools/{schoolId}/communication_templates/{templateId}": {
       "schema": "CommunicationTemplate",
       "description": "Custom communication email and WhatsApp templates"
+    },
+    "/users/{userId}/backups/{backupId}": {
+      "schema": "UserBackup",
+      "description": "Database snapshot backup files saved to user account"
+    },
+    "/users/{userId}/cloud_sync/{syncId}": {
+      "schema": "UserBackup",
+      "description": "Cloud synchronization snapshots saved to user account"
+    },
+    "/schools/{schoolId}/backups/{backupId}": {
+      "schema": "UserBackup",
+      "description": "Database snapshot backup files saved to school account"
+    },
+    "/schools/{schoolId}/cloud_sync/{syncId}": {
+      "schema": "UserBackup",
+      "description": "Cloud synchronization snapshots saved to school account"
     }
   }
 }

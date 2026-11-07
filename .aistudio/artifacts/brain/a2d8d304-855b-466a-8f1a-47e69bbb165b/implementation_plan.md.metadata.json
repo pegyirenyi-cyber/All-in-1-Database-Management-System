@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan for deepening bill component expense tracking, multi-stage payment voucher audit workflows, component-specific profit and loss margins, and automated expenditure reconciliations in the school finances module.",
-  "updatedAt":  "2026-09-30T18:57:04.726240771Z",
-  "requestFeedback":  true,
-  "userFacing":  true
+  "summary": "Fixed Firebase auth/invalid-credential error handling by adding local profile session fallbacks, removing unhandled console.error logs, and providing direct Google Sign In recovery when entering Google accounts into the password form.",
+  "updatedAt": "2026-11-05T11:52:05.630990155Z",
+  "requestFeedback": true,
+  "userFacing": true
 }

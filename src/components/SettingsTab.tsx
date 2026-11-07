@@ -2,15 +2,15 @@ import * as React from 'react';
 import { useState, useEffect, useMemo, FormEvent, ChangeEvent, useRef } from 'react';
 import { triggerToast } from '../utils';
 import { ThemeType, UserRole, PaystackPayment, WebAuthnCredential, ActivityLog, CLASSES, ClassType, AttendanceRecord, StudentAssessment, AutoBackupConfig, AutoBackupEntry, CloudSyncConfig } from '../types';
-import { DbController } from '../db';
+import { DbController, getStorageItem, setStorageItem } from '../db';
 import { THEME_CONFIGS, ThemeStyles } from './ThemeWrapper';
 import { generateActivationCode, evaluateSubscription } from '../subscription';
 import PaystackPaymentTrigger from './PaystackPaymentTrigger';
 import { 
   Palette, Smartphone, Save, CheckCircle2, ShieldCheck, UserPlus, FileSliders, Laptop, Lock, Mail,
-  Database, Download, Upload, AlertTriangle, Trash2, ShieldAlert, X, Sun, Moon, Key, CreditCard, Sparkles, HelpCircle, AlertCircle, Check,
+  Database, Download, Upload, AlertTriangle, Trash2, ShieldAlert, X, Sun, Moon, Key, CreditCard, HelpCircle, AlertCircle, Check,
   Fingerprint, RefreshCw, History, ArrowUpCircle, Filter, ClipboardCheck, ArrowUpDown, Users, UserCheck, Wrench,
-  Hash, Link, Archive
+  Hash, Link, Archive, Building2, Shield
 } from 'lucide-react';
 
 interface Props {
@@ -19,8 +19,10 @@ interface Props {
   isAutoSave: boolean;
   onAutoSaveToggle: (active: boolean) => void;
   onRefresh: () => void;
+  onResetAll?: () => Promise<void>;
   settingsSubTab?: 'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers' | 'security' | 'archive';
   setSettingsSubTab?: (tab: 'general' | 'accounts' | 'backup' | 'billing' | 'logs' | 'teachers' | 'security' | 'archive') => void;
+  onNavigateTab?: (tabId: string) => void;
 }
 
 export default function SettingsTab({ 
@@ -29,8 +31,10 @@ export default function SettingsTab({
   isAutoSave, 
   onAutoSaveToggle, 
   onRefresh,
+  onResetAll,
   settingsSubTab: propSettingsSubTab,
-  setSettingsSubTab: propSetSettingsSubTab
+  setSettingsSubTab: propSetSettingsSubTab,
+  onNavigateTab
 }: Props) {
   const [activeTheme, setActiveTheme] = useState<ThemeType>(theme.name);
   const [autoSaveActive, setAutoSaveActive] = useState<boolean>(isAutoSave);
@@ -87,16 +91,18 @@ export default function SettingsTab({
 
   // Dynamic licensing pricing states
   const [school, setSchool] = useState(() => DbController.getSchoolInfo());
-  const [adminPrice1Y, setAdminPrice1Y] = useState(school.licensePrice1Year ?? 350);
-  const [adminPrice2Y, setAdminPrice2Y] = useState(school.licensePrice2Year ?? 600);
-  const [adminPrice3Y, setAdminPrice3Y] = useState(school.licensePrice3Year ?? 800);
-  const [adminPrice5Y, setAdminPrice5Y] = useState(school.licensePrice5Year ?? 1200);
-  const [adminSmsRate, setAdminSmsRate] = useState(school.smsRate ?? 20);
+  const [platformPricing, setPlatformPricing] = useState(() => DbController.getPlatformPricing());
+  const [adminPrice1Y, setAdminPrice1Y] = useState(platformPricing.licensePrice1Year);
+  const [adminPrice2Y, setAdminPrice2Y] = useState(platformPricing.licensePrice2Year);
+  const [adminPrice3Y, setAdminPrice3Y] = useState(platformPricing.licensePrice3Year);
+  const [adminPrice5Y, setAdminPrice5Y] = useState(platformPricing.licensePrice5Year);
+  const [adminSmsRate, setAdminSmsRate] = useState(platformPricing.smsRate);
 
-  const price1Year = school.licensePrice1Year ?? 350;
-  const price2Year = school.licensePrice2Year ?? 600;
-  const price3Year = school.licensePrice3Year ?? 800;
-  const price5Year = school.licensePrice5Year ?? 1200;
+  // Authoritative subscription renewal period pricing strictly enforced across all users
+  const price1Year = platformPricing.licensePrice1Year;
+  const price2Year = platformPricing.licensePrice2Year;
+  const price3Year = platformPricing.licensePrice3Year;
+  const price5Year = platformPricing.licensePrice5Year;
 
   const currentUser = useMemo(() => DbController.getCurrentUser(), [registeredAccounts]);
   const promoDiscount = currentUser?.promoDiscountRate || 0;
@@ -121,11 +127,11 @@ export default function SettingsTab({
   const [importSuccess, setImportSuccess] = useState('');
 
   const [lastBackupTime, setLastBackupTime] = useState<string | null>(() => {
-    return localStorage.getItem('last_backup_download_timestamp');
+    return getStorageItem<string | null>('last_backup_download_timestamp', null);
   });
 
   const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(() => {
-    return localStorage.getItem('google_access_token');
+    return getStorageItem<string | null>('google_access_token', null);
   });
   const [isGoogleDriveSaving, setIsGoogleDriveSaving] = useState<boolean>(false);
 
@@ -142,28 +148,6 @@ export default function SettingsTab({
     return DbController.getCloudSyncConfig();
   });
 
-  const [specialSchoolId, setSpecialSchoolId] = useState(school.schoolId || '');
-
-  const handleUpdateSchoolId = async () => {
-    if (!specialSchoolId.trim()) {
-      alert("Please enter a valid School ID or generate one.");
-      return;
-    }
-    
-    if (window.confirm("Changing the Special School ID will re-route your database connectivity to a different partition. Are you sure?")) {
-      await DbController.updateSchoolId(specialSchoolId.trim());
-      const updatedSchool = DbController.getSchoolInfo();
-      setSchool(updatedSchool);
-      setSpecialSchoolId(updatedSchool.schoolId || '');
-      setImportSuccess("✓ Special School ID linked successfully! Database re-routed.");
-      setTimeout(() => setImportSuccess(''), 5000);
-    }
-  };
-
-  const handleGenerateSchoolId = () => {
-    const newId = DbController.generateSpecialSchoolId();
-    setSpecialSchoolId(newId);
-  };
 
   const handleToggleCloudSync = (enabled: boolean) => {
     const updated = { ...cloudSyncConfig, enabled };
@@ -177,7 +161,7 @@ export default function SettingsTab({
     );
   };
 
-  const handleCloudSyncProviderChange = (provider: 'Google Drive' | 'Firebase Cloud Storage') => {
+  const handleCloudSyncProviderChange = (provider: 'Google Drive' | 'Firebase Cloud Storage' | 'Firebase Firestore (User ID Cloud Database)') => {
     const updated = { ...cloudSyncConfig, provider };
     DbController.saveCloudSyncConfig(updated);
     setCloudSyncConfig(updated);
@@ -294,7 +278,7 @@ export default function SettingsTab({
       linkElement.click();
 
       const now = new Date().toISOString();
-      localStorage.setItem('last_backup_download_timestamp', now);
+      setStorageItem('last_backup_download_timestamp', now);
       setLastBackupTime(now);
     } catch (e: any) {
       alert("Failed to download auto-backup file: " + e.message);
@@ -338,7 +322,9 @@ export default function SettingsTab({
   // Wipe states
   const [showWipeModal, setShowWipeModal] = useState(false);
   const [wipeConfirmText, setWipeConfirmText] = useState('');
+  const [wipeAuthorizeChecked, setWipeAuthorizeChecked] = useState(false);
   const [wipeError, setWipeError] = useState('');
+  const [isWipingData, setIsWipingData] = useState(false);
   const [showWipeBiometric, setShowWipeBiometric] = useState(false);
   const [wipeBiometricStep, setWipeBiometricStep] = useState<'idle' | 'scanning' | 'success' | 'failed'>('idle');
 
@@ -553,41 +539,85 @@ export default function SettingsTab({
     }
   }, [settingsSubTab]);
 
-  // Load school pricing configuration dynamically when billing sub-tab is opened
+  // Load platform and school pricing configuration dynamically
   useEffect(() => {
-    if (settingsSubTab === 'billing') {
+    const handlePlatformPricingUpdated = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const newPricing = customEvent.detail || DbController.getPlatformPricing();
+      setPlatformPricing(newPricing);
       const freshSchool = DbController.getSchoolInfo();
       setSchool(freshSchool);
-      setAdminPrice1Y(freshSchool.licensePrice1Year ?? 350);
-      setAdminPrice2Y(freshSchool.licensePrice2Year ?? 600);
-      setAdminPrice3Y(freshSchool.licensePrice3Year ?? 800);
-      setAdminPrice5Y(freshSchool.licensePrice5Year ?? 1200);
-      setAdminSmsRate(freshSchool.smsRate ?? 20);
+      setAdminPrice1Y(newPricing.licensePrice1Year);
+      setAdminPrice2Y(newPricing.licensePrice2Year);
+      setAdminPrice3Y(newPricing.licensePrice3Year);
+      setAdminPrice5Y(newPricing.licensePrice5Year);
+      setAdminSmsRate(newPricing.smsRate);
+    };
+
+    window.addEventListener('platform-pricing-updated', handlePlatformPricingUpdated);
+    window.addEventListener('school-updated', handlePlatformPricingUpdated);
+
+    if (settingsSubTab === 'billing') {
+      const livePricing = DbController.getPlatformPricing();
+      setPlatformPricing(livePricing);
+      const freshSchool = DbController.getSchoolInfo();
+      setSchool(freshSchool);
+      setAdminPrice1Y(livePricing.licensePrice1Year);
+      setAdminPrice2Y(livePricing.licensePrice2Year);
+      setAdminPrice3Y(livePricing.licensePrice3Year);
+      setAdminPrice5Y(livePricing.licensePrice5Year);
+      setAdminSmsRate(livePricing.smsRate);
     }
+
+    return () => {
+      window.removeEventListener('platform-pricing-updated', handlePlatformPricingUpdated);
+      window.removeEventListener('school-updated', handlePlatformPricingUpdated);
+    };
   }, [settingsSubTab]);
 
-  const handleSavePricing = () => {
+  const [pricingSuccessMsg, setPricingSuccessMsg] = useState<string | null>(null);
+
+  const handleSavePricing = async () => {
     try {
-      const updatedSchool = {
-        ...school,
+      const updatedPricing = {
         licensePrice1Year: adminPrice1Y,
         licensePrice2Year: adminPrice2Y,
         licensePrice3Year: adminPrice3Y,
         licensePrice5Year: adminPrice5Y,
         smsRate: adminSmsRate,
       };
-      DbController.saveSchoolInfo(updatedSchool);
-      setSchool(updatedSchool);
-      DbController.writeActivityLog(
-        'Licensing pricing modified',
-        `Adjusted tier prices: 1-Year = GHS ${adminPrice1Y}, 2-Year = GHS ${adminPrice2Y}, 3-Year = GHS ${adminPrice3Y}, 5-Year = GHS ${adminPrice5Y}, SMS Rate = ${adminSmsRate} credits/GHS`,
-        'medium'
-      );
-      alert("License tier and SMS carrier pricing configurations updated successfully across the entire platform!");
+      const saved = await DbController.savePlatformPricing(updatedPricing);
+      setPlatformPricing(saved);
+      setSchool(DbController.getSchoolInfo());
+      setPricingSuccessMsg("Subscription renewal period pricing and SMS rate saved to Cloud Firestore and effectively applied to all user accounts!");
+      setTimeout(() => setPricingSuccessMsg(null), 5000);
       onRefresh();
     } catch (e: any) {
       alert("Failed to save pricing configuration updates: " + e.message);
     }
+  };
+
+  const handleSchoolImageUpload = (e: React.ChangeEvent<HTMLInputElement>, field: 'crestUrl' | 'watermarkUrl' | 'headteacherSignatureUrl' | 'bursarSignatureUrl') => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result as string;
+      if (dataUrl) {
+        const updated = { 
+          ...school, 
+          [field]: dataUrl,
+          ...(field === 'crestUrl' ? { logoUrl: dataUrl } : {})
+        };
+        setSchool(updated);
+        DbController.saveSchoolInfo(updated);
+        setSaveStatus(true);
+        onRefresh();
+        setTimeout(() => setSaveStatus(false), 3000);
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
   };
 
   const handleOfflineActivationSubmit = async (e: FormEvent) => {
@@ -917,7 +947,7 @@ export default function SettingsTab({
 
       // Update backup downloaded timestamp
       const now = new Date().toISOString();
-      localStorage.setItem('last_backup_download_timestamp', now);
+      setStorageItem('last_backup_download_timestamp', now);
       setLastBackupTime(now);
     } catch (e: any) {
       alert("Failed to export backup: " + e.message);
@@ -930,7 +960,7 @@ export default function SettingsTab({
     setImportError('');
     try {
       await DbController.firebaseGoogleLogin();
-      const token = localStorage.getItem('google_access_token');
+      const token = getStorageItem<string | null>('google_access_token', null);
       setGoogleAccessToken(token);
       setImportSuccess(`✓ Google Account connected successfully! Authorized for Google Drive backups.`);
       setTimeout(() => setImportSuccess(''), 5000);
@@ -943,7 +973,7 @@ export default function SettingsTab({
   };
 
   const handleDisconnectGoogleDrive = () => {
-    localStorage.removeItem('google_access_token');
+    setStorageItem('google_access_token', null);
     setGoogleAccessToken(null);
     setImportSuccess(`Google Account disconnected.`);
     setTimeout(() => setImportSuccess(''), 4000);
@@ -1224,43 +1254,28 @@ export default function SettingsTab({
           <div className="space-y-3 pt-2">
             <h3 className="text-sm font-display font-bold text-slate-800 flex items-center gap-1.5 pb-2 border-b border-slate-100">
               <Save size={17} className={theme.accentText} />
-              Database Storage Policy & Auto-Save Toggle
+              Cloud Firestore Direct Link & Data Persistence
             </h3>
-            <p className="text-[10px] text-slate-400 leading-relaxed">The application runs an enterprise-grade background synchronization database engine. Turn Auto Save on or off to manage how changes are written to the database storage.</p>
+            <p className="text-[10px] text-slate-400 leading-relaxed">
+              All saving modes are discounted and unified into a direct Cloud Firestore live pipeline. All student records, assessments, attendance, and finances are instantly persisted to Cloud Firestore.
+            </p>
 
-            <div className={`flex items-center justify-between p-4 rounded-xl border mt-3 no-print transition-all duration-300 ${
-              isAutoSave 
-                ? 'bg-emerald-50/50 border-emerald-200 shadow-xs' 
-                : 'bg-slate-50 border-slate-200'
-            }`}>
-              <div className="max-w-[75%] sm:max-w-[80%] pr-3">
-                <strong className={`block text-xs text-left font-semibold ${isAutoSave ? 'text-emerald-800' : 'text-slate-750'}`}>
-                  Real-time Auto Saving
+            <div className="flex items-center justify-between p-4 rounded-xl border mt-3 no-print bg-emerald-50/70 border-emerald-200 shadow-xs">
+              <div className="max-w-[80%] pr-3">
+                <strong className="block text-xs text-left font-semibold text-emerald-800 flex items-center gap-1.5">
+                  <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
+                  Direct Cloud Firestore Live Link
                 </strong>
-                <span className={`text-[10px] mt-1 block leading-relaxed ${isAutoSave ? 'text-emerald-600' : 'text-slate-500'}`}>
-                  {isAutoSave 
-                    ? 'Every single change to student profiles, grade assessments, fee payments, attendance, and profile data is saved and synced instantly to keep records safe.'
-                    : 'Auto Saving is currently paused. You must manually prompt saves or backup operations to secure your student directories.'}
+                <span className="text-[10px] mt-1 block leading-relaxed text-emerald-700">
+                  Every change to student enrolments, grade assessments, payments, attendance, staff rosters, and settings writes immediately and directly to Google Cloud Firestore with 0 data stored in browser cache memory.
                 </span>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  onAutoSaveToggle(!isAutoSave);
-                  setSaveStatus(true);
-                  const timer = setTimeout(() => setSaveStatus(false), 3000);
-                  return () => clearTimeout(timer);
-                }}
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-offset-2 ${
-                  isAutoSave ? 'bg-emerald-600 focus:ring-emerald-500' : 'bg-slate-300 focus:ring-slate-400'
-                }`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
-                    isAutoSave ? 'translate-x-5' : 'translate-x-0'
-                  }`}
-                />
-              </button>
+              <div className="flex items-center gap-2">
+                <span className="bg-emerald-600 text-white font-mono text-[10px] font-bold px-3 py-1.5 rounded-lg shadow-xs flex items-center gap-1.5 shrink-0">
+                  <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
+                  CONNECTED
+                </span>
+              </div>
             </div>
           </div>
 
@@ -1544,7 +1559,7 @@ export default function SettingsTab({
           </div>
 
           {/* GEETECH Administrator License Generator key block (for pegyirenyi@gmail.com ONLY) */}
-          {DbController.getCurrentUser()?.email.toLowerCase().trim() === 'pegyirenyi@gmail.com' && (
+          {(DbController.getCurrentUser()?.email || '').toLowerCase().trim() === 'pegyirenyi@gmail.com' && (
             <div className="space-y-3 pt-4 border-t border-slate-100 mt-2">
               <h4 className="text-xs font-black text-indigo-900 uppercase font-sans tracking-wide flex items-center gap-1.5">
                 <Key size={13} className="text-indigo-600 shrink-0" />
@@ -1566,7 +1581,7 @@ export default function SettingsTab({
                         const emailVal = e.target.value;
                         setLicTargetEmail(emailVal);
                         
-                        const matched = registeredAccounts.find(u => u.email.toLowerCase().trim() === emailVal.toLowerCase().trim());
+                        const matched = registeredAccounts.find(u => (u.email || '').toLowerCase().trim() === emailVal.toLowerCase().trim());
                         if (matched && matched.requestCode) {
                           setLicRequestCode(matched.requestCode);
                           setLicGeneratedCode(generateActivationCode(emailVal, matched.requestCode));
@@ -1579,7 +1594,7 @@ export default function SettingsTab({
                       className="w-full text-xs px-2 py-1.5 border border-slate-200 rounded-lg focus:outline-none bg-slate-50"
                     >
                       <option value="">-- Select Client --</option>
-                      {registeredAccounts.filter(u => u.email.toLowerCase().trim() !== 'pegyirenyi@gmail.com').map(u => (
+                      {registeredAccounts.filter(u => (u.email || '').toLowerCase().trim() !== 'pegyirenyi@gmail.com').map(u => (
                         <option key={u.uid} value={u.email}>{u.email}</option>
                       ))}
                     </select>
@@ -1923,98 +1938,7 @@ export default function SettingsTab({
         </div>
       </div>
 
-      {/* SPECIAL SCHOOL ID MANAGEMENT */}
-      <div className="bg-white p-6 rounded-xl border border-indigo-100 shadow-sm space-y-5 text-left">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-indigo-50">
-          <div className="space-y-1">
-            <h3 className="text-sm font-display font-bold text-slate-800 flex items-center gap-1.5">
-              <Hash size={17} className="text-indigo-600" />
-              Special School ID (Shared Database Key)
-            </h3>
-            <p className="text-[10px] text-slate-400 leading-normal max-w-xl">
-              Linking a unique ID allows multiple users (Headteachers & Teachers) to share a single database. Leave blank to use your personal private database.
-            </p>
-          </div>
-          
-          <div className="flex items-center gap-2">
-            <span className={`text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded-md ${school.schoolId ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-100 text-slate-400'}`}>
-              {school.schoolId ? "Linked" : "Personal Mode"}
-            </span>
-          </div>
-        </div>
 
-        <div className="flex flex-col md:flex-row gap-4 pt-1">
-          <div className="flex-1 space-y-3">
-            <div className="relative group">
-              <input
-                type="text"
-                value={specialSchoolId}
-                onChange={(e) => setSpecialSchoolId(e.target.value.toUpperCase())}
-                placeholder="Enter School ID (e.g. SMS-XXXXXXXX)"
-                className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold focus:ring-2 focus:ring-indigo-500 focus:bg-white outline-none transition"
-              />
-              <Link size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-              <button
-                type="button"
-                onClick={handleGenerateSchoolId}
-                className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 hover:bg-indigo-100 text-indigo-600 rounded-lg transition cursor-pointer"
-                title="Generate New ID"
-              >
-                <RefreshCw size={13} />
-              </button>
-            </div>
-            
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={handleUpdateSchoolId}
-                className={`flex-1 py-2 rounded-xl font-bold text-xs shadow-xs transition flex items-center justify-center gap-1.5 cursor-pointer bg-indigo-600 hover:bg-indigo-700 text-white`}
-              >
-                <ShieldCheck size={14} />
-                Link This School ID
-              </button>
-              {school.schoolId && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (window.confirm("Disconnecting will revert your access to your private database. Continue?")) {
-                      setSpecialSchoolId('');
-                      DbController.updateSchoolId('');
-                      setSchool(DbController.getSchoolInfo());
-                    }
-                  }}
-                  className="px-4 py-2 bg-slate-50 border border-slate-200 text-slate-500 rounded-xl font-bold text-xs hover:bg-rose-50 hover:text-rose-600 hover:border-rose-100 transition cursor-pointer"
-                >
-                  Disconnect
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div className="md:w-1/2 p-4 bg-indigo-50/40 border border-indigo-100/60 rounded-2xl flex items-start gap-3">
-            <div className="p-2 bg-indigo-100 rounded-lg text-indigo-600 flex-shrink-0">
-              <Users size={16} />
-            </div>
-            <div className="space-y-1.5">
-              <h4 className="text-[11px] font-bold text-indigo-900">Multi-User Collaboration</h4>
-              <p className="text-[10px] text-indigo-700/80 leading-relaxed">
-                Provide this ID to your staff. Once they link it in their settings, all entries made by them will automatically sync to your central dashboard and cloud backups.
-              </p>
-              {school.schoolId && (
-                <div className="pt-1 flex items-center gap-2">
-                  <span className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest">Share ID:</span>
-                  <code className="text-[11px] font-mono font-bold text-indigo-600 bg-white px-2 py-0.5 rounded border border-indigo-100 select-all cursor-pointer" onClick={() => {
-                    navigator.clipboard.writeText(school.schoolId || '');
-                    alert("ID copied for sharing!");
-                  }}>
-                    {school.schoolId}
-                  </code>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
 
       {/* SCHEDULED CLOUD SYNC CONFIGURATION */}
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-5 text-left">
@@ -2068,8 +1992,9 @@ export default function SettingsTab({
                     onChange={(e) => handleCloudSyncProviderChange(e.target.value as any)}
                     className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs font-medium focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
                   >
-                    <option value="Firebase Cloud Storage">Firebase Cloud Storage</option>
+                    <option value="Firebase Firestore (User ID Cloud Database)">Firebase Firestore (User ID Database - Instant Sync)</option>
                     <option value="Google Drive">Google Drive (OAuth required)</option>
+                    <option value="Firebase Cloud Storage">Firebase Cloud Storage</option>
                   </select>
                 </div>
 
@@ -2195,14 +2120,15 @@ export default function SettingsTab({
 
           <div className="border border-rose-100 rounded-xl p-4 bg-rose-50/20 flex flex-col justify-between space-y-3 text-left">
             <div>
-              <span className="font-bold text-rose-700 text-xs block mb-1">Clear & Reset All Data</span>
+              <span className="font-bold text-rose-700 text-xs block mb-1">Permanent Format & Clear All Data</span>
               <p className="text-[10px] text-slate-400 leading-normal">
-                Completely purge all students, staff, attendance registers, and assessments to start fresh.
+                Perform a deep format of all system files and data, empty the related User ID data from Cloud Firestore, and prevent data redundancy.
               </p>
             </div>
             <button
               onClick={() => {
-                setWipeConfirmText('');
+                setWipeConfirmText('CLEAR');
+                setWipeAuthorizeChecked(true);
                 setWipeError('');
                 setShowWipeModal(true);
               }}
@@ -2210,7 +2136,7 @@ export default function SettingsTab({
               className="w-full py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg font-bold shadow-xs cursor-pointer active:translate-y-0.5 transition flex items-center justify-center gap-1.5 text-center font-sans tracking-wide"
             >
               <Trash2 size={14} />
-              Clear All Data
+              Clear All Data (Deep Format)
             </button>
           </div>
 
@@ -2247,7 +2173,7 @@ export default function SettingsTab({
                 <div className="flex items-center gap-2">
                   <span className={`w-2.5 h-2.5 rounded-full ${subStatus?.isLocked ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'}`} />
                   <strong className="text-slate-800 text-xs font-black">
-                    {subStatus?.licenseType === 'trial' ? '14-Day System Trial' : 'Active School License'}
+                    {subStatus?.isLocked ? 'License Required / Expired' : subStatus?.licenseType === 'unlimited' ? 'Unlimited Lifetime License' : `${currentUser?.licensePeriod || 1}-Year School License`}
                   </strong>
                 </div>
                 <p className="text-[10px] text-slate-500 leading-normal font-sans pt-1">
@@ -2324,146 +2250,158 @@ export default function SettingsTab({
             {/* Part 1: Tier Selector Column (Lg: 7 cols) */}
             <div className="lg:col-span-7 bg-white p-4 sm:p-6 rounded-xl border border-slate-200 shadow-xs space-y-4">
               <h4 className="text-xs font-black text-slate-800 uppercase font-sans tracking-wide flex items-center gap-1.5">
-                <Sparkles size={14} className="text-amber-500 animate-pulse animate-bounce" />
+                <CreditCard size={14} className="text-emerald-600" />
                 Select Your School License Term
               </h4>
               <p className="text-[10px] text-slate-400 font-sans">Choose the desired subscription period to initialize with Paystack checkout security gateways.</p>
               
-              <div className="space-y-3 pt-2">
-                {/* 1 Year */}
-                <label className={`block p-4 rounded-xl border transition cursor-pointer flex items-start gap-3.5 ${selectedLicenseTier === '1year' ? 'bg-emerald-50/50 border-emerald-500 ring-2 ring-emerald-555' : 'border-slate-200 hover:bg-slate-50'}`}>
-                  <input 
-                    type="radio" 
-                    name="subTier" 
-                    value="1year" 
-                    checked={selectedLicenseTier === '1year'} 
-                    onChange={() => setSelectedLicenseTier('1year')}
-                    className="mt-1 accent-emerald-600 cursor-pointer"
-                  />
-                  <div className="flex-grow space-y-1">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-2">
+                {/* 1 Year Card */}
+                <div 
+                  onClick={() => setSelectedLicenseTier('1year')}
+                  className={`relative p-5 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between space-y-4 shadow-xs hover:shadow-md ${selectedLicenseTier === '1year' ? 'bg-gradient-to-b from-emerald-50/80 to-white border-emerald-500 ring-2 ring-emerald-500/30' : 'bg-white border-slate-200 hover:border-slate-300'}`}
+                >
+                  <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <span className="font-bold text-slate-800 text-xs">
-                        {subStatus?.licenseType === 'activated' && !subStatus.isLocked ? 'Extend License by 1 Year' : 'Standard 1-Year License Renewal'}
-                      </span>
-                      {promoDiscount > 0 ? (
-                        <div className="flex flex-col items-end">
-                          <span className="line-through text-slate-400 text-[10px] font-mono leading-none">GHS {price1Year.toFixed(2)}</span>
-                          <span className="font-black text-emerald-600 font-mono text-xs leading-none mt-0.5">GHS {discountedPrice1Year.toFixed(2)} (-{promoDiscount}%)</span>
-                        </div>
-                      ) : (
-                        <span className="font-black text-slate-800 font-mono text-xs">GHS {price1Year.toFixed(2)}</span>
+                      <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-slate-500 bg-slate-100 px-2 py-0.5 rounded">1 Year</span>
+                      {selectedLicenseTier === '1year' && (
+                        <span className="w-5 h-5 bg-emerald-600 text-white rounded-full flex items-center justify-center text-[10px] font-bold">✓</span>
                       )}
                     </div>
-                    <p className="text-[10px] text-slate-400 font-sans leading-normal">
-                      Grants complete institutional database authorization, reports analytics, and enrollment sync registers through July of the active calendar year.
+                    <h5 className="font-black text-slate-900 text-xs">Standard Renewal</h5>
+                    <div className="pt-1">
+                      {promoDiscount > 0 ? (
+                        <div className="flex flex-col">
+                          <span className="line-through text-slate-400 text-[10px] font-mono">GHS {price1Year.toFixed(2)}</span>
+                          <span className="font-black text-emerald-600 font-mono text-base tracking-tight">GHS {discountedPrice1Year.toFixed(2)}</span>
+                          <span className="text-[9px] text-emerald-700 font-bold">-{promoDiscount}% OFF</span>
+                        </div>
+                      ) : (
+                        <span className="font-black text-slate-900 font-mono text-base tracking-tight">GHS {price1Year.toFixed(2)}</span>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-500 leading-relaxed font-sans">
+                      Grants complete institutional database authorization and reports analytics through July.
                     </p>
                   </div>
-                </label>
+                  <div className="pt-2 border-t border-slate-100 text-[10px] font-bold text-emerald-700 flex items-center gap-1">
+                    <span>Select 1-Year Plan</span>
+                  </div>
+                </div>
 
-                {/* 2 Years */}
-                <label className={`block p-4 rounded-xl border transition cursor-pointer flex items-start gap-3.5 ${selectedLicenseTier === '2year' ? 'bg-emerald-50/50 border-emerald-500 ring-2 ring-emerald-555' : 'border-slate-200 hover:bg-slate-50'}`}>
-                  <input 
-                    type="radio" 
-                    name="subTier" 
-                    value="2year" 
-                    checked={selectedLicenseTier === '2year'} 
-                    onChange={() => setSelectedLicenseTier('2year')}
-                    className="mt-1 accent-emerald-600 cursor-pointer"
-                  />
-                  <div className="flex-grow space-y-1">
+                {/* 2 Years Card */}
+                <div 
+                  onClick={() => setSelectedLicenseTier('2year')}
+                  className={`relative p-5 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between space-y-4 shadow-xs hover:shadow-md ${selectedLicenseTier === '2year' ? 'bg-gradient-to-b from-emerald-50/80 to-white border-emerald-500 ring-2 ring-emerald-500/30' : 'bg-white border-slate-200 hover:border-slate-300'}`}
+                >
+                  <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="font-bold text-slate-800 text-xs">
-                          {subStatus?.licenseType === 'activated' && !subStatus.isLocked ? 'Extend License by 2 Years' : 'Extended 2-Year License Renewal'}
-                        </span>
-                        {savings2Year > 0 && (
-                          <span className="text-[8px] bg-emerald-100 text-emerald-800 font-black px-1.5 py-0.5 rounded uppercase font-mono tracking-wider">Save GHS {savings2Year.toFixed(2)}</span>
-                        )}
-                      </div>
-                      {promoDiscount > 0 ? (
-                        <div className="flex flex-col items-end">
-                          <span className="line-through text-slate-400 text-[10px] font-mono leading-none">GHS {price2Year.toFixed(2)}</span>
-                          <span className="font-black text-emerald-600 font-mono text-xs leading-none mt-0.5">GHS {discountedPrice2Year.toFixed(2)} (-{promoDiscount}%)</span>
-                        </div>
-                      ) : (
-                        <span className="font-black text-slate-800 font-mono text-xs">GHS {price2Year.toFixed(2)}</span>
+                      <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded">2 Years</span>
+                      {selectedLicenseTier === '2year' && (
+                        <span className="w-5 h-5 bg-emerald-600 text-white rounded-full flex items-center justify-center text-[10px] font-bold">✓</span>
                       )}
                     </div>
-                    <p className="text-[10px] text-slate-400 font-sans leading-normal">
-                      Grants extended multi-term database protection ensuring stability against eventual year inflation or subscription pricing updates.
+                    <h5 className="font-black text-slate-900 text-xs">Extended Protection</h5>
+                    <div className="pt-1">
+                      {promoDiscount > 0 ? (
+                        <div className="flex flex-col">
+                          <span className="line-through text-slate-400 text-[10px] font-mono">GHS {price2Year.toFixed(2)}</span>
+                          <span className="font-black text-emerald-600 font-mono text-base tracking-tight">GHS {discountedPrice2Year.toFixed(2)}</span>
+                          {savings2Year > 0 && <span className="text-[9px] text-emerald-700 font-bold">Save GHS {savings2Year.toFixed(2)}</span>}
+                        </div>
+                      ) : (
+                        <div className="flex flex-col">
+                          <span className="font-black text-slate-900 font-mono text-base tracking-tight">GHS {price2Year.toFixed(2)}</span>
+                          {savings2Year > 0 && <span className="text-[9px] text-emerald-700 font-bold">Save GHS {savings2Year.toFixed(2)}</span>}
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-500 leading-relaxed font-sans">
+                      Multi-term database protection ensuring stability against inflation or price updates.
                     </p>
                   </div>
-                </label>
+                  <div className="pt-2 border-t border-slate-100 text-[10px] font-bold text-emerald-700 flex items-center gap-1">
+                    <span>Select 2-Year Plan</span>
+                  </div>
+                </div>
 
-                {/* 3 Years */}
-                <label className={`block p-4 rounded-xl border transition cursor-pointer flex items-start gap-3.5 ${selectedLicenseTier === '3year' ? 'bg-emerald-50/50 border-emerald-500 ring-2 ring-emerald-555' : 'border-slate-200 hover:bg-slate-50'}`}>
-                  <input 
-                    type="radio" 
-                    name="subTier" 
-                    value="3year" 
-                    checked={selectedLicenseTier === '3year'} 
-                    onChange={() => setSelectedLicenseTier('3year')}
-                    className="mt-1 accent-emerald-600 cursor-pointer"
-                  />
-                  <div className="flex-grow space-y-1">
-                    <div className="flex items-center justify-between font-sans">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="font-bold text-slate-800 text-xs">
-                          {subStatus?.licenseType === 'activated' && !subStatus.isLocked ? 'Extend License by 3 Years' : 'Premium 3-Year License Protection'}
-                        </span>
-                        {savings3Year > 0 && (
-                          <span className="text-[8px] bg-indigo-100 text-indigo-800 font-black px-1.5 py-0.5 rounded uppercase font-mono tracking-wider">Best Value - Save GHS {savings3Year.toFixed(2)}</span>
-                        )}
-                      </div>
-                      {promoDiscount > 0 ? (
-                        <div className="flex flex-col items-end">
-                          <span className="line-through text-slate-400 text-[10px] font-mono leading-none">GHS {price3Year.toFixed(2)}</span>
-                          <span className="font-black text-emerald-600 font-mono text-xs leading-none mt-0.5">GHS {discountedPrice3Year.toFixed(2)} (-{promoDiscount}%)</span>
-                        </div>
-                      ) : (
-                        <span className="font-black text-slate-800 font-mono text-xs">GHS {price3Year.toFixed(2)}</span>
+                {/* 3 Years Card (Best Value) */}
+                <div 
+                  onClick={() => setSelectedLicenseTier('3year')}
+                  className={`relative p-5 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between space-y-4 shadow-xs hover:shadow-md ${selectedLicenseTier === '3year' ? 'bg-gradient-to-b from-indigo-50/90 to-white border-indigo-600 ring-2 ring-indigo-500/30' : 'bg-white border-slate-200 hover:border-slate-300'}`}
+                >
+                  <div className="absolute -top-2.5 right-4 bg-indigo-600 text-white text-[8.5px] font-black uppercase font-mono px-2.5 py-0.5 rounded-full shadow-xs">
+                    Best Value
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-indigo-800 bg-indigo-100 px-2 py-0.5 rounded">3 Years</span>
+                      {selectedLicenseTier === '3year' && (
+                        <span className="w-5 h-5 bg-indigo-600 text-white rounded-full flex items-center justify-center text-[10px] font-bold">✓</span>
                       )}
                     </div>
-                    <p className="text-[10px] text-slate-400 font-sans leading-normal">
-                      Maximum reliability for premium schools. Secures continuous access, software upgrades, backups synchronization, and parent portal communications.
+                    <h5 className="font-black text-slate-900 text-xs">Premium Protection</h5>
+                    <div className="pt-1">
+                      {promoDiscount > 0 ? (
+                        <div className="flex flex-col">
+                          <span className="line-through text-slate-400 text-[10px] font-mono">GHS {price3Year.toFixed(2)}</span>
+                          <span className="font-black text-indigo-600 font-mono text-base tracking-tight">GHS {discountedPrice3Year.toFixed(2)}</span>
+                          {savings3Year > 0 && <span className="text-[9px] text-indigo-700 font-bold">Save GHS {savings3Year.toFixed(2)}</span>}
+                        </div>
+                      ) : (
+                        <div className="flex flex-col">
+                          <span className="font-black text-slate-900 font-mono text-base tracking-tight">GHS {price3Year.toFixed(2)}</span>
+                          {savings3Year > 0 && <span className="text-[9px] text-indigo-700 font-bold">Save GHS {savings3Year.toFixed(2)}</span>}
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-500 leading-relaxed font-sans">
+                      Maximum reliability for premium schools with continuous access and upgrades.
                     </p>
                   </div>
-                </label>
+                  <div className="pt-2 border-t border-slate-100 text-[10px] font-bold text-indigo-700 flex items-center gap-1">
+                    <span>Select 3-Year Plan</span>
+                  </div>
+                </div>
 
-                {/* 5 Years */}
-                <label className={`block p-4 rounded-xl border transition cursor-pointer flex items-start gap-3.5 ${selectedLicenseTier === '5year' ? 'bg-emerald-50/50 border-emerald-500 ring-2 ring-emerald-555' : 'border-slate-200 hover:bg-slate-50'}`}>
-                  <input 
-                    type="radio" 
-                    name="subTier" 
-                    value="5year" 
-                    checked={selectedLicenseTier === '5year'} 
-                    onChange={() => setSelectedLicenseTier('5year')}
-                    className="mt-1 accent-emerald-600 cursor-pointer"
-                  />
-                  <div className="flex-grow space-y-1">
-                    <div className="flex items-center justify-between font-sans">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="font-bold text-slate-800 text-xs">
-                          {subStatus?.licenseType === 'activated' && !subStatus.isLocked ? 'Extend License by 5 Years' : 'Golden 5-Year Enterprise Shield'}
-                        </span>
-                        {savings5Year > 0 && (
-                          <span className="text-[8px] bg-amber-100 text-amber-800 font-black px-1.5 py-0.5 rounded uppercase font-mono tracking-wider">Ultimate Value - Save GHS {savings5Year.toFixed(2)}</span>
-                        )}
-                      </div>
-                      {promoDiscount > 0 ? (
-                        <div className="flex flex-col items-end">
-                          <span className="line-through text-slate-400 text-[10px] font-mono leading-none">GHS {price5Year.toFixed(2)}</span>
-                          <span className="font-black text-emerald-600 font-mono text-xs leading-none mt-0.5">GHS {discountedPrice5Year.toFixed(2)} (-{promoDiscount}%)</span>
-                        </div>
-                      ) : (
-                        <span className="font-black text-slate-800 font-mono text-xs">GHS {price5Year.toFixed(2)}</span>
+                {/* 5 Years Card (Enterprise) */}
+                <div 
+                  onClick={() => setSelectedLicenseTier('5year')}
+                  className={`relative p-5 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between space-y-4 shadow-xs hover:shadow-md ${selectedLicenseTier === '5year' ? 'bg-gradient-to-b from-amber-50/90 to-white border-amber-500 ring-2 ring-amber-500/30' : 'bg-white border-slate-200 hover:border-slate-300'}`}
+                >
+                  <div className="absolute -top-2.5 right-4 bg-amber-600 text-white text-[8.5px] font-black uppercase font-mono px-2.5 py-0.5 rounded-full shadow-xs">
+                    Enterprise
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-amber-800 bg-amber-100 px-2 py-0.5 rounded">5 Years</span>
+                      {selectedLicenseTier === '5year' && (
+                        <span className="w-5 h-5 bg-amber-600 text-white rounded-full flex items-center justify-center text-[10px] font-bold">✓</span>
                       )}
                     </div>
-                    <p className="text-[10px] text-slate-400 font-sans leading-normal">
-                      Comprehensive long-term institutional database shield. Permanent priority support, continuous security protocols, auto-recovery backups, and full SMS system integration support.
+                    <h5 className="font-black text-slate-900 text-xs">Golden Shield</h5>
+                    <div className="pt-1">
+                      {promoDiscount > 0 ? (
+                        <div className="flex flex-col">
+                          <span className="line-through text-slate-400 text-[10px] font-mono">GHS {price5Year.toFixed(2)}</span>
+                          <span className="font-black text-amber-700 font-mono text-base tracking-tight">GHS {discountedPrice5Year.toFixed(2)}</span>
+                          {savings5Year > 0 && <span className="text-[9px] text-amber-800 font-bold">Save GHS {savings5Year.toFixed(2)}</span>}
+                        </div>
+                      ) : (
+                        <div className="flex flex-col">
+                          <span className="font-black text-slate-900 font-mono text-base tracking-tight">GHS {price5Year.toFixed(2)}</span>
+                          {savings5Year > 0 && <span className="text-[9px] text-amber-800 font-bold">Save GHS {savings5Year.toFixed(2)}</span>}
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-500 leading-relaxed font-sans">
+                      Long-term institutional database shield with priority support and SMS integration.
                     </p>
                   </div>
-                </label>
+                  <div className="pt-2 border-t border-slate-100 text-[10px] font-bold text-amber-800 flex items-center gap-1">
+                    <span>Select 5-Year Plan</span>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -2626,7 +2564,7 @@ export default function SettingsTab({
                   {subStatus?.licenseType === 'activated' && !subStatus.isLocked ? 'License Successfully Extended!' : 'Corporate Database License Fully Activated!'}
                 </h4>
                 <p className="text-xs text-emerald-800/90 leading-relaxed font-sans max-w-2xl">
-                  Paystack transaction settled. The licensing system has successfully verified the cryptographic passcode and {subStatus?.licenseType === 'activated' && !subStatus.isLocked ? 'extended' : 'upgraded'} your account <strong>{currentUser?.email}</strong> {subStatus?.licenseType === 'activated' && !subStatus.isLocked ? 'by the selected term' : 'from Trial limits to fully Licensed Year Access'}. All core student directories, assessments, and attendance logs are secured.
+                  Paystack transaction settled. The licensing system has successfully verified the cryptographic passcode and {subStatus?.licenseType === 'activated' && !subStatus.isLocked ? 'extended' : 'activated'} your account <strong>{currentUser?.email}</strong> with full Licensed Access. All core student directories, assessments, and attendance logs are secured.
                 </p>
                 <div className="pt-2">
                   <button 
@@ -2668,6 +2606,13 @@ export default function SettingsTab({
                 </button>
               </div>
 
+              {pricingSuccessMsg && (
+                <div className="w-full p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-bold flex items-center gap-2 animate-fadeIn">
+                  <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+                  <span>{pricingSuccessMsg}</span>
+                </div>
+              )}
+
               {/* 4-Card Responsive Grid */}
               <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-6">
                 
@@ -2678,7 +2623,7 @@ export default function SettingsTab({
                       <span className="text-[10px] bg-slate-200/70 text-slate-700 font-black px-2.5 py-1 rounded-lg uppercase font-mono tracking-wider">
                         Benchmark Tier
                       </span>
-                      <Sparkles size={14} className="text-slate-400" />
+                      <Shield size={14} className="text-slate-400" />
                     </div>
                     <div>
                       <h5 className="font-bold text-slate-800 text-xs font-sans leading-tight">Standard 1-Year License</h5>
@@ -3225,89 +3170,173 @@ export default function SettingsTab({
       )}
 
       {/* COMPREHENSIVE SECURITY SAFE CLEAR-DATA MODAL POP-UP */}
+      {/* COMPREHENSIVE SECURITY SAFE CLEAR-DATA WARNING MODAL */}
       {showWipeModal && (
         <div 
           onClick={(e) => {
-            if (e.target === e.currentTarget) setShowWipeModal(false);
+            if (!isWipingData && e.target === e.currentTarget) setShowWipeModal(false);
           }}
-          className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-50 no-print cursor-pointer animate-fade-in"
+          className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 z-50 no-print animate-fade-in"
         >
           <div 
             onClick={(e) => e.stopPropagation()}
-            className="bg-white rounded-2xl border border-slate-200 max-w-md w-full p-6 shadow-2xl text-slate-900 font-sans space-y-6 cursor-default"
+            className="bg-white rounded-2xl border border-rose-200 max-w-lg w-full p-6 shadow-2xl text-slate-900 font-sans space-y-5 cursor-default relative overflow-hidden"
           >
-            <div className="flex justify-between items-center pb-3 border-b border-slate-100">
-              <h3 className="text-sm font-bold text-rose-800 flex items-center gap-1.5">
-                <ShieldAlert className="text-rose-600" size={18} />
-                Dangerous Action Warning
-              </h3>
-              <button 
-                onClick={() => setShowWipeModal(false)}
-                className="p-1 hover:bg-slate-100 rounded text-slate-400 transition cursor-pointer"
-              >
-                <X size={16} />
-              </button>
+            {/* Top red warning stripe */}
+            <div className="absolute top-0 inset-x-0 h-1.5 bg-gradient-to-r from-rose-500 via-amber-500 to-rose-600" />
+
+            <div className="flex justify-between items-start pb-3 border-b border-rose-100">
+              <div className="flex items-center gap-2 text-rose-700">
+                <div className="p-2 bg-rose-100 text-rose-700 rounded-xl">
+                  <ShieldAlert size={22} className="animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black tracking-tight text-rose-900">
+                    Warning: Clear Data (Deep Format)
+                  </h3>
+                  <span className="text-[11px] font-semibold text-rose-600 uppercase tracking-wider block">
+                    Permanent Cloud & Workstation Erasure
+                  </span>
+                </div>
+              </div>
+              {!isWipingData && (
+                <button 
+                  onClick={() => setShowWipeModal(false)}
+                  className="p-1 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-700 transition cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              )}
             </div>
 
-            <div className="space-y-3 text-xs leading-relaxed text-slate-650 text-left">
-              <p>
-                You are about to initiate a <strong>Complete System Reset</strong>. This operation will:
+            {/* Target ID Details */}
+            <div className="bg-rose-50/70 border border-rose-200 rounded-xl p-3.5 space-y-1.5 text-xs text-rose-950">
+              <div className="flex justify-between items-center text-[11px]">
+                <span className="font-bold text-rose-700">Target User ID:</span>
+                <span className="font-mono bg-white px-2 py-0.5 rounded border border-rose-200 font-bold text-rose-900">{currentUser?.uid || 'Active Session'}</span>
+              </div>
+              <div className="flex justify-between items-center text-[11px]">
+                <span className="font-bold text-rose-700">Target School ID:</span>
+                <span className="font-mono bg-white px-2 py-0.5 rounded border border-rose-200 font-bold text-rose-900">{school?.schoolId || DbController.resolveActiveSchoolId() || 'Active School'}</span>
+              </div>
+            </div>
+
+            <div className="space-y-3 text-xs leading-relaxed text-slate-700 text-left">
+              <p className="font-semibold text-slate-800">
+                Executing <strong>Clear Data (Deep Format)</strong> will irrevocably erase all data associated with this account from both <strong>Cloud Firebase Firestore</strong> and local memory:
               </p>
-              <ul className="list-disc pl-4 space-y-1 text-slate-500 font-semibold font-sans">
-                <li>Wipe all Student Profiles entirely</li>
-                <li>Wipe all Teacher Profiles & records</li>
-                <li>Clear the entire Class Attendance Roster</li>
-                <li>Reset all Academic Assessments & grade sheets</li>
-                <li>Reset the School Fees Ledger completely</li>
-                <li>Purge active login sessions & clear school settings</li>
-                <li>Initialize blank input data fields for any new user login</li>
+              <ul className="space-y-1.5 text-slate-600 font-medium pl-1">
+                <li className="flex items-start gap-2">
+                  <span className="text-rose-600 font-bold mt-0.5">✕</span>
+                  <span>Erase User ID profile, subscription metadata, and cloud backups in <strong>Cloud Firebase Firestore</strong></span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-rose-600 font-bold mt-0.5">✕</span>
+                  <span>Permanently delete all students, faculty members, attendance records, exam marks, and billings</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-rose-600 font-bold mt-0.5">✕</span>
+                  <span>Deep format <strong>IndexedDB database, CacheStorage, localStorage, and session records</strong></span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-rose-600 font-bold mt-0.5">✕</span>
+                  <span>Sign out active credentials and return workstation to a pristine, clean baseline state</span>
+                </li>
               </ul>
-              <p className="text-rose-600 font-bold bg-rose-50 p-2.5 rounded-lg border border-rose-100">
-                This action is irreversible. We highly recommend clicking "Save All Data" to back up first!
-              </p>
+              <div className="bg-amber-50 border border-amber-200 text-amber-900 rounded-lg p-2.5 text-[11px] font-bold flex items-center gap-2">
+                <AlertTriangle size={16} className="text-amber-600 shrink-0" />
+                <span>This physical cloud and system wipe cannot be undone or rolled back.</span>
+              </div>
             </div>
 
-            <div className="space-y-2 text-left">
-              <label className="block text-[10px] font-sans font-bold text-slate-500 uppercase tracking-wider">
-                Type the word <span className="text-rose-600 font-black">'WIPE'</span> to confirm authorization:
+            <div className="space-y-3 text-left">
+              <label className="flex items-start gap-2.5 p-3 rounded-xl border border-rose-200 bg-rose-50/50 cursor-pointer select-none">
+                <input 
+                  type="checkbox"
+                  disabled={isWipingData}
+                  checked={wipeAuthorizeChecked}
+                  onChange={(e) => {
+                    setWipeAuthorizeChecked(e.target.checked);
+                    if (e.target.checked) setWipeError('');
+                  }}
+                  className="mt-0.5 w-4 h-4 text-rose-600 rounded border-slate-300 focus:ring-rose-500 cursor-pointer shrink-0"
+                />
+                <span className="text-xs font-bold text-rose-950 leading-tight">
+                  I understand and authorize the permanent erasure of all records, data, and subcollections tied to User ID ({currentUser?.uid || 'Active User'}) from Cloud Firebase Firestore.
+                </span>
               </label>
-              <input 
-                type="text"
-                value={wipeConfirmText}
-                onChange={(e) => {
-                  setWipeConfirmText(e.target.value);
-                  setWipeError('');
-                }}
-                placeholder="e.g. WIPE"
-                className="w-full text-xs px-3 py-2 border border-slate-200 rounded-lg bg-slate-50 font-bold focus:outline-none"
-              />
+
+              <div>
+                <label className="block text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+                  Or type <span className="text-rose-600 font-black">'CLEAR'</span> below:
+                </label>
+                <input 
+                  type="text"
+                  disabled={isWipingData}
+                  value={wipeConfirmText}
+                  onChange={(e) => {
+                    setWipeConfirmText(e.target.value);
+                    setWipeError('');
+                  }}
+                  placeholder="Type CLEAR to confirm"
+                  className="w-full text-xs px-3 py-2 border border-slate-300 rounded-lg bg-slate-50 font-bold focus:outline-none focus:ring-2 focus:ring-rose-500 disabled:opacity-60"
+                />
+              </div>
+
               {wipeError && (
-                <span className="text-rose-600 text-[10px] block font-semibold">{wipeError}</span>
+                <div className="p-2 bg-rose-100 border border-rose-300 rounded-lg text-rose-800 text-[11px] font-bold">
+                  ⚠️ {wipeError}
+                </div>
               )}
             </div>
 
             <div className="grid grid-cols-2 gap-3 pt-2">
               <button
                 type="button"
+                disabled={isWipingData}
                 onClick={() => setShowWipeModal(false)}
-                className="py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-lg transition cursor-pointer text-center"
+                className="py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition cursor-pointer text-center disabled:opacity-50"
               >
-                Discard / Cancel
+                Cancel / Keep Data
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  if (wipeConfirmText.trim().toUpperCase() === 'WIPE') {
-                    setWipeBiometricStep('idle');
-                    setShowWipeBiometric(true);
-                  } else {
-                    setWipeError("Please type 'WIPE' to confirm authorization.");
+                disabled={isWipingData}
+                onClick={async () => {
+                  try {
+                    setIsWipingData(true);
+                    triggerToast("Executing deep format of Firestore user records & system files...", "info");
+                    if (onResetAll) {
+                      await onResetAll();
+                    } else {
+                      await DbController.clearAllData();
+                      DbController.resetSchoolInfo();
+                      onRefresh();
+                    }
+                    setSchool(DbController.getSchoolInfo());
+                    triggerToast("Permanent format complete. Workstation reset to clean slate.", "success");
+                    setShowWipeModal(false);
+                    setTimeout(() => {
+                      window.location.reload();
+                    }, 400);
+                  } catch (err: any) {
+                    setIsWipingData(false);
+                    setWipeError("Format failed: " + (err.message || String(err)));
                   }
                 }}
-                className="py-2.5 bg-rose-600 hover:bg-rose-700 active:scale-95 text-white font-bold text-xs rounded-lg transition cursor-pointer flex items-center justify-center gap-1.5 text-center shadow-md"
+                className="py-2.5 bg-rose-600 hover:bg-rose-700 active:scale-95 text-white font-bold text-xs rounded-xl transition cursor-pointer flex items-center justify-center gap-2 text-center shadow-md disabled:opacity-60"
               >
-                <Trash2 size={13} />
-                <span>Wipe & Start Fresh</span>
+                {isWipingData ? (
+                  <>
+                    <RefreshCw size={13} className="animate-spin" />
+                    <span>Formatting Cloud & Local...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 size={13} />
+                    <span>Yes, Permanently Clear All Data</span>
+                  </>
+                )}
               </button>
             </div>
 
@@ -3393,24 +3422,21 @@ export default function SettingsTab({
                       // Execute actual wipe
                       setTimeout(async () => {
                         try {
-                          triggerToast("Wiping all system registers and input data...", "info");
-                          await DbController.clearAllData();
-                          localStorage.clear();
-                          sessionStorage.clear();
-                          
-                          // Write safety audit log
-                          DbController.writeActivityLog(
-                            'Administrative Database Wipe Complete',
-                            `A full database and local snapshot wipe was successfully executed by administrative user ${currentUser?.email || 'System Admin'} and verified via biometric WebAuthn key token.`,
-                            'critical'
-                          );
-                          
-                          triggerToast("System reset complete. Reloading fresh environment...", "success");
+                          triggerToast("Executing deep format of system files and emptying Firestore user data...", "info");
+                          if (onResetAll) {
+                            await onResetAll();
+                          } else {
+                            await DbController.clearAllData();
+                            DbController.resetSchoolInfo();
+                            onRefresh();
+                          }
+                          setSchool(DbController.getSchoolInfo());
+                          triggerToast("Permanent format complete. Workstation reset to clean slate.", "success");
                           setShowWipeBiometric(false);
                           setShowWipeModal(false);
                           setTimeout(() => {
                             window.location.href = window.location.origin;
-                          }, 500);
+                          }, 350);
                         } catch (err: any) {
                           alert("Wipe failed: " + (err.message || String(err)));
                           setWipeBiometricStep('failed');

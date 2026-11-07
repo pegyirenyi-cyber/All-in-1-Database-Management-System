@@ -25,12 +25,7 @@ export default function StaffHandbook({ theme, userRole, onReadUpdate }: Props) 
   const [readStatus, setReadStatus] = useState<Record<string, string>>(() => {
     const user = DbController.getCurrentUser();
     const userId = user?.uid || user?.email || 'anonymous';
-    try {
-      const data = localStorage.getItem(`sms_handbook_read_${userId}`);
-      return data ? JSON.parse(data) : {};
-    } catch (e) {
-      return {};
-    }
+    return DbController.getHandbookReadStatus(userId);
   });
 
   const [formState, setFormState] = useState<Partial<StaffHandbookDocument>>({
@@ -96,11 +91,7 @@ export default function StaffHandbook({ theme, userRole, onReadUpdate }: Props) 
         if (readStatus[selectedDocId] !== doc.lastUpdated) {
           const updated = { ...readStatus, [selectedDocId]: doc.lastUpdated };
           setReadStatus(updated);
-          try {
-            localStorage.setItem(`sms_handbook_read_${userId}`, JSON.stringify(updated));
-          } catch (e) {
-            console.error(e);
-          }
+          DbController.saveHandbookReadStatus(userId, updated);
           if (onReadUpdate) {
             onReadUpdate();
           }
@@ -136,9 +127,7 @@ export default function StaffHandbook({ theme, userRole, onReadUpdate }: Props) 
     const userId = user?.uid || user?.email || 'anonymous';
     const updated = { ...readStatus, [doc.id]: doc.lastUpdated };
     setReadStatus(updated);
-    try {
-      localStorage.setItem(`sms_handbook_read_${userId}`, JSON.stringify(updated));
-    } catch (e) {}
+    DbController.saveHandbookReadStatus(userId, updated);
     if (onReadUpdate) {
       onReadUpdate();
     }

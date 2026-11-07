@@ -8,7 +8,7 @@ import {
 import { DbController } from '../../db';
 import { triggerToast } from '../../utils';
 import { 
-  X, Plus, Sparkles, AlertCircle, CheckCircle2, 
+  X, Plus, Award, AlertCircle, CheckCircle2, 
   Layers, DollarSign, Calendar, BookOpen, GraduationCap,
   Building, ShieldCheck, Tag, Info
 } from 'lucide-react';
@@ -24,7 +24,7 @@ const CATEGORY_GROUPS: { label: string; value: BillComponentCategory; icon: any;
   { label: 'Academic', value: 'Academic', icon: GraduationCap, desc: 'Instruction, mock exams, STEM labs & assessments' },
   { label: 'Facilities & Utilities', value: 'Facilities & Utilities', icon: Building, desc: 'Electricity, sanitation, ICT labs & campus maintenance' },
   { label: 'Welfare & Feeding', value: 'Welfare & Feeding', icon: ShieldCheck, desc: 'Student welfare, sick bay, health & nutrition' },
-  { label: 'Extra-Curricular', value: 'Extra-Curricular', icon: Sparkles, desc: 'Sports, clubs, arts, drama & cultural societies' },
+  { label: 'Extra-Curricular', value: 'Extra-Curricular', icon: Award, desc: 'Sports, clubs, arts, drama & cultural societies' },
   { label: 'Logistics & Transport', value: 'Logistics & Transport', icon: Layers, desc: 'Bus services, route commute & driver logistics' },
   { label: 'Materials & Books', value: 'Materials & Books', icon: BookOpen, desc: 'Textbooks, workbooks, stationery & library reading' },
   { label: 'Special Projects', value: 'Special Projects', icon: Tag, desc: 'Graduation, speech days, PTA projects & school development' }
@@ -315,7 +315,7 @@ export default function CreateBillCategoryModal({ isOpen, onClose, onSuccess }: 
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-xs font-black uppercase tracking-wider text-slate-400 font-mono flex items-center gap-1.5">
-                <Sparkles size={13} className="text-amber-500" />
+                <Award size={13} className="text-amber-500" />
                 <span>Popular School Category Presets</span>
               </span>
               <span className="text-[10px] text-slate-400 font-medium">Click to auto-fill</span>

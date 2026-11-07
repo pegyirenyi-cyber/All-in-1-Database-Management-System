@@ -547,8 +547,8 @@ export default function QuickSearchModal({
   // Tab navigation definitions for Quick Nav
   const NAV_ITEMS = [
     { label: 'Dashboard Summary', id: 'dashboard', subtitle: 'Analytics and overview widgets' },
+    { label: 'School Profile', id: 'school_profile', subtitle: 'Institutional credentials, branding, crest and contact info' },
     { label: 'Admin Panel', id: 'admin_dashboard', subtitle: 'Manage system users and logs' },
-    { label: 'School Profile', id: 'school_profile', subtitle: 'EMIS code, logo, motto and address' },
     { label: 'Academic Calendar', id: 'calendar', subtitle: 'Configure holidays, terms and events' },
     { label: 'Student Profiles', id: 'students', subtitle: 'Student directory, roster and forms' },
     { label: 'Teacher Profiles', id: 'teachers', subtitle: 'Staff profiles, ranks and classes' },

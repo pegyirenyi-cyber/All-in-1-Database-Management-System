@@ -250,7 +250,7 @@ export const generatePdfFromHtml = async (
     max-width: ${targetWidthPx}px !important;
     background: #ffffff !important;
     color: #0f172a !important;
-    margin: 0 !important;
+    margin: 0 auto !important;
     padding: 0 !important;
     box-sizing: border-box !important;
     overflow: visible !important;
@@ -258,6 +258,10 @@ export const generatePdfFromHtml = async (
     opacity: 1 !important;
     pointer-events: none !important;
     transform: none !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: flex-start !important;
   `;
 
   // Inject anti-scatter style reset sheet
@@ -270,10 +274,20 @@ export const generatePdfFromHtml = async (
       transition: none !important;
       filter: none !important;
     }
+    #__pdf_render_sandbox__ {
+      display: flex !important;
+      flex-direction: column !important;
+      align-items: center !important;
+      justify-content: flex-start !important;
+      margin: 0 auto !important;
+    }
     #__pdf_render_sandbox__ .print-page, 
     #__pdf_render_sandbox__ .report-card-print-container, 
     #__pdf_render_sandbox__ .bulk-report-card-print-page,
-    #__pdf_render_sandbox__ .fee-receipt-print-area {
+    #__pdf_render_sandbox__ .fee-receipt-print-area,
+    #__pdf_render_sandbox__ [id*="report-card"],
+    #__pdf_render_sandbox__ [id*="report-center"],
+    #__pdf_render_sandbox__ [id*="report-preview"] {
       width: ${targetWidthPx}px !important;
       min-width: ${targetWidthPx}px !important;
       max-width: ${targetWidthPx}px !important;
@@ -285,6 +299,14 @@ export const generatePdfFromHtml = async (
       top: auto !important;
       right: auto !important;
       bottom: auto !important;
+      box-sizing: border-box !important;
+    }
+    #__pdf_render_sandbox__ table {
+      width: 100% !important;
+      max-width: 100% !important;
+      margin-left: auto !important;
+      margin-right: auto !important;
+      box-sizing: border-box !important;
     }
   `;
   sandbox.appendChild(antiScatterStyle);
@@ -304,7 +326,9 @@ export const generatePdfFromHtml = async (
   clone.style.visibility = 'visible';
   clone.style.opacity = '1';
   clone.style.position = 'relative';
-  clone.style.left = '0px';
+  clone.style.margin = '0 auto';
+  clone.style.left = 'auto';
+  clone.style.right = 'auto';
   clone.style.top = '0px';
   clone.style.width = `${targetWidthPx}px`;
   clone.style.minWidth = `${targetWidthPx}px`;
@@ -313,11 +337,11 @@ export const generatePdfFromHtml = async (
   clone.style.maxHeight = 'none';
   clone.style.overflow = 'visible';
   clone.style.backgroundColor = '#ffffff';
+  clone.style.boxSizing = 'border-box';
   clone.style.transform = 'none';
 
   // Copy computed layout properties (flex, grid, dimensions) recursively to prevent layout collapse.
   // Performance optimization: Using original unpatched getComputedStyle directly bypasses slow proxy traps.
-  // If elementCount is large, we selectively copy styles for major sections to prevent browser thread freeze.
   try {
     const srcAll = sourceElement.querySelectorAll('*');
     const clnAll = clone.querySelectorAll('*');
@@ -341,14 +365,17 @@ export const generatePdfFromHtml = async (
             cNode.style.gridTemplateColumns = comp.gridTemplateColumns;
             cNode.style.gap = comp.gap;
           }
-          if (comp.width && comp.width !== 'auto') {
+          // Only preserve width for fixed-dimension media (images/stamps/avatars), NOT responsive text/table blocks
+          const tagName = sNode.tagName ? sNode.tagName.toLowerCase() : '';
+          const isFixedMedia = tagName === 'img' || tagName === 'svg' || tagName === 'canvas' || 
+            sNode.classList.contains('w-16') || sNode.classList.contains('w-20') || sNode.classList.contains('w-14') || sNode.classList.contains('w-52');
+          if (isFixedMedia && comp.width && comp.width !== 'auto') {
             cNode.style.width = comp.width;
           }
         }
       }
     } else {
-      // Large print items (e.g. multi-semester transcripts, lists, bulk sheets):
-      // Only copy flex/grid for direct child structures of key layout wrappers
+      // Large print items: ensure layout wrappers span full width centered
       const layoutSelectors = '.print-page, .report-card-print-container, .bulk-report-card-print-page, .id-cards-landscape-page, .fee-receipt-print-area, .bulk-receipts-print-page, .bulk-receipt-slip';
       const srcLayouts = sourceElement.querySelectorAll(layoutSelectors);
       const clnLayouts = clone.querySelectorAll(layoutSelectors);
@@ -358,7 +385,8 @@ export const generatePdfFromHtml = async (
         if (sNode && cNode) {
           const comp = originalGetComputedStyle(sNode);
           cNode.style.display = comp.display;
-          cNode.style.width = comp.width || '100%';
+          cNode.style.width = '100%';
+          cNode.style.margin = '0 auto';
         }
       }
     }

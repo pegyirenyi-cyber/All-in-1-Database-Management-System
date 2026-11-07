@@ -11,7 +11,10 @@ import {
   TERMS, 
   StudentFeeBill, 
   FeePayment, 
-  SchoolInfo 
+  SchoolInfo,
+  CustomBillComponent,
+  CustomBillComponentItem,
+  BillComponentCategory
 } from '../types';
 import { DbController, getStorageItem, setStorageItem } from '../db';
 import { QRCodeSVG } from 'qrcode.react';
@@ -21,6 +24,7 @@ import { ThemeStyles } from './ThemeWrapper';
 import { generateSecureToken, getWatermarkHtml, formatIdentifiableFilename } from '../utils';
 import { isGoogleAuthenticated, sendGmailMessage } from '../googleDriveService';
 import SmartTextarea from './SmartTextarea';
+import { AcademicYearModal } from './common/AcademicYearModal';
 import { 
   DollarSign, 
   Plus, 
@@ -53,8 +57,29 @@ import {
   Clock,
   XCircle,
   TrendingUp,
-  Percent
+  Percent,
+  Layers,
+  Edit2,
+  Settings2,
+  RefreshCw,
+  Tag,
+  SlidersHorizontal,
+  ToggleLeft,
+  ToggleRight
 } from 'lucide-react';
+
+export function calculateBillExpected(bill: StudentFeeBill | null | undefined): number {
+  if (!bill) return 0;
+  const base = 
+    (Number(bill.schoolFees) || 0) + 
+    (Number(bill.utilityBill) || 0) + 
+    (Number(bill.sportsFees) || 0) + 
+    (Number(bill.ptaDues) || 0) + 
+    (Number(bill.transportationBill) || 0) + 
+    (Number(bill.otherFee) || 0);
+  const customTotal = (bill.customComponents || []).reduce((sum, c) => sum + (Number(c.amount) || 0), 0);
+  return base + customTotal;
+}
 import { 
   ResponsiveContainer, 
   PieChart, 
@@ -97,6 +122,15 @@ export default function SchoolFeesTab({
   const selectedTerm = propTerm || localTerm;
   const setSelectedTerm = propSetTerm || setLocalTerm;
 
+  const [academicYearsList, setAcademicYearsList] = useState<AcademicYearType[]>(() => DbController.getAcademicYears());
+  const [showAcademicYearModal, setShowAcademicYearModal] = useState(false);
+
+  useEffect(() => {
+    const handleSyncYears = () => setAcademicYearsList(DbController.getAcademicYears());
+    window.addEventListener('academic-years-updated', handleSyncYears);
+    return () => window.removeEventListener('academic-years-updated', handleSyncYears);
+  }, []);
+
   const [selectedClass, setSelectedClass] = useState<ClassType | 'All'>('All');
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -115,7 +149,49 @@ export default function SchoolFeesTab({
   const [paymentRemarks, setPaymentRemarks] = useState('');
   const [paymentDate, setPaymentDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [isCreateCategoryModalOpen, setIsCreateCategoryModalOpen] = useState(false);
-  const [customBillComponents, setCustomBillComponents] = useState(() => DbController.getCustomBillComponents());
+  const [customBillComponents, setCustomBillComponents] = useState<CustomBillComponent[]>(() => DbController.getCustomBillComponents());
+  const [showComponentsManagerModal, setShowComponentsManagerModal] = useState(false);
+  const [editingComponent, setEditingComponent] = useState<CustomBillComponent | null>(null);
+  const [showQuickCreateInModal, setShowQuickCreateInModal] = useState(false);
+  const [newComponentForm, setNewComponentForm] = useState({
+    name: '',
+    code: '',
+    category: 'Academic' as BillComponentCategory,
+    defaultAmount: 50,
+    frequency: 'Per Term' as 'Per Term' | 'Per Year' | 'One-Time' | 'Optional',
+    isAllClasses: true,
+    selectedClasses: [] as ClassType[],
+    isRequired: true,
+    description: ''
+  });
+
+  // Dedicated granular bill components section state
+  const [inlineNewComp, setInlineNewComp] = useState<{
+    name: string;
+    code: string;
+    category: BillComponentCategory;
+    defaultAmount: string;
+    frequency: 'Per Term' | 'Per Year' | 'One-Time' | 'Optional';
+    applicableClasses: (ClassType | 'All')[];
+  }>({
+    name: '',
+    code: '',
+    category: 'Academic',
+    defaultAmount: '',
+    frequency: 'Per Term',
+    applicableClasses: ['All']
+  });
+  const [showInlineAddRow, setShowInlineAddRow] = useState(false);
+  const [componentSearchQuery, setComponentSearchQuery] = useState('');
+  const [componentCategoryFilter, setComponentCategoryFilter] = useState<'All' | BillComponentCategory>('All');
+
+  useEffect(() => {
+    const handleCompUpdate = () => {
+      setCustomBillComponents(DbController.getCustomBillComponents());
+    };
+    window.addEventListener('bill-components-updated', handleCompUpdate);
+    return () => window.removeEventListener('bill-components-updated', handleCompUpdate);
+  }, []);
 
   // Selected payment for receipt viewing/generation
   const [activeReceiptPayment, setActiveReceiptPayment] = useState<{ bill: StudentFeeBill; payment: FeePayment } | null>(null);
@@ -186,6 +262,15 @@ export default function SchoolFeesTab({
   const [chartMetricType, setChartMetricType] = useState<'students' | 'amount'>('students');
   const [chartClassFilter, setChartClassFilter] = useState<ClassType | 'All'>('All');
 
+  // Specific Bill Component PDF Receipts Hub state
+  const [showComponentReceiptsModal, setShowComponentReceiptsModal] = useState(false);
+  const [selectedReceiptComponent, setSelectedReceiptComponent] = useState<string>('All');
+  const [receiptComponentClassFilter, setReceiptComponentClassFilter] = useState<ClassType | 'All'>('All');
+  const [receiptComponentSearchQuery, setReceiptComponentSearchQuery] = useState('');
+  const [isGeneratingComponentPdf, setIsGeneratingComponentPdf] = useState(false);
+  const [pdfTargetPayment, setPdfTargetPayment] = useState<{ bill: StudentFeeBill; payment: FeePayment } | null>(null);
+  const [activeInstallmentComponentFilter, setActiveInstallmentComponentFilter] = useState<string>('All');
+
   // Initialize Report Center student when modal opens
   useEffect(() => {
     if (showReportCenterModal) {
@@ -209,13 +294,8 @@ export default function SchoolFeesTab({
 
   const reportCenterSelectedStudentStats = useMemo(() => {
     if (!reportCenterSelectedStudent || !reportCenterSelectedStudentBill) return { expected: 0, paid: 0, bal: 0 };
-    const expected = (reportCenterSelectedStudentBill.schoolFees || 0) +
-                     (reportCenterSelectedStudentBill.utilityBill || 0) +
-                     (reportCenterSelectedStudentBill.sportsFees || 0) +
-                     (reportCenterSelectedStudentBill.ptaDues || 0) +
-                     (reportCenterSelectedStudentBill.transportationBill || 0) +
-                     (reportCenterSelectedStudentBill.otherFee || 0);
-    const paid = reportCenterSelectedStudentBill.payments.reduce((sum, p) => sum + p.amount, 0);
+    const expected = calculateBillExpected(reportCenterSelectedStudentBill);
+    const paid = (reportCenterSelectedStudentBill.payments || []).reduce((sum, p) => sum + (Number(p?.amount) || 0), 0);
     const bal = expected - paid;
     return { expected, paid, bal };
   }, [reportCenterSelectedStudent, reportCenterSelectedStudentBill]);
@@ -228,7 +308,7 @@ export default function SchoolFeesTab({
   const reportCenterClassData = useMemo(() => {
     const list = reportCenterClassStudents.map(student => {
       const bill = getStudentBill(student);
-      const expected = (bill.schoolFees || 0) + (bill.utilityBill || 0) + (bill.sportsFees || 0) + (bill.ptaDues || 0) + (bill.transportationBill || 0) + (bill.otherFee || 0);
+      const expected = calculateBillExpected(bill);
       const paid = bill.payments ? bill.payments.reduce((sum, p) => sum + p.amount, 0) : 0;
       const owed = expected - paid;
       return {
@@ -259,7 +339,7 @@ export default function SchoolFeesTab({
       let totalPaid = 0;
       classStudents.forEach(student => {
         const bill = getStudentBill(student);
-        const expected = (bill.schoolFees || 0) + (bill.utilityBill || 0) + (bill.sportsFees || 0) + (bill.ptaDues || 0) + (bill.transportationBill || 0) + (bill.otherFee || 0);
+        const expected = calculateBillExpected(bill);
         const paid = bill.payments ? bill.payments.reduce((sum, p) => sum + p.amount, 0) : 0;
         totalExpected += expected;
         totalPaid += paid;
@@ -289,6 +369,97 @@ export default function SchoolFeesTab({
       overallRate
     };
   }, [students, feeBills, selectedAcademicYear, selectedTerm]);
+
+  // Helper: Retrieve component-specific expected debit on a student bill
+  const getComponentExpectedAmount = (bill: StudentFeeBill | null | undefined, componentName: string): number => {
+    if (!bill || !componentName) return 0;
+    const cLower = componentName.toLowerCase().trim();
+    if (cLower === 'school fees') return Number(bill.schoolFees) || 0;
+    if (cLower === 'utility bill') return Number(bill.utilityBill) || 0;
+    if (cLower === 'sports fees') return Number(bill.sportsFees) || 0;
+    if (cLower === 'pta dues') return Number(bill.ptaDues) || 0;
+    if (cLower === 'transportation bill') return Number(bill.transportationBill) || 0;
+    if (cLower === 'other fee' || cLower.includes('other')) return Number(bill.otherFee) || 0;
+    
+    const custom = (bill.customComponents || []).find(c => c && (c.componentName || '').toLowerCase().trim() === cLower);
+    return custom ? (Number(custom.amount) || 0) : 0;
+  };
+
+  // Helper: Retrieve total paid to-date specifically towards a component on a student bill
+  const getComponentPaidAmount = (bill: StudentFeeBill | null | undefined, componentName: string): number => {
+    if (!bill || !componentName) return 0;
+    const cLower = componentName.toLowerCase().trim();
+    return (bill.payments || [])
+      .filter(p => p && (p.component || '').toLowerCase().trim() === cLower)
+      .reduce((sum, p) => sum + (Number(p?.amount) || 0), 0);
+  };
+
+  // All recorded component payments across all active bills
+  const allComponentPayments = useMemo(() => {
+    const list: { bill: StudentFeeBill; payment: FeePayment }[] = [];
+    feeBills
+      .filter(b => b && b.academicYear === selectedAcademicYear && b.term === selectedTerm)
+      .forEach(bill => {
+        (bill.payments || []).forEach(payment => {
+          if (payment) {
+            list.push({ bill, payment });
+          }
+        });
+      });
+    return list;
+  }, [feeBills, selectedAcademicYear, selectedTerm]);
+
+  // Unique list of component names present in payments or defined in components
+  const availableComponentNames = useMemo(() => {
+    const names = new Set<string>();
+    // Standard components
+    names.add('School Fees');
+    names.add('Exam Fees');
+    names.add('Library Levy');
+    names.add('ICT Lab Levy');
+    names.add('Utility Bill');
+    names.add('Sports Fees');
+    names.add('PTA Dues');
+    names.add('Transportation Bill');
+    names.add('Other Fee');
+    // Add custom bill components
+    (customBillComponents || []).forEach(c => {
+      if (c && c.name) names.add(c.name);
+    });
+    // Add any component from recorded payments
+    allComponentPayments.forEach(item => {
+      if (item.payment && item.payment.component) names.add(item.payment.component);
+    });
+    return Array.from(names);
+  }, [customBillComponents, allComponentPayments]);
+
+  // Filtered component payments for the receipts hub
+  const filteredComponentPayments = useMemo(() => {
+    return allComponentPayments.filter(item => {
+      if (!item || !item.payment || !item.bill) return false;
+      // 1. Component filter
+      if (selectedReceiptComponent !== 'All') {
+        const itemComp = (item.payment.component || 'School Fees').toLowerCase().trim();
+        const selComp = selectedReceiptComponent.toLowerCase().trim();
+        if (itemComp !== selComp) {
+          return false;
+        }
+      }
+      // 2. Class filter
+      if (receiptComponentClassFilter !== 'All') {
+        if (item.bill.class !== receiptComponentClassFilter) return false;
+      }
+      // 3. Search query
+      if (receiptComponentSearchQuery.trim()) {
+        const q = receiptComponentSearchQuery.toLowerCase();
+        const sName = (item.bill.studentName || '').toLowerCase();
+        const sId = (item.bill.studentId || '').toLowerCase();
+        const rNo = (item.payment.receiptNo || '').toLowerCase();
+        if (!sName.includes(q) && !sId.includes(q) && !rNo.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [allComponentPayments, selectedReceiptComponent, receiptComponentClassFilter, receiptComponentSearchQuery]);
 
   const handlePrintReportCenter = () => {
     let title = 'School Ledger Summary';
@@ -352,6 +523,9 @@ export default function SchoolFeesTab({
       csvContent += `PTA Dues,${(b.ptaDues || 0).toFixed(2)}\n`;
       csvContent += `Transportation Bill,${(b.transportationBill || 0).toFixed(2)}\n`;
       csvContent += `Other Fee (${escapeCSV(b.otherFeeDescription || 'Other')}),${(b.otherFee || 0).toFixed(2)}\n`;
+      (b.customComponents || []).forEach(c => {
+        csvContent += `${escapeCSV(c.componentName)}${c.category ? ` (${escapeCSV(c.category)})` : ''},${(Number(c.amount) || 0).toFixed(2)}\n`;
+      });
       csvContent += `TOTAL EXPECTED,${reportCenterSelectedStudentStats.expected.toFixed(2)}\n\n`;
 
       csvContent += `CREDITED INSTALLMENTS RECEIVED\n`;
@@ -410,7 +584,7 @@ export default function SchoolFeesTab({
 
       students.forEach(student => {
         const bill = getStudentBill(student);
-        const expected = (bill.schoolFees || 0) + (bill.utilityBill || 0) + (bill.sportsFees || 0) + (bill.ptaDues || 0) + (bill.transportationBill || 0) + (bill.otherFee || 0);
+        const expected = calculateBillExpected(bill);
         const paid = bill.payments ? bill.payments.reduce((sum, p) => sum + p.amount, 0) : 0;
         const owed = expected - paid;
         const statusStr = owed <= 0 ? 'Cleared' : paid > 0 ? 'Partial' : 'No Payment';
@@ -497,8 +671,8 @@ export default function SchoolFeesTab({
   // Outstanding calculations for selected student
   const activeExpectedAndPaid = useMemo(() => {
     if (!activeStudent || !activeBill) return { expected: 0, paid: 0, bal: 0 };
-    const expected = activeBill.schoolFees + activeBill.utilityBill + activeBill.sportsFees + activeBill.ptaDues + (activeBill.transportationBill || 0) + activeBill.otherFee;
-    const paid = activeBill.payments.reduce((sum, p) => sum + p.amount, 0);
+    const expected = calculateBillExpected(activeBill);
+    const paid = (activeBill.payments || []).reduce((sum, p) => sum + (Number(p?.amount) || 0), 0);
     const bal = expected - paid;
     return { expected, paid, bal };
   }, [activeStudent, activeBill]);
@@ -521,15 +695,24 @@ export default function SchoolFeesTab({
   };
 
   const compileRandomReminderMessage = (templateText: string) => {
+    const student = activeStudent || students[0];
+    const liveOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+    const parentUrl = student 
+      ? `${liveOrigin}/?studentId=${student.id}&year=${encodeURIComponent(selectedAcademicYear)}&term=${encodeURIComponent(selectedTerm)}`
+      : `${liveOrigin}/?parentMode=true`;
     return templateText
-      .replace(/{guardianName}/g, 'Abigail Owusu')
-      .replace(/{firstName}/g, 'Emmanuel')
-      .replace(/{lastName}/g, 'Mensah')
-      .replace(/{studentId}/g, 'STU-8821-XP')
-      .replace(/{balance}/g, '150.00')
-      .replace(/{term}/g, 'Term 1')
-      .replace(/{academicYear}/g, '2026/2027')
-      .replace(/{reportLink}/g, 'https://geetech.edu/portal?id=demo&token=secure_example');
+      .replace(/{guardianName}/g, student?.guardianName || 'Parent / Guardian')
+      .replace(/{firstName}/g, student?.firstName || 'Student')
+      .replace(/{lastName}/g, student?.lastName || '')
+      .replace(/{studentId}/g, student?.id || 'STU-001')
+      .replace(/{balance}/g, activeBill ? (() => {
+        const totalBill = (activeBill.schoolFees || 0) + (activeBill.utilityBill || 0) + (activeBill.sportsFees || 0) + (activeBill.ptaDues || 0) + (activeBill.transportationBill || 0) + (activeBill.otherFee || 0) + (activeBill.customComponents || []).reduce((sum, c) => sum + (c.amount || 0), 0);
+        const totalPaid = (activeBill.payments || []).reduce((sum, p) => sum + (p.amount || 0), 0);
+        return Math.max(0, totalBill - totalPaid).toFixed(2);
+      })() : '0.00')
+      .replace(/{term}/g, selectedTerm)
+      .replace(/{academicYear}/g, selectedAcademicYear)
+      .replace(/{reportLink}/g, parentUrl);
   };
 
   const handleOpenReminderModal = () => {
@@ -589,9 +772,6 @@ export default function SchoolFeesTab({
               guardianTelephone: reminderRecipientPhone
             };
             await DbController.saveStudent(updatedStudent);
-            if (navigator.onLine) {
-              DbController.syncAllDataFromFirebase().catch(e => console.warn(e));
-            }
           } catch (err) {
             console.warn("Failed to sync guardian telephone updates:", err);
           }
@@ -743,17 +923,44 @@ export default function SchoolFeesTab({
       const billId = `${student.id}_${selectedAcademicYear}_${selectedTerm}`.replace(/\//g, '-');
       const existingIdx = updatedBills.findIndex(b => b.id === billId);
 
+      const applicableCustoms = customBillComponents.filter(c =>
+        c.isActive && (c.applicableClasses.includes('All') || c.applicableClasses.includes(student.class))
+      );
+
       if (existingIdx >= 0) {
-        // Update bills but maintain payments of this account
+        // Update bills but maintain payments of this account and merge customComponents
         const existing = updatedBills[existingIdx];
+        const existingCustoms = existing.customComponents || [];
+        const mergedCustoms = [...existingCustoms];
+        applicableCustoms.forEach(c => {
+          if (!mergedCustoms.some(mc => mc && (mc.componentId === c.id || (mc.componentName || '').toLowerCase() === (c.name || '').toLowerCase()))) {
+            mergedCustoms.push({
+              componentId: c.id,
+              componentName: c.name,
+              amount: Number(c.defaultAmount) || 0,
+              category: c.category,
+              isRequired: c.isRequired
+            });
+          }
+        });
+
         const updated: StudentFeeBill = {
           ...existing,
           ...values,
+          customComponents: mergedCustoms,
           updatedAt: new Date().toISOString()
         };
         updatedBills[existingIdx] = updated;
         DbController.saveStudentFeeBill(updated);
       } else {
+        const initialCustoms = applicableCustoms.map(c => ({
+          componentId: c.id,
+          componentName: c.name,
+          amount: Number(c.defaultAmount) || 0,
+          category: c.category,
+          isRequired: c.isRequired
+        }));
+
         // Create new account
         const newBill: StudentFeeBill = {
           id: billId,
@@ -763,6 +970,7 @@ export default function SchoolFeesTab({
           academicYear: selectedAcademicYear,
           term: selectedTerm,
           ...values,
+          customComponents: initialCustoms,
           payments: [],
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
@@ -800,9 +1008,51 @@ export default function SchoolFeesTab({
   function getStudentBill(student: Student): StudentFeeBill {
     const billId = `${student.id}_${selectedAcademicYear}_${selectedTerm}`.replace(/\//g, '-');
     const found = feeBills.find(b => b.id === billId);
-    if (found) return found;
 
-    // Default template-less state
+    const applicableCustoms = customBillComponents.filter(c => 
+      c.isActive && (c.applicableClasses.includes('All') || c.applicableClasses.includes(student.class))
+    );
+
+    if (found) {
+      const safePayments = Array.isArray(found.payments) ? found.payments : [];
+      let studentCustoms = found.customComponents;
+      if (!studentCustoms || !Array.isArray(studentCustoms)) {
+        studentCustoms = applicableCustoms.map(c => ({
+          componentId: c.id,
+          componentName: c.name,
+          amount: Number(c.defaultAmount) || 0,
+          category: c.category,
+          isRequired: c.isRequired
+        }));
+        return { ...found, payments: safePayments, customComponents: studentCustoms };
+      } else {
+        let hasNew = false;
+        const merged = [...studentCustoms];
+        applicableCustoms.forEach(c => {
+          if (!merged.some(mc => mc && (mc.componentId === c.id || (mc.componentName || '').toLowerCase() === (c.name || '').toLowerCase()))) {
+            merged.push({
+              componentId: c.id,
+              componentName: c.name,
+              amount: Number(c.defaultAmount) || 0,
+              category: c.category,
+              isRequired: c.isRequired
+            });
+            hasNew = true;
+          }
+        });
+        return { ...found, payments: safePayments, customComponents: hasNew ? merged : studentCustoms };
+      }
+    }
+
+    // Default template-less state with auto-linked active components
+    const initialCustoms = applicableCustoms.map(c => ({
+      componentId: c.id,
+      componentName: c.name,
+      amount: Number(c.defaultAmount) || 0,
+      category: c.category,
+      isRequired: c.isRequired
+    }));
+
     return {
       id: billId,
       studentId: student.id,
@@ -817,6 +1067,7 @@ export default function SchoolFeesTab({
       transportationBill: 0,
       otherFee: 0,
       otherFeeDescription: '',
+      customComponents: initialCustoms,
       payments: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
@@ -826,16 +1077,16 @@ export default function SchoolFeesTab({
   // Aggregate totals
   const overallStats = useMemo(() => {
     // Filtered by selected year and term
-    const activeTermAccounts = feeBills.filter(b => b.academicYear === selectedAcademicYear && b.term === selectedTerm);
+    const activeTermAccounts = feeBills.filter(b => b && b.academicYear === selectedAcademicYear && b.term === selectedTerm);
     
     let totalExpected = 0;
     let totalPaid = 0;
 
     activeTermAccounts.forEach(bill => {
       // expected sum
-      totalExpected += (bill.schoolFees || 0) + (bill.utilityBill || 0) + (bill.sportsFees || 0) + (bill.ptaDues || 0) + (bill.transportationBill || 0) + (bill.otherFee || 0);
+      totalExpected += calculateBillExpected(bill);
       // paid sum
-      const paidSum = bill.payments.reduce((sum, p) => sum + p.amount, 0);
+      const paidSum = (bill.payments || []).reduce((sum, p) => sum + (Number(p?.amount) || 0), 0);
       totalPaid += paidSum;
     });
 
@@ -849,7 +1100,7 @@ export default function SchoolFeesTab({
       collectionPercent,
       activeAccountsCount: activeTermAccounts.length
     };
-  }, [feeBills, selectedAcademicYear, selectedTerm]);
+  }, [feeBills, selectedAcademicYear, selectedTerm, customBillComponents]);
 
   // Fee Distribution & Status Pie Chart Calculations
   const feeDistributionStats = useMemo(() => {
@@ -874,12 +1125,7 @@ export default function SchoolFeesTab({
 
     targetStudents.forEach(student => {
       const bill = getStudentBill(student);
-      const expected = (bill.schoolFees || 0) + 
-                       (bill.utilityBill || 0) + 
-                       (bill.sportsFees || 0) + 
-                       (bill.ptaDues || 0) + 
-                       (bill.transportationBill || 0) + 
-                       (bill.otherFee || 0);
+      const expected = calculateBillExpected(bill);
       const paid = bill.payments ? bill.payments.reduce((sum, p) => sum + p.amount, 0) : 0;
       const owed = expected - paid;
 
@@ -996,6 +1242,222 @@ export default function SchoolFeesTab({
     handleSaveBill(nextBill);
   };
 
+  // Handle granular custom bill component modification for this specific student
+  const handleEditCustomComponent = (componentId: string, amount: number) => {
+    if (!activeBill) return;
+    const currentCustoms = activeBill.customComponents || [];
+    const nextCustoms = currentCustoms.map(c =>
+      c.componentId === componentId ? { ...c, amount: Math.max(0, amount) } : c
+    );
+    const nextBill: StudentFeeBill = {
+      ...activeBill,
+      customComponents: nextCustoms,
+      updatedAt: new Date().toISOString()
+    };
+    handleSaveBill(nextBill);
+  };
+
+  const handleAddCustomComponentToActiveBill = (componentId: string) => {
+    if (!activeBill) return;
+    const compDef = customBillComponents.find(c => c.id === componentId);
+    if (!compDef) return;
+
+    const currentCustoms = activeBill.customComponents || [];
+    if (currentCustoms.some(c => c.componentId === componentId)) {
+      showToast(`${compDef.name} is already linked to this student's billing statement.`, 'error');
+      return;
+    }
+
+    const nextCustoms = [
+      ...currentCustoms,
+      {
+        componentId: compDef.id,
+        componentName: compDef.name,
+        amount: Number(compDef.defaultAmount) || 0,
+        category: compDef.category,
+        isRequired: compDef.isRequired
+      }
+    ];
+
+    const nextBill: StudentFeeBill = {
+      ...activeBill,
+      customComponents: nextCustoms,
+      updatedAt: new Date().toISOString()
+    };
+    handleSaveBill(nextBill);
+    showToast(`Linked ${compDef.name} (GHS ${Number(compDef.defaultAmount).toFixed(2)}) to ${activeBill.studentName}'s bill.`, 'success');
+  };
+
+  const handleRemoveCustomComponentFromActiveBill = (componentId: string) => {
+    if (!activeBill) return;
+    const currentCustoms = activeBill.customComponents || [];
+    const nextCustoms = currentCustoms.filter(c => c.componentId !== componentId);
+    const nextBill: StudentFeeBill = {
+      ...activeBill,
+      customComponents: nextCustoms,
+      updatedAt: new Date().toISOString()
+    };
+    handleSaveBill(nextBill);
+    showToast(`Removed component from this student's billing statement.`, 'success');
+  };
+
+  const handleSyncComponentsToAllStudents = () => {
+    const activeCustoms = customBillComponents.filter(c => c.isActive);
+    if (activeCustoms.length === 0) {
+      showToast("No active granular bill components to link.", "error");
+      return;
+    }
+
+    let count = 0;
+    const updatedBills = [...feeBills];
+
+    students.forEach(student => {
+      const billId = `${student.id}_${selectedAcademicYear}_${selectedTerm}`.replace(/\//g, '-');
+      const existingIdx = updatedBills.findIndex(b => b.id === billId);
+      const applicable = activeCustoms.filter(c => c.applicableClasses.includes('All') || c.applicableClasses.includes(student.class));
+
+      if (existingIdx >= 0) {
+        const existing = updatedBills[existingIdx];
+        const existingCustoms = existing.customComponents || [];
+        const mergedCustoms = [...existingCustoms];
+
+        applicable.forEach(appComp => {
+          const foundIdx = mergedCustoms.findIndex(mc => mc && (mc.componentId === appComp.id || (mc.componentName || '').toLowerCase() === (appComp.name || '').toLowerCase()));
+          if (foundIdx === -1) {
+            mergedCustoms.push({
+              componentId: appComp.id,
+              componentName: appComp.name,
+              amount: Number(appComp.defaultAmount) || 0,
+              category: appComp.category,
+              isRequired: appComp.isRequired
+            });
+          }
+        });
+
+        const updatedBill: StudentFeeBill = {
+          ...existing,
+          customComponents: mergedCustoms,
+          updatedAt: new Date().toISOString()
+        };
+        updatedBills[existingIdx] = updatedBill;
+        DbController.saveStudentFeeBill(updatedBill);
+        count++;
+      } else {
+        const initialCustoms = applicable.map(c => ({
+          componentId: c.id,
+          componentName: c.name,
+          amount: Number(c.defaultAmount) || 0,
+          category: c.category,
+          isRequired: c.isRequired
+        }));
+
+        const newBill: StudentFeeBill = {
+          id: billId,
+          studentId: student.id,
+          studentName: `${student.firstName} ${student.middleName ? student.middleName + ' ' : ''}${student.lastName}`,
+          class: student.class,
+          academicYear: selectedAcademicYear,
+          term: selectedTerm,
+          schoolFees: 0,
+          utilityBill: 0,
+          sportsFees: 0,
+          ptaDues: 0,
+          transportationBill: 0,
+          otherFee: 0,
+          otherFeeDescription: '',
+          customComponents: initialCustoms,
+          payments: [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        updatedBills.push(newBill);
+        DbController.saveStudentFeeBill(newBill);
+        count++;
+      }
+    });
+
+    setFeeBills(updatedBills);
+    if (!isAutoSave) {
+      onManualSave();
+    }
+    showToast(`Successfully linked ${activeCustoms.length} granular components across ${count} student billing statements.`, "success");
+  };
+
+  const handleSaveGranularComponent = (comp: CustomBillComponent) => {
+    DbController.saveCustomBillComponent(comp);
+    const updated = DbController.getCustomBillComponents();
+    setCustomBillComponents(updated);
+    showToast(`Bill component "${comp.name}" saved with default cost GHS ${Number(comp.defaultAmount).toFixed(2)}.`, 'success');
+  };
+
+  const handleDeleteGranularComponent = (id: string) => {
+    const target = customBillComponents.find(c => c.id === id);
+    setConfirmModal({
+      isOpen: true,
+      title: `Delete ${target?.name || 'Bill Component'}?`,
+      message: `Are you sure you want to delete this bill component? It will no longer be applied to new student bills.`,
+      confirmText: 'Delete Component',
+      danger: true,
+      onConfirm: () => {
+        DbController.deleteCustomBillComponent(id);
+        const updated = DbController.getCustomBillComponents();
+        setCustomBillComponents(updated);
+        showToast('Bill component deleted.', 'success');
+      }
+    });
+  };
+
+  const handleUpdateComponentInline = (id: string, updates: Partial<CustomBillComponent>, showToastNotification = false) => {
+    const target = customBillComponents.find(c => c.id === id);
+    if (!target) return;
+    const updated = { ...target, ...updates, updatedAt: new Date().toISOString() };
+    DbController.saveCustomBillComponent(updated);
+    const updatedList = DbController.getCustomBillComponents();
+    setCustomBillComponents(updatedList);
+    if (showToastNotification) {
+      showToast(`Updated "${updated.name}" cost to GHS ${Number(updated.defaultAmount).toFixed(2)}.`, 'success');
+    }
+  };
+
+  const handleAddInlineComponent = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmedName = inlineNewComp.name.trim();
+    if (!trimmedName) {
+      showToast("Please enter a component name (e.g. Exam Fees, Library Levy).", "error");
+      return;
+    }
+    const cost = parseFloat(inlineNewComp.defaultAmount) || 0;
+    const code = inlineNewComp.code.trim() || trimmedName.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+    const newComp: CustomBillComponent = {
+      id: `comp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      name: trimmedName,
+      code,
+      category: inlineNewComp.category,
+      defaultAmount: Math.max(0, cost),
+      frequency: inlineNewComp.frequency,
+      applicableClasses: inlineNewComp.applicableClasses.length > 0 ? inlineNewComp.applicableClasses : ['All'],
+      isRequired: true,
+      isActive: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    handleSaveGranularComponent(newComp);
+    setInlineNewComp({
+      name: '',
+      code: '',
+      category: 'Academic',
+      defaultAmount: '',
+      frequency: 'Per Term',
+      applicableClasses: ['All']
+    });
+    setShowInlineAddRow(false);
+  };
+
+  const handleResetToDefaultComponents = () => {
+    const list = DbController.getCustomBillComponents();
+    setCustomBillComponents(list);
+  };
+
   const handleAddPayment = (e: FormEvent) => {
     e.preventDefault();
     if (!activeBill || !activeStudent) return;
@@ -1089,6 +1551,41 @@ export default function SchoolFeesTab({
     } catch (e: any) {
       showToast(`Error creating PDF resource: ${e.message}`, "error");
     }
+  };
+
+  const handleGenerateComponentPdfReceipt = async (bill: StudentFeeBill, payment: FeePayment) => {
+    setIsGeneratingComponentPdf(true);
+    setPdfTargetPayment({ bill, payment });
+
+    // Allow DOM to update and render the dedicated component PDF receipt container
+    setTimeout(async () => {
+      try {
+        const sanitizedComp = (payment.component || 'Component').replace(/[^a-zA-Z0-9]+/g, '_');
+        const sanitizedStudent = (bill.studentName || bill.studentId).replace(/[^a-zA-Z0-9]+/g, '_');
+        const filename = `Receipt_${sanitizedComp}_${sanitizedStudent}_${payment.receiptNo}.pdf`;
+        
+        const result = await generatePdfFromHtml('component-pdf-receipt-render-node', filename, false);
+        downloadBlobLocally(result.blob, result.filename);
+        showToast(`Official PDF receipt for ${payment.component} (GHS ${payment.amount.toFixed(2)}) generated successfully!`, 'success');
+      } catch (err: any) {
+        console.error("PDF generation error:", err);
+        showToast(`Failed to generate PDF receipt: ${err.message || 'Error'}`, 'error');
+      } finally {
+        setIsGeneratingComponentPdf(false);
+      }
+    }, 220);
+  };
+
+  const handleBulkPrintComponentReceipts = () => {
+    if (filteredComponentPayments.length === 0) {
+      showToast("No payments found for the selected component and filters.", "error");
+      return;
+    }
+    setBulkReceiptData(filteredComponentPayments);
+    showToast(`Preparing ${filteredComponentPayments.length} component receipts...`, "success");
+    setTimeout(() => {
+      handlePrintStandard('bulk-receipts-print-area', `${selectedReceiptComponent} Payment Receipts (${filteredComponentPayments.length} Students)`);
+    }, 250);
   };
 
   const handlePrintStandard = (elementId: string, title = 'Official Fee Document') => {
@@ -1474,7 +1971,7 @@ export default function SchoolFeesTab({
     // Calculate expected, paid, and outstanding for all students in selected term/year
     const allDebtorStudents = students.map(student => {
       const bill = getStudentBill(student);
-      const expected = (bill.schoolFees || 0) + (bill.utilityBill || 0) + (bill.sportsFees || 0) + (bill.ptaDues || 0) + (bill.transportationBill || 0) + (bill.otherFee || 0);
+      const expected = calculateBillExpected(bill);
       const paid = bill.payments ? bill.payments.reduce((sum, p) => sum + p.amount, 0) : 0;
       const owed = expected - paid;
       return {
@@ -1964,13 +2461,32 @@ export default function SchoolFeesTab({
           </div>
           
           <div className="flex flex-wrap items-center gap-2">
-            <select 
-              value={selectedAcademicYear}
-              onChange={(e) => setSelectedAcademicYear(e.target.value as AcademicYearType)}
-              className="text-xs border-slate-200 rounded-lg bg-slate-50 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 py-1.5 px-3"
-            >
-              {ACADEMIC_YEARS.map(y => <option key={y} value={y}>{y}</option>)}
-            </select>
+            <div className="flex items-center gap-1">
+              <select 
+                value={selectedAcademicYear}
+                onChange={(e) => {
+                  if (e.target.value === '__ADD_ACADEMIC_YEAR__') {
+                    setShowAcademicYearModal(true);
+                  } else {
+                    setSelectedAcademicYear(e.target.value as AcademicYearType);
+                  }
+                }}
+                className="text-xs border-slate-200 rounded-lg bg-slate-50 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 py-1.5 px-3"
+              >
+                {academicYearsList.map(y => <option key={y} value={y}>{y}</option>)}
+                <option value="__ADD_ACADEMIC_YEAR__" className="font-bold text-indigo-600 bg-indigo-50/50">
+                  ➕ Add Academic Year...
+                </option>
+              </select>
+              <button
+                type="button"
+                onClick={() => setShowAcademicYearModal(true)}
+                className="p-1.5 border border-slate-200 rounded-lg bg-white hover:bg-slate-50 text-indigo-600 hover:text-indigo-800 transition cursor-pointer"
+                title="Add or configure Academic Year"
+              >
+                <Plus size={13} />
+              </button>
+            </div>
 
             <select 
               value={selectedTerm}
@@ -1983,13 +2499,26 @@ export default function SchoolFeesTab({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto">
+          {/* Granular Bill Components & Levies Manager Trigger */}
+          <button
+            onClick={() => setShowComponentsManagerModal(true)}
+            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-gradient-to-r from-indigo-600 via-indigo-700 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white py-1.5 px-3 rounded-lg font-bold transition shadow-sm shrink-0 whitespace-nowrap cursor-pointer active:scale-95 border border-indigo-400/30"
+            title="Define granular bill components (e.g. Exam Fees, Library Levy) with individual cost values and link to student billing statements automatically"
+          >
+            <Layers className="h-3.5 w-3.5 text-indigo-200 stroke-[2.5]" />
+            <span>Granular Bill Components</span>
+            <span className="bg-white/20 text-white text-[9px] font-black px-1.5 py-0.2 rounded-full ml-0.5">
+              {customBillComponents.filter(c => c.isActive).length} Active
+            </span>
+          </button>
+
           {/* Create New Bill Category Button */}
           <button
             onClick={() => setIsCreateCategoryModalOpen(true)}
-            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white py-1.5 px-3 rounded-lg font-bold transition shadow-sm shrink-0 whitespace-nowrap cursor-pointer active:scale-95"
-            title="Create and add another bill category if not listed"
+            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 py-1.5 px-3 rounded-lg font-bold transition border border-indigo-200 shrink-0 whitespace-nowrap cursor-pointer"
+            title="Create and add another bill category"
           >
-            <Plus className="h-3.5 w-3.5 stroke-[2.5]" /> Create New Category
+            <Plus className="h-3.5 w-3.5 stroke-[2.5]" /> New Component
           </button>
 
           {/* Bulk Fee Applicator template */}
@@ -2002,9 +2531,17 @@ export default function SchoolFeesTab({
 
           <button
             onClick={handleBulkPrintReceipts}
-            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 py-1.5 px-3 rounded-lg font-medium transition border border-indigo-200 shrink-0 whitespace-nowrap"
+            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 py-1.5 px-3 rounded-lg font-medium transition border border-indigo-200 shrink-0 whitespace-nowrap cursor-pointer"
           >
             <Printer className="h-3.5 w-3.5" /> Bulk Receipts
+          </button>
+
+          <button
+            onClick={() => setShowComponentReceiptsModal(true)}
+            className="text-[10px] sm:text-xs inline-flex items-center justify-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white py-1.5 px-3 rounded-lg font-bold transition shadow-sm shrink-0 whitespace-nowrap cursor-pointer active:scale-95"
+            title="Generate and download official PDF receipts specifically for bill component payments (Exam Fees, Library Levy, etc.)"
+          >
+            <Receipt className="h-3.5 w-3.5" /> Component PDF Receipts
           </button>
 
           <button
@@ -2095,6 +2632,425 @@ export default function SchoolFeesTab({
         </div>
       )}
 
+      {/* ========================================================================= */}
+      {/* DEDICATED GRANULAR BILL COMPONENTS & LEVIES REAL-TIME EDITABLE SECTION     */}
+      {/* ========================================================================= */}
+      <div id="granular-bill-components-editable-section" className="bg-white rounded-xl shadow-sm border border-slate-200/90 overflow-hidden mb-6">
+        {/* Section Top Header */}
+        <div className="p-4 sm:p-5 border-b border-slate-200/80 bg-gradient-to-r from-slate-50 via-white to-blue-50/30 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-start sm:items-center gap-3">
+            <div className="p-2.5 bg-blue-600 text-white rounded-xl shadow-sm shadow-blue-200 shrink-0">
+              <Layers className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-base font-bold text-slate-900 tracking-tight">
+                  Bill Components & Itemized Levies
+                </h3>
+                <span className="px-2 py-0.5 text-[11px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 rounded-full">
+                  {customBillComponents.filter(c => c.isActive).length} of {customBillComponents.length} Active
+                </span>
+                <span className="px-2.5 py-0.5 text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full font-mono">
+                  Total Active Levies: GHS {customBillComponents.filter(c => c.isActive).reduce((sum, c) => sum + (Number(c.defaultAmount) || 0), 0).toFixed(2)}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Manage granular charges (Exam Fees, Library Levy, ICT Lab, etc.) with real-time costs that link dynamically into student billing statements.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowComponentReceiptsModal(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition shadow-sm active:scale-95 cursor-pointer"
+              title="Generate and download official PDF receipts specifically for bill component payments (Exam Fees, Library Levy, etc.)"
+            >
+              <Receipt className="h-3.5 w-3.5 text-emerald-600" />
+              <span>Component PDF Receipts</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleSyncComponentsToAllStudents}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition shadow-sm active:scale-95 cursor-pointer"
+              title="Push current active components and fees to all registered student bills for this term"
+            >
+              <RefreshCw className="h-3.5 w-3.5 text-blue-600" />
+              <span>Sync to Student Statements</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowInlineAddRow(!showInlineAddRow)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition shadow-sm active:scale-95 ${
+                showInlineAddRow
+                  ? 'bg-slate-200 text-slate-800 hover:bg-slate-300'
+                  : 'bg-blue-600 text-white hover:bg-blue-700 shadow-blue-200'
+              }`}
+            >
+              {showInlineAddRow ? (
+                <>
+                  <X className="h-3.5 w-3.5" />
+                  <span>Cancel Add</span>
+                </>
+              ) : (
+                <>
+                  <Plus className="h-3.5 w-3.5" />
+                  <span>+ Add Component</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleResetToDefaultComponents}
+              className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg border border-slate-200 transition"
+              title="Restore standard default bill components (Exam, Library, ICT)"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Quick Filter & Search Bar */}
+        <div className="px-4 py-2.5 bg-slate-50/70 border-b border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <div className="relative flex-1 sm:w-64">
+              <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search component or code..."
+                value={componentSearchQuery}
+                onChange={(e) => setComponentSearchQuery(e.target.value)}
+                className="w-full text-xs pl-8 pr-2.5 py-1.5 bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 text-slate-700 placeholder-slate-400"
+              />
+              {componentSearchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setComponentSearchQuery('')}
+                  className="absolute right-2 top-2 text-slate-400 hover:text-slate-600"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+
+            <select
+              value={componentCategoryFilter}
+              onChange={(e) => setComponentCategoryFilter(e.target.value as any)}
+              className="text-xs py-1.5 px-2 bg-white border border-slate-200 rounded-lg text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="All">All Categories</option>
+              <option value="Academic">Academic</option>
+              <option value="Facilities & Utilities">Facilities & Utilities</option>
+              <option value="Welfare & Feeding">Welfare & Feeding</option>
+              <option value="Extra-Curricular">Extra-Curricular</option>
+              <option value="Logistics & Transport">Logistics & Transport</option>
+              <option value="Materials & Books">Materials & Books</option>
+              <option value="Special Projects">Special Projects</option>
+            </select>
+          </div>
+
+          <div className="text-[11px] text-slate-500 flex items-center gap-1.5 self-end sm:self-center font-medium">
+            <CheckCircle2 className="h-3 w-3 text-emerald-600" />
+            <span>Values update in real-time — edits persist immediately to database and active bills</span>
+          </div>
+        </div>
+
+        {/* Quick-Add Inline Form Row (when toggled) */}
+        {showInlineAddRow && (
+          <form
+            onSubmit={handleAddInlineComponent}
+            className="p-4 bg-blue-50/50 border-b border-blue-100 flex flex-col md:flex-row items-stretch md:items-end gap-3 transition-all"
+          >
+            <div className="flex-1 min-w-[180px]">
+              <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                Component Name <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="e.g. Exam Fees, Library Levy"
+                value={inlineNewComp.name}
+                onChange={(e) => setInlineNewComp({ ...inlineNewComp, name: e.target.value })}
+                className="w-full text-xs px-3 py-1.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 text-slate-800"
+              />
+            </div>
+
+            <div className="w-full md:w-28">
+              <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                Code
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. EXAM"
+                value={inlineNewComp.code}
+                onChange={(e) => setInlineNewComp({ ...inlineNewComp, code: e.target.value.toUpperCase() })}
+                className="w-full text-xs px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 text-slate-800 font-mono uppercase"
+              />
+            </div>
+
+            <div className="w-full md:w-44">
+              <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                Category
+              </label>
+              <select
+                value={inlineNewComp.category}
+                onChange={(e) => setInlineNewComp({ ...inlineNewComp, category: e.target.value as BillComponentCategory })}
+                className="w-full text-xs px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 text-slate-800"
+              >
+                <option value="Academic">Academic</option>
+                <option value="Facilities & Utilities">Facilities & Utilities</option>
+                <option value="Welfare & Feeding">Welfare & Feeding</option>
+                <option value="Extra-Curricular">Extra-Curricular</option>
+                <option value="Logistics & Transport">Logistics & Transport</option>
+                <option value="Materials & Books">Materials & Books</option>
+                <option value="Special Projects">Special Projects</option>
+              </select>
+            </div>
+
+            <div className="w-full md:w-36">
+              <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                Cost Value (GHS) <span className="text-rose-500">*</span>
+              </label>
+              <div className="relative">
+                <span className="absolute left-2.5 top-1.5 text-xs font-bold text-slate-400">GHS</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  required
+                  placeholder="0.00"
+                  value={inlineNewComp.defaultAmount}
+                  onChange={(e) => setInlineNewComp({ ...inlineNewComp, defaultAmount: e.target.value })}
+                  className="w-full text-xs pl-11 pr-2.5 py-1.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 text-slate-900 font-bold"
+                />
+              </div>
+            </div>
+
+            <div className="w-full md:w-36">
+              <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                Frequency
+              </label>
+              <select
+                value={inlineNewComp.frequency}
+                onChange={(e) => setInlineNewComp({ ...inlineNewComp, frequency: e.target.value as any })}
+                className="w-full text-xs px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 text-slate-800"
+              >
+                <option value="Per Term">Per Term</option>
+                <option value="Per Year">Per Year</option>
+                <option value="One-Time">One-Time</option>
+                <option value="Optional">Optional</option>
+              </select>
+            </div>
+
+            <div className="flex items-center gap-2 pt-1 md:pt-0 shrink-0">
+              <button
+                type="submit"
+                className="px-4 py-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition shadow-sm flex items-center gap-1.5"
+              >
+                <Check className="h-3.5 w-3.5" />
+                <span>Save Component</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowInlineAddRow(false)}
+                className="px-3 py-1.5 text-xs font-semibold text-slate-600 bg-white hover:bg-slate-100 border border-slate-300 rounded-lg transition"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Real-Time Editable Components Table */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-slate-50/80 text-[10px] font-bold uppercase tracking-wider text-slate-600 border-b border-slate-200">
+                <th className="py-2.5 px-4 font-bold">Component Name & Code</th>
+                <th className="py-2.5 px-3 font-bold">Category</th>
+                <th className="py-2.5 px-3 font-bold">
+                  <div className="flex items-center gap-1">
+                    <span>Associated Cost (GHS)</span>
+                    <span className="text-[9px] font-normal lowercase bg-blue-100 text-blue-800 px-1.5 py-0.2 rounded-full">real-time</span>
+                  </div>
+                </th>
+                <th className="py-2.5 px-3 font-bold">Frequency</th>
+                <th className="py-2.5 px-3 font-bold">Class Scope</th>
+                <th className="py-2.5 px-3 font-bold text-center">Status</th>
+                <th className="py-2.5 px-4 font-bold text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="text-xs divide-y divide-slate-100 font-normal">
+              {customBillComponents
+                .filter(c => {
+                  if (!c) return false;
+                  const searchLower = (componentSearchQuery || '').toLowerCase();
+                  const matchesSearch = !searchLower || 
+                    (c.name || '').toLowerCase().includes(searchLower) ||
+                    ((c.code || '').toLowerCase().includes(searchLower));
+                  const matchesCategory = componentCategoryFilter === 'All' || c.category === componentCategoryFilter;
+                  return matchesSearch && matchesCategory;
+                })
+                .map((comp) => {
+                  return (
+                    <tr key={comp.id} className="hover:bg-slate-50/80 transition-colors group">
+                      {/* Name & Code */}
+                      <td className="py-2.5 px-4">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={comp.name}
+                            onChange={(e) => handleUpdateComponentInline(comp.id, { name: e.target.value })}
+                            className="font-semibold text-slate-900 text-xs px-2 py-1 bg-transparent hover:bg-white focus:bg-white border border-transparent hover:border-slate-300 focus:border-blue-500 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 transition max-w-[200px]"
+                            title="Click to edit component name"
+                          />
+                          <span className="text-[10px] font-mono font-bold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 shrink-0">
+                            {comp.code || 'COMP'}
+                          </span>
+                        </div>
+                      </td>
+
+                      {/* Category */}
+                      <td className="py-2.5 px-3">
+                        <select
+                          value={comp.category}
+                          onChange={(e) => handleUpdateComponentInline(comp.id, { category: e.target.value as BillComponentCategory })}
+                          className="text-xs py-1 px-2 bg-slate-50 hover:bg-white border border-slate-200 rounded-lg text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500 transition cursor-pointer"
+                        >
+                          <option value="Academic">Academic</option>
+                          <option value="Facilities & Utilities">Facilities & Utilities</option>
+                          <option value="Welfare & Feeding">Welfare & Feeding</option>
+                          <option value="Extra-Curricular">Extra-Curricular</option>
+                          <option value="Logistics & Transport">Logistics & Transport</option>
+                          <option value="Materials & Books">Materials & Books</option>
+                          <option value="Special Projects">Special Projects</option>
+                        </select>
+                      </td>
+
+                      {/* Associated Cost (Real-time Editable Numeric Cell) */}
+                      <td className="py-2.5 px-3">
+                        <div className="relative flex items-center max-w-[150px]">
+                          <span className="absolute left-2.5 text-[11px] font-bold text-slate-400 select-none pointer-events-none">
+                            GHS
+                          </span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={comp.defaultAmount === 0 ? '' : comp.defaultAmount}
+                            placeholder="0.00"
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value) || 0;
+                              handleUpdateComponentInline(comp.id, { defaultAmount: Math.max(0, val) });
+                            }}
+                            onBlur={() => {
+                              showToast(`Updated "${comp.name}" cost to GHS ${Number(comp.defaultAmount).toFixed(2)}.`, 'success');
+                            }}
+                            className="w-full pl-11 pr-2.5 py-1 text-xs font-bold text-slate-900 bg-slate-50 hover:bg-white focus:bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition text-right shadow-inner"
+                            title="Edit cost value in real-time"
+                          />
+                        </div>
+                      </td>
+
+                      {/* Frequency */}
+                      <td className="py-2.5 px-3">
+                        <select
+                          value={comp.frequency}
+                          onChange={(e) => handleUpdateComponentInline(comp.id, { frequency: e.target.value as any })}
+                          className="text-xs py-1 px-2 bg-slate-50 hover:bg-white border border-slate-200 rounded-lg text-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500 transition cursor-pointer"
+                        >
+                          <option value="Per Term">Per Term</option>
+                          <option value="Per Year">Per Year</option>
+                          <option value="One-Time">One-Time</option>
+                          <option value="Optional">Optional</option>
+                        </select>
+                      </td>
+
+                      {/* Class Scope */}
+                      <td className="py-2.5 px-3">
+                        <span className="inline-block px-2 py-0.5 rounded text-[11px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                          {comp.applicableClasses.includes('All') ? 'All Classes' : comp.applicableClasses.join(', ')}
+                        </span>
+                      </td>
+
+                      {/* Active Status (Real-time toggle switch) */}
+                      <td className="py-2.5 px-3 text-center">
+                        <button
+                          type="button"
+                          onClick={() => handleUpdateComponentInline(comp.id, { isActive: !comp.isActive })}
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold transition border active:scale-95 ${
+                            comp.isActive
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                              : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
+                          }`}
+                          title={comp.isActive ? 'Click to disable from new bills' : 'Click to activate on bills'}
+                        >
+                          {comp.isActive ? (
+                            <>
+                              <CheckCircle2 className="h-3 w-3 text-emerald-600" />
+                              <span>Active</span>
+                            </>
+                          ) : (
+                            <>
+                              <XCircle className="h-3 w-3 text-slate-400" />
+                              <span>Disabled</span>
+                            </>
+                          )}
+                        </button>
+                      </td>
+
+                      {/* Actions */}
+                      <td className="py-2.5 px-4 text-right">
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteGranularComponent(comp.id)}
+                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition border border-transparent hover:border-rose-200 active:scale-95"
+                          title={`Delete ${comp.name}`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+
+              {customBillComponents.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="py-8 text-center text-slate-400">
+                    <p className="text-xs mb-2 text-slate-500 font-medium">No custom bill components or itemized levies defined yet.</p>
+                    <button
+                      type="button"
+                      onClick={() => setShowInlineAddRow(true)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-600 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition cursor-pointer shadow-xs active:scale-95"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      <span>Add First Bill Component</span>
+                    </button>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Section Footer / Information Note */}
+        <div className="p-3 bg-slate-50 border-t border-slate-200/80 flex flex-col sm:flex-row items-center justify-between text-[11px] text-slate-500 gap-2">
+          <div className="flex items-center gap-1.5">
+            <Info className="h-3.5 w-3.5 text-blue-500 shrink-0" />
+            <span>
+              All modifications apply in real-time. Use <strong>"Sync to Student Statements"</strong> to immediately refresh itemized totals for all existing students in {selectedTerm}, {selectedAcademicYear}.
+            </span>
+          </div>
+          <div className="font-semibold text-slate-700 shrink-0">
+            {customBillComponents.filter(c => c.isActive).length} component{customBillComponents.filter(c => c.isActive).length === 1 ? '' : 's'} linked
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         
         {/* Left Side: Student Selection Search lists (grid-span-5) */}
@@ -2135,8 +3091,8 @@ export default function SchoolFeesTab({
             ) : (
               filteredStudents.map(student => {
                 const bill = getStudentBill(student);
-                const expected = bill.schoolFees + bill.utilityBill + bill.sportsFees + bill.ptaDues + bill.otherFee;
-                const paid = bill.payments.reduce((sum, p) => sum + p.amount, 0);
+                const expected = calculateBillExpected(bill);
+                const paid = (bill.payments || []).reduce((sum, p) => sum + (Number(p?.amount) || 0), 0);
                 const bal = expected - paid;
                 const isSelected = student.id === activeStudentId;
 
@@ -2244,7 +3200,7 @@ export default function SchoolFeesTab({
               {/* Installments calculations balances details box */}
               {(() => {
                 const expected = activeBill.schoolFees + activeBill.utilityBill + activeBill.sportsFees + activeBill.ptaDues + (activeBill.transportationBill || 0) + activeBill.otherFee;
-                const paid = activeBill.payments.reduce((sum, p) => sum + p.amount, 0);
+                const paid = (activeBill.payments || []).reduce((sum, p) => sum + (Number(p?.amount) || 0), 0);
                 const bal = expected - paid;
 
                 return (
@@ -2352,13 +3308,137 @@ export default function SchoolFeesTab({
                     />
                   </div>
                 </div>
+
+                {/* GRANULAR BILL COMPONENTS & LEVIES FOR THIS STUDENT */}
+                <div className="mt-4 pt-3.5 border-t border-slate-200/90 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                        <Layers className="h-3.5 w-3.5 text-indigo-600" />
+                        <span>Granular Bill Components &amp; Levies</span>
+                        <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-200 px-1.5 py-0.2 rounded-full normal-case">
+                          {(activeBill.customComponents || []).length} Linked
+                        </span>
+                      </h4>
+                      <p className="text-[11px] text-slate-500 font-medium">
+                        Itemized component costs automatically linked to this student's billing statement. Admins can customize individual values.
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setShowComponentsManagerModal(true)}
+                        className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-lg border border-indigo-200 transition cursor-pointer flex items-center gap-1 shadow-2xs"
+                      >
+                        <Settings2 size={12} />
+                        <span>Manage All Components</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Components cards grid */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                    {(activeBill.customComponents || []).map((comp) => (
+                      <div
+                        key={comp.componentId}
+                        className="p-3 bg-white rounded-xl border border-slate-200 shadow-2xs hover:border-indigo-300 transition group space-y-2 relative"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 pr-1">
+                            <span className="text-xs font-bold text-slate-800 block truncate" title={comp.componentName}>
+                              {comp.componentName}
+                            </span>
+                            {comp.category && (
+                              <span className="inline-block text-[9px] font-semibold text-indigo-700 bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-100 mt-0.5">
+                                {comp.category}
+                              </span>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveCustomComponentFromActiveBill(comp.componentId)}
+                            className="text-slate-300 hover:text-rose-600 p-1 rounded hover:bg-rose-50 transition cursor-pointer shrink-0"
+                            title="Remove this levy from student's billing statement"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-medium text-slate-500 mb-1">
+                            Individual Cost Value (GHS)
+                          </label>
+                          <div className="relative">
+                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs font-mono font-bold">
+                              GHS
+                            </span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="any"
+                              value={comp.amount}
+                              onChange={(e) => handleEditCustomComponent(comp.componentId, parseFloat(e.target.value) || 0)}
+                              className="w-full text-xs font-mono font-bold text-slate-800 py-1.5 pl-11 pr-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 bg-slate-50/50 focus:bg-white"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+
+                    {/* Dropdown to link another component */}
+                    {customBillComponents.filter(c => !(activeBill.customComponents || []).some(sc => sc.componentId === c.id)).length > 0 && (
+                      <div className="p-3 bg-slate-50/70 border border-dashed border-slate-300 rounded-xl flex flex-col justify-center gap-1.5">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 flex items-center gap-1">
+                          <Plus size={11} /> Link Granular Component
+                        </label>
+                        <select
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              handleAddCustomComponentToActiveBill(e.target.value);
+                              e.target.value = '';
+                            }
+                          }}
+                          defaultValue=""
+                          className="w-full text-xs py-1.5 px-2 border border-slate-200 rounded-lg bg-white text-slate-700 cursor-pointer focus:ring-1 focus:ring-indigo-500 font-medium"
+                        >
+                          <option value="" disabled>Select component to link...</option>
+                          {customBillComponents
+                            .filter(c => !(activeBill.customComponents || []).some(sc => sc.componentId === c.id))
+                            .map(c => (
+                              <option key={c.id} value={c.id}>
+                                {c.name} (GHS {Number(c.defaultAmount).toFixed(2)})
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
 
               {/* INSTALLMENT TRANSACTION LIST */}
               <div className="space-y-3 pt-2">
-                <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1">
-                  <Receipt className="h-4 w-4" /> Installments payment history (Receipt directory)
-                </h3>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1">
+                    <Receipt className="h-4 w-4" /> Installments payment history (Receipt directory)
+                  </h3>
+                  {activeBill.payments.length > 0 && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-slate-400 font-medium">Filter Component:</span>
+                      <select
+                        value={activeInstallmentComponentFilter}
+                        onChange={(e) => setActiveInstallmentComponentFilter(e.target.value)}
+                        className="text-[11px] font-semibold border border-slate-200 bg-white rounded-lg px-2.5 py-1 text-slate-700 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+                      >
+                        <option value="All">All Components ({activeBill.payments.length})</option>
+                        {Array.from(new Set(activeBill.payments.map(p => p.component || 'School Fees'))).map(c => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
 
                 <div className="border border-slate-200 rounded-lg overflow-x-auto">
                   <table className="w-full text-left border-collapse min-w-[600px]">
@@ -2379,13 +3459,21 @@ export default function SchoolFeesTab({
                             No payment installments received for this academic term yet.
                           </td>
                         </tr>
+                      ) : activeBill.payments.filter(p => activeInstallmentComponentFilter === 'All' || p.component === activeInstallmentComponentFilter).length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="py-6 text-center text-slate-400 font-mono text-[11px]">
+                            No payments found matching "{activeInstallmentComponentFilter}".
+                          </td>
+                        </tr>
                       ) : (
-                        activeBill.payments.map(payment => (
+                        activeBill.payments
+                          .filter(p => activeInstallmentComponentFilter === 'All' || p.component === activeInstallmentComponentFilter)
+                          .map(payment => (
                           <tr key={payment.id} className="hover:bg-slate-50">
                             <td className="py-2 px-3 font-mono text-[11px] text-slate-600">{payment.date}</td>
                             <td className="py-2 px-3 font-semibold text-[11px] font-mono text-slate-800">{payment.receiptNo}</td>
                             <td className="py-2 px-3">
-                              <span className="bg-slate-100 text-slate-700 text-[10px] font-bold px-1.5 py-0.5 rounded uppercase">
+                              <span className="bg-emerald-50 text-emerald-800 border border-emerald-200 text-[10px] font-bold px-2 py-0.5 rounded uppercase">
                                 {payment.component}
                               </span>
                             </td>
@@ -2396,16 +3484,24 @@ export default function SchoolFeesTab({
                             <td className="py-2 px-3 text-center">
                               <div className="inline-flex gap-1.5 items-center justify-center">
                                 <button
+                                  onClick={() => handleGenerateComponentPdfReceipt(activeBill, payment)}
+                                  disabled={isGeneratingComponentPdf}
+                                  title={`Download Official PDF Receipt for ${payment.component}`}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-md transition border border-emerald-200 disabled:opacity-50 cursor-pointer shadow-2xs active:scale-95"
+                                >
+                                  <FileDown className="h-3 w-3" /> PDF
+                                </button>
+                                <button
                                   onClick={() => setActiveReceiptPayment({ bill: activeBill, payment })}
-                                  title="Print Official Receipt"
-                                  className="p-1 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded transition"
+                                  title="Preview & Print Official Receipt"
+                                  className="p-1 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded transition cursor-pointer"
                                 >
                                   <Receipt className="h-3.5 w-3.5" />
                                 </button>
                                 <button
                                   onClick={() => handleDeletePayment(payment.id)}
                                   title="Delete Transaction"
-                                  className="p-1 text-slate-600 hover:text-rose-600 hover:bg-rose-50 rounded transition"
+                                  className="p-1 text-slate-600 hover:text-rose-600 hover:bg-rose-50 rounded transition cursor-pointer"
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
                                 </button>
@@ -2441,6 +3537,7 @@ export default function SchoolFeesTab({
                       <th className="p-3">PTA Dues</th>
                       <th className="p-3">Transport Bill</th>
                       <th className="p-3">Other Fee</th>
+                      <th className="p-3">Granular Levies</th>
                       <th className="p-3 text-right">Term Total</th>
                       <th className="p-3 text-right">Amount Paid</th>
                       <th className="p-3 text-right">Outstanding Bal</th>
@@ -2449,16 +3546,17 @@ export default function SchoolFeesTab({
                   <tbody className="divide-y divide-slate-100 text-xs">
                     {students.length === 0 ? (
                       <tr>
-                        <td colSpan={10} className="p-8 text-center text-slate-400 font-mono">
+                        <td colSpan={11} className="p-8 text-center text-slate-400 font-mono">
                           Please register students first in the Student profiles registry directory in order to manage billing.
                         </td>
                       </tr>
                     ) : (
                       students.map(student => {
                         const bill = getStudentBill(student);
-                        const expected = bill.schoolFees + bill.utilityBill + bill.sportsFees + bill.ptaDues + (bill.transportationBill || 0) + bill.otherFee;
-                        const paid = bill.payments.reduce((sum, p) => sum + p.amount, 0);
+                        const expected = calculateBillExpected(bill);
+                        const paid = (bill.payments || []).reduce((sum, p) => sum + (Number(p?.amount) || 0), 0);
                         const outstanding = expected - paid;
+                        const customSum = (bill.customComponents || []).reduce((sum, c) => sum + (Number(c.amount) || 0), 0);
 
                         return (
                           <tr key={student.id} className="hover:bg-slate-50/50">
@@ -2479,6 +3577,14 @@ export default function SchoolFeesTab({
                             <td className="p-3 font-mono text-[11px] text-slate-500">GHS {bill.ptaDues}</td>
                             <td className="p-3 font-mono text-[11px] text-slate-500">GHS {bill.transportationBill || 0}</td>
                             <td className="p-3 font-mono text-[11px] text-slate-500">GHS {bill.otherFee} <span className="text-[9px] text-slate-400 italic block">{bill.otherFeeDescription}</span></td>
+                            <td className="p-3 font-mono text-[11px] text-indigo-700 font-semibold">
+                              GHS {customSum.toFixed(1)}
+                              {(bill.customComponents || []).length > 0 && (
+                                <span className="block text-[8.5px] text-slate-400 font-sans font-normal truncate max-w-[120px]" title={(bill.customComponents || []).map(c => `${c.componentName}: ${c.amount}`).join(', ')}>
+                                  {(bill.customComponents || []).map(c => c.componentName).join(', ')}
+                                </span>
+                              )}
+                            </td>
                             <td className="p-3 text-right font-mono font-medium text-slate-700 font-semibold bg-slate-50/30">
                               GHS {expected.toFixed(1)}
                             </td>
@@ -2765,7 +3871,7 @@ export default function SchoolFeesTab({
                   <button
                     onClick={() => {
                       const fname = formatIdentifiableFilename({
-                        docType: 'Fee Receipt',
+                        docType: `Receipt-${activeReceiptPayment.payment.component.replace(/[^a-zA-Z0-9]+/g, '_')}`,
                         studentName: activeReceiptPayment.bill.studentName,
                         studentId: activeReceiptPayment.bill.studentId,
                         receiptNo: activeReceiptPayment.payment.receiptNo,
@@ -2775,9 +3881,9 @@ export default function SchoolFeesTab({
                       });
                       handleExportFeesPDF('fee-receipt-print-area', fname);
                     }}
-                    className="px-3.5 py-2 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl text-xs shadow-xs transition cursor-pointer"
+                    className="px-3.5 py-2 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl text-xs shadow-xs transition cursor-pointer flex items-center gap-1.5"
                   >
-                    <Eye className="h-3.5 w-3.5 inline mr-1" /> Toggle Preview Mode
+                    <FileDown className="h-3.5 w-3.5" /> Download PDF Receipt
                   </button>
                   <button 
                     onClick={() => setActiveReceiptPayment(null)}
@@ -2840,7 +3946,7 @@ export default function SchoolFeesTab({
 
                 {/* Receipt Title - Slimmer */}
                 <div className="text-center py-1 bg-slate-50 border-b border-slate-200">
-                  <h2 className="text-[10px] font-bold uppercase tracking-widest text-slate-950">OFFICIAL PAYMENT RECEIPT</h2>
+                  <h2 className="text-[10px] font-bold uppercase tracking-widest text-slate-950">OFFICIAL BILL COMPONENT PAYMENT RECEIPT</h2>
                 </div>
 
                 <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-[10px] font-sans">
@@ -2862,14 +3968,30 @@ export default function SchoolFeesTab({
                   <table className="w-full text-[10px]">
                     <thead>
                       <tr className="bg-slate-100 text-slate-700 font-bold uppercase border-b border-slate-800 text-[9px]">
-                        <th className="p-1.5 text-left pl-3">Description</th>
-                        <th className="p-1.5 text-right pr-3">Amount (GHS)</th>
+                        <th className="p-1.5 text-left pl-3">Component Description</th>
+                        <th className="p-1.5 text-center">Status</th>
+                        <th className="p-1.5 text-right pr-3">Payment Amount (GHS)</th>
                       </tr>
                     </thead>
                     <tbody>
                       <tr>
                         <td className="p-2 pl-3">
                           <p className="font-bold text-slate-900 uppercase">{activeReceiptPayment.payment.component}</p>
+                          <p className="text-[8.5px] text-slate-500 font-normal">Allocated Bill Item Payment</p>
+                        </td>
+                        <td className="p-2 text-center">
+                          {(() => {
+                            const exp = getComponentExpectedAmount(activeReceiptPayment.bill, activeReceiptPayment.payment.component);
+                            const paid = getComponentPaidAmount(activeReceiptPayment.bill, activeReceiptPayment.payment.component);
+                            const isFullySettled = exp > 0 && paid >= exp;
+                            return (
+                              <span className={`px-2 py-0.5 rounded text-[8.5px] font-bold uppercase ${
+                                isFullySettled ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                              }`}>
+                                {isFullySettled ? 'Fully Settled' : 'Partially Paid'}
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td className="p-2 text-right pr-3 font-mono font-bold text-slate-900 bg-slate-50">
                           {activeReceiptPayment.payment.amount.toFixed(2)}
@@ -2877,7 +3999,7 @@ export default function SchoolFeesTab({
                       </tr>
                       {activeReceiptPayment.payment.remarks && (
                         <tr>
-                          <td colSpan={2} className="p-1.5 pl-3 bg-slate-50/50 italic text-[9px] text-slate-500 border-t border-slate-200">
+                          <td colSpan={3} className="p-1.5 pl-3 bg-slate-50/50 italic text-[9px] text-slate-500 border-t border-slate-200">
                             Note: {activeReceiptPayment.payment.remarks}
                           </td>
                         </tr>
@@ -2886,45 +4008,67 @@ export default function SchoolFeesTab({
                   </table>
                 </div>
 
-                {/* Totals - Side by side to save height */}
-                <div className="flex justify-between items-end text-[10px] border-t border-slate-300 pt-2">
+                {/* Totals & Component Settlement Breakdown */}
+                {(() => {
+                  const bill = activeReceiptPayment.bill;
+                  const compName = activeReceiptPayment.payment.component;
+                  const compExpected = getComponentExpectedAmount(bill, compName);
+                  const compPaid = getComponentPaidAmount(bill, compName);
+                  const compBalance = Math.max(0, compExpected - compPaid);
+
+                  const expectedTotal = calculateBillExpected(bill);
+                  const totalPaid = (bill.payments || []).reduce((sum, p) => sum + (Number(p?.amount) || 0), 0);
+                  const outstanding = expectedTotal - totalPaid;
+
+                  return (
+                    <div className="grid grid-cols-2 gap-4 text-[9.5px] border-t border-slate-300 pt-2 font-sans">
+                      <div className="space-y-1 border-r border-slate-200 pr-3">
+                        <p className="font-bold uppercase text-[9px] text-slate-700 tracking-wider">
+                          {compName} Settlement
+                        </p>
+                        <div className="space-y-0.5 text-[9px]">
+                          <p className="flex justify-between"><span className="text-slate-500">Expected Levy:</span> <span className="font-mono font-semibold">GHS {compExpected.toFixed(2)}</span></p>
+                          <p className="flex justify-between"><span className="text-slate-500">Total Paid To-Date:</span> <span className="font-mono font-semibold text-emerald-700">GHS {compPaid.toFixed(2)}</span></p>
+                          <p className="flex justify-between font-bold border-t border-slate-200 pt-0.5"><span className="text-slate-700">Component Balance:</span> <span className="font-mono text-rose-700">GHS {compBalance.toFixed(2)}</span></p>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1 pl-1">
+                        <p className="font-bold uppercase text-[9px] text-slate-700 tracking-wider">
+                          Overall Student Ledger
+                        </p>
+                        <div className="space-y-0.5 text-[9px]">
+                          <p className="flex justify-between"><span className="text-slate-500">Total Term Bill:</span> <span className="font-mono">GHS {expectedTotal.toFixed(2)}</span></p>
+                          <p className="flex justify-between"><span className="text-slate-500">Cumulative Paid:</span> <span className="font-mono font-bold text-emerald-700">GHS {totalPaid.toFixed(2)}</span></p>
+                          <p className="flex justify-between font-bold text-slate-950 border-t border-slate-200 pt-0.5"><span className="font-bold">Total Arrears:</span> <span className="font-mono text-rose-700">GHS {outstanding.toFixed(2)}</span></p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Verification QR & Signatures */}
+                <div className="flex justify-between items-center text-[10px] border-t border-slate-300 pt-2">
                   <div className="flex items-center gap-2">
                     <div className="p-0.5 bg-white border border-slate-200 rounded-md shrink-0">
                       <QRCodeSVG 
-                        value={`${window.location.origin}/?tab=fees&studentId=${activeReceiptPayment.bill.studentId}&receiptNo=${activeReceiptPayment.payment.receiptNo}`}
-                        size={40} 
+                        value={`${window.location.origin}/?tab=fees&studentId=${activeReceiptPayment.bill.studentId}&receiptNo=${activeReceiptPayment.payment.receiptNo}&comp=${encodeURIComponent(activeReceiptPayment.payment.component)}`}
+                        size={38} 
                         level="M" 
                       />
                     </div>
                     <div className="text-left space-y-0.5">
-                      <p className="text-slate-400 text-[8px] uppercase font-bold tracking-tighter">Verification</p>
-                      <p className="text-[8px] text-slate-500 leading-tight">Scan to verify electronic ledger statement</p>
+                      <p className="text-slate-400 text-[8px] uppercase font-bold tracking-tighter">Verified Component Receipt</p>
+                      <p className="text-[8px] text-slate-500 leading-tight">Electronic ledger statement credential</p>
                     </div>
                   </div>
-                  <div className="text-right space-y-1">
-                    {(() => {
-                      const bill = activeReceiptPayment.bill;
-                      const expectedTotal = bill.schoolFees + bill.utilityBill + bill.sportsFees + bill.ptaDues + (bill.transportationBill || 0) + bill.otherFee;
-                      const totalPaid = bill.payments.reduce((sum, p) => sum + p.amount, 0);
-                      const outstanding = expectedTotal - totalPaid;
-
-                      return (
-                        <div className="space-y-0.5">
-                          <p className="flex justify-between gap-6"><span className="text-slate-500">Paid to-date:</span> <span className="font-mono font-bold text-emerald-700">GHS {totalPaid.toFixed(2)}</span></p>
-                          <p className="flex justify-between gap-6 font-bold text-slate-950 border-t border-slate-300 pt-0.5 text-[11px]"><span className="font-bold">Balance:</span> <span className="font-mono">GHS {outstanding.toFixed(2)}</span></p>
-                        </div>
-                      );
-                    })()}
-                  </div>
-                </div>
-
-                {/* Signature - Compact */}
-                <div className="pt-2 grid grid-cols-2 gap-4 text-center text-[9px]">
-                  <div className="border-t border-dashed border-slate-400 pt-1">
-                    <p className="font-medium text-slate-700 uppercase tracking-tighter">Accounts Office</p>
-                  </div>
-                  <div className="border-t border-dashed border-slate-400 pt-1">
-                    <p className="font-medium text-slate-700 uppercase tracking-tighter">Bursar / Signature</p>
+                  <div className="flex gap-6 text-center text-[8.5px]">
+                    <div className="border-t border-dashed border-slate-400 pt-1 min-w-[90px]">
+                      <p className="font-medium text-slate-700 uppercase tracking-tighter">Accounts Officer</p>
+                    </div>
+                    <div className="border-t border-dashed border-slate-400 pt-1 min-w-[90px]">
+                      <p className="font-medium text-slate-700 uppercase tracking-tighter">Bursar / Cashier</p>
+                    </div>
                   </div>
                 </div>
                 </div>
@@ -3052,13 +4196,16 @@ export default function SchoolFeesTab({
                               <td className="p-1 text-right pr-1.5 font-mono">GHS {activeLedgerStudent.otherFee.toFixed(2)}</td>
                             </tr>
                           )}
+                          {(activeLedgerStudent.customComponents || []).filter(c => (Number(c.amount) || 0) > 0).map(c => (
+                            <tr key={c.componentId} className="border-b border-slate-200">
+                              <td className="p-1 pl-1.5 text-slate-600 truncate max-w-[120px]" title={c.componentName}>{c.componentName}</td>
+                              <td className="p-1 text-right pr-1.5 font-mono">GHS {Number(c.amount).toFixed(2)}</td>
+                            </tr>
+                          ))}
                           <tr className="bg-slate-100 font-bold">
                             <td className="p-1 pl-1.5 text-slate-900">Total Term Bill</td>
                             <td className="p-1 text-right pr-1.5 font-mono text-slate-900">
-                              GHS {(() => {
-                                const total = activeLedgerStudent.schoolFees + activeLedgerStudent.utilityBill + activeLedgerStudent.sportsFees + activeLedgerStudent.ptaDues + (activeLedgerStudent.transportationBill || 0) + activeLedgerStudent.otherFee;
-                                return total.toFixed(2);
-                              })()}
+                              GHS {calculateBillExpected(activeLedgerStudent).toFixed(2)}
                             </td>
                           </tr>
                         </tbody>
@@ -3104,7 +4251,7 @@ export default function SchoolFeesTab({
                     {/* Overall Statements Summary balances */}
                     <div className="bg-slate-50 p-1.5 rounded space-y-0.5 border border-slate-100">
                       {(() => {
-                        const expectedTotal = activeLedgerStudent.schoolFees + activeLedgerStudent.utilityBill + activeLedgerStudent.sportsFees + activeLedgerStudent.ptaDues + (activeLedgerStudent.transportationBill || 0) + activeLedgerStudent.otherFee;
+                        const expectedTotal = calculateBillExpected(activeLedgerStudent);
                         const totalPaid = activeLedgerStudent.payments.reduce((sum, p) => sum + p.amount, 0);
                         const outstanding = expectedTotal - totalPaid;
 
@@ -3441,6 +4588,15 @@ export default function SchoolFeesTab({
                               <td className="p-2 text-right font-mono font-semibold text-rose-600">GHS {activeBill.otherFee.toFixed(2)}</td>
                             </tr>
                           )}
+                          {/* Granular Custom Bill Components */}
+                          {(activeBill.customComponents || []).filter(c => (Number(c.amount) || 0) > 0).map(c => (
+                            <tr key={c.componentId}>
+                              <td className="p-2 font-medium text-slate-800">{c.componentName} {c.category ? `(${c.category})` : ''}</td>
+                              <td className="p-2 text-right font-mono text-slate-500">GHS {Number(c.amount).toFixed(2)}</td>
+                              <td className="p-2 text-right font-mono text-slate-500">-</td>
+                              <td className="p-2 text-right font-mono font-semibold text-rose-600">GHS {Number(c.amount).toFixed(2)}</td>
+                            </tr>
+                          ))}
                           {/* installments paid subtract row */}
                           {activeExpectedAndPaid.paid > 0 && (
                             <tr className="bg-emerald-50/50">
@@ -3777,6 +4933,13 @@ export default function SchoolFeesTab({
                               <td className="p-2 text-right font-mono text-slate-800 font-medium">GHS {activeBill.otherFee.toFixed(2)}</td>
                             </tr>
                           )}
+                          {/* Granular Custom Bill Components */}
+                          {(activeBill.customComponents || []).filter(c => (Number(c.amount) || 0) > 0).map(c => (
+                            <tr key={c.componentId}>
+                              <td className="p-2">{c.componentName} {c.category ? `(${c.category})` : ''}</td>
+                              <td className="p-2 text-right font-mono text-slate-800 font-medium">GHS {Number(c.amount).toFixed(2)}</td>
+                            </tr>
+                          ))}
                           
                           {/* Expected total row */}
                           <tr className="bg-slate-50 font-bold border-t border-slate-300">
@@ -4459,6 +5622,12 @@ export default function SchoolFeesTab({
                                 <td className="p-2 text-right font-mono text-slate-800 font-semibold">GHS {reportCenterSelectedStudentBill.otherFee.toFixed(2)}</td>
                               </tr>
                             )}
+                            {(reportCenterSelectedStudentBill.customComponents || []).filter(c => (Number(c.amount) || 0) > 0).map(c => (
+                              <tr key={c.componentId}>
+                                <td className="p-2">{c.componentName} {c.category ? `(${c.category})` : ''}</td>
+                                <td className="p-2 text-right font-mono text-slate-800 font-semibold">GHS {Number(c.amount).toFixed(2)}</td>
+                              </tr>
+                            ))}
                             <tr className="bg-slate-50 font-bold border-t border-slate-300">
                               <td className="p-2 font-bold text-slate-800 uppercase text-[9px]">Total Expected Billings:</td>
                               <td className="p-2 text-right font-mono font-bold text-slate-900">GHS {reportCenterSelectedStudentStats.expected.toFixed(2)}</td>
@@ -5023,9 +6192,8 @@ export default function SchoolFeesTab({
                       </div>
                       <div className="text-right space-y-0.5">
                         {(() => {
-                          const bill = data.bill;
-                          const expectedTotal = bill.schoolFees + bill.utilityBill + bill.sportsFees + bill.ptaDues + (bill.transportationBill || 0) + bill.otherFee;
-                          const totalPaid = bill.payments.reduce((sum, p) => sum + p.amount, 0);
+                          const expectedTotal = calculateBillExpected(data.bill);
+                          const totalPaid = (data.bill.payments || []).reduce((sum, p) => sum + (Number(p?.amount) || 0), 0);
                           const outstanding = expectedTotal - totalPaid;
 
                           return (
@@ -5170,18 +6338,653 @@ export default function SchoolFeesTab({
       </div>
     )}
 
-    {/* Create New Bill Category Modal */}
-    <CreateBillCategoryModal
-      isOpen={isCreateCategoryModalOpen}
-      onClose={() => {
-        setIsCreateCategoryModalOpen(false);
-        setCustomBillComponents(DbController.getCustomBillComponents());
-      }}
-      onSuccess={(newComp) => {
-        setCustomBillComponents(DbController.getCustomBillComponents());
-        setPaymentComponent(newComp.name);
-      }}
-    />
+      {/* GRANULAR BILL COMPONENTS & LEVIES MANAGER MODAL */}
+      <AnimatePresence>
+        {showComponentsManagerModal && (
+          <div 
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowComponentsManagerModal(false);
+            }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm overflow-y-auto cursor-pointer no-print"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 15 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 15 }}
+              transition={{ ease: "easeOut", duration: 0.15 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white max-w-4xl w-full rounded-[24px] shadow-2xl border border-slate-100 overflow-hidden flex flex-col max-h-[90vh] cursor-default md:my-8"
+            >
+              <div className="px-6 py-4 bg-gradient-to-r from-indigo-600 via-indigo-700 to-purple-700 text-white flex items-center justify-between shrink-0">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 bg-white/10 rounded-xl">
+                    <Layers className="h-5 w-5 text-indigo-100" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black uppercase tracking-wider">Granular Bill Components &amp; Levies Manager</h3>
+                    <p className="text-[11px] text-indigo-100 font-medium">Define fee items (Exam Fees, Library Levy, ICT Levy) with individual cost values and auto-link to student statements.</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowComponentsManagerModal(false)}
+                  className="p-1.5 hover:bg-white/10 rounded-xl text-white/80 hover:text-white transition cursor-pointer"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="p-6 overflow-y-auto space-y-6 bg-slate-50/50 text-xs">
+                {/* Top Action Ribbon */}
+                <div className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h4 className="font-bold text-slate-800 text-[13px]">Active Term Billing Components ({customBillComponents.length})</h4>
+                    <p className="text-[11px] text-slate-500">Changes propagate instantly to linked student statements upon sync.</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleSyncComponentsToAllStudents();
+                      }}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+                      title="Propagate active components to all student billing statements"
+                    >
+                      <RefreshCw size={14} className="text-indigo-100" />
+                      <span>Sync &amp; Apply to All Students</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsCreateCategoryModalOpen(true)}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+                    >
+                      <Plus size={14} />
+                      <span>Create New Component</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Components List Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {customBillComponents.map((comp) => (
+                    <div 
+                      key={comp.id}
+                      className="bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs space-y-3 hover:border-indigo-300 transition flex flex-col justify-between"
+                    >
+                      <div className="space-y-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <span className="text-[10px] font-extrabold uppercase text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md">
+                              {comp.category}
+                            </span>
+                            <h5 className="text-sm font-black text-slate-900 mt-1">{comp.name}</h5>
+                            {comp.code && <span className="font-mono text-[10px] text-slate-400">Code: {comp.code}</span>}
+                          </div>
+                          <div className="text-right shrink-0">
+                            <span className="text-base font-black font-mono text-slate-900 block">
+                              GHS {Number(comp.defaultAmount).toFixed(2)}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-medium">{comp.frequency}</span>
+                          </div>
+                        </div>
+
+                        {comp.description && (
+                          <p className="text-[11px] text-slate-600 line-clamp-2 leading-relaxed">{comp.description}</p>
+                        )}
+
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                          <span className="text-[10px] font-bold text-slate-500">Classes:</span>
+                          {comp.applicableClasses.includes('All') ? (
+                            <span className="text-[10px] bg-slate-100 text-slate-700 px-2 py-0.5 rounded font-bold">All Classes</span>
+                          ) : (
+                            comp.applicableClasses.map(cls => (
+                              <span key={cls} className="text-[10px] bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-medium">{cls}</span>
+                            ))
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
+                        <label className="flex items-center gap-2 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={comp.isActive}
+                            onChange={(e) => {
+                              const updated = { ...comp, isActive: e.target.checked, updatedAt: new Date().toISOString() };
+                              handleSaveGranularComponent(updated);
+                            }}
+                            className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                          />
+                          <span className="text-xs font-bold text-slate-700">Active</span>
+                        </label>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingComponent(comp);
+                              // Can also trigger edit modal or inline prompt
+                            }}
+                            className="text-xs font-bold text-indigo-600 hover:text-indigo-800 px-2.5 py-1 bg-indigo-50 rounded-lg transition"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteGranularComponent(comp.id)}
+                            className="text-xs font-bold text-rose-600 hover:text-rose-800 px-2.5 py-1 bg-rose-50 rounded-lg transition"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="px-6 py-4 bg-white border-t border-slate-100 flex justify-end shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setShowComponentsManagerModal(false)}
+                  className="px-5 py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs rounded-xl transition cursor-pointer"
+                >
+                  Done / Close
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* DEDICATED OFFSCREEN COMPONENT PDF RECEIPT RENDER NODE */}
+      <div
+        id="component-pdf-receipt-render-node"
+        style={{
+          position: 'fixed',
+          left: '-9999px',
+          top: 0,
+          width: '794px',
+          minHeight: '1123px',
+          backgroundColor: '#ffffff',
+          zIndex: -50,
+          padding: '36px',
+          boxSizing: 'border-box',
+          fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
+          color: '#0f172a'
+        }}
+      >
+        {pdfTargetPayment && (() => {
+          const { bill, payment } = pdfTargetPayment;
+          const compName = payment.component || 'School Fees';
+          const compExpected = getComponentExpectedAmount(bill, compName);
+          const compPaid = getComponentPaidAmount(bill, compName);
+          const compBalance = Math.max(0, compExpected - compPaid);
+          const isFullySettled = compExpected > 0 && compPaid >= compExpected;
+
+          const totalExpected = calculateBillExpected(bill);
+          const totalPaid = (bill.payments || []).reduce((sum, p) => sum + (Number(p?.amount) || 0), 0);
+          const totalOutstanding = Math.max(0, totalExpected - totalPaid);
+
+          const componentMeta = (customBillComponents || []).find(c => c && (c.name || '').toLowerCase() === compName.toLowerCase());
+
+          return (
+            <div style={{ position: 'relative', border: '3px double #0f172a', padding: '28px', backgroundColor: '#ffffff', minHeight: '1040px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+              {/* Watermark */}
+              <div
+                style={{ position: 'absolute', inset: 0, pointerEvents: 'none', opacity: 0.04 }}
+                dangerouslySetInnerHTML={{ __html: getWatermarkHtml(schoolInfo.crestUrl) }}
+              />
+
+              <div style={{ position: 'relative', zIndex: 10, display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'space-between', gap: '20px' }}>
+                {/* Header */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #0f172a', paddingBottom: '16px' }}>
+                  <div>
+                    <h1 style={{ fontSize: '20px', fontWeight: '900', textTransform: 'uppercase', margin: 0, letterSpacing: '-0.5px', color: '#090d16' }}>{schoolInfo.name}</h1>
+                    <p style={{ fontSize: '11px', fontWeight: '600', color: '#475569', margin: '3px 0 0 0', fontStyle: 'italic' }}>"{schoolInfo.motto}"</p>
+                    <p style={{ fontSize: '10px', color: '#64748b', margin: '4px 0 0 0' }}>{schoolInfo.gpsAddress} • Tel: {schoolInfo.telephone} • {schoolInfo.email}</p>
+                  </div>
+                  {schoolInfo.logoUrl ? (
+                    <img referrerPolicy="no-referrer" src={schoolInfo.logoUrl} style={{ height: '64px', width: '64px', objectFit: 'contain' }} alt="Crest" />
+                  ) : (
+                    <div style={{ width: '56px', height: '56px', border: '1px solid #cbd5e1', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#f8fafc', color: '#059669', fontWeight: 'bold' }}>GTIMS</div>
+                  )}
+                </div>
+
+                {/* Receipt Title Banner */}
+                <div style={{ backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '8px', padding: '10px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <span style={{ fontSize: '13px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '1px', color: '#166534' }}>
+                      OFFICIAL BILL COMPONENT PAYMENT RECEIPT
+                    </span>
+                    <p style={{ fontSize: '10px', color: '#15803d', margin: '2px 0 0 0' }}>Specific Component Settlement Voucher • Academic Year {bill.academicYear}</p>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <span style={{ fontSize: '10px', fontWeight: 'bold', textTransform: 'uppercase', color: '#64748b' }}>Receipt Reference</span>
+                    <div style={{ fontSize: '15px', fontWeight: '800', fontFamily: 'monospace', color: '#0f172a' }}>{payment.receiptNo}</div>
+                  </div>
+                </div>
+
+                {/* Student & Payment Info Grid */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', backgroundColor: '#f8fafc', padding: '16px', borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: '11px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <div><span style={{ color: '#64748b', fontWeight: '600' }}>STUDENT NAME:</span> <strong style={{ textTransform: 'uppercase', color: '#0f172a' }}>{bill.studentName}</strong></div>
+                    <div><span style={{ color: '#64748b', fontWeight: '600' }}>STUDENT ID:</span> <span style={{ fontFamily: 'monospace', fontWeight: '700' }}>{bill.studentId}</span></div>
+                    <div><span style={{ color: '#64748b', fontWeight: '600' }}>CLASS / DIVISION:</span> <span style={{ fontWeight: '700', color: '#1e293b' }}>{bill.class}</span></div>
+                    <div><span style={{ color: '#64748b', fontWeight: '600' }}>BILLING CYCLE:</span> <span>{bill.academicYear} • {bill.term}</span></div>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', textAlign: 'right' }}>
+                    <div><span style={{ color: '#64748b', fontWeight: '600' }}>TRANSACTION DATE:</span> <span style={{ fontFamily: 'monospace', fontWeight: '700' }}>{payment.date}</span></div>
+                    <div><span style={{ color: '#64748b', fontWeight: '600' }}>PAYMENT METHOD:</span> <strong style={{ textTransform: 'uppercase', color: '#047857' }}>{payment.method}</strong></div>
+                    <div><span style={{ color: '#64748b', fontWeight: '600' }}>TARGET COMPONENT:</span> <strong style={{ color: '#0f172a' }}>{compName}</strong></div>
+                    <div><span style={{ color: '#64748b', fontWeight: '600' }}>PAYMENT STATUS:</span> <span style={{ fontWeight: '800', color: isFullySettled ? '#166534' : '#b45309' }}>{isFullySettled ? 'FULLY SETTLED' : 'PARTIALLY PAID'}</span></div>
+                  </div>
+                </div>
+
+                {/* Specific Bill Component Ledger Line Item */}
+                <div>
+                  <h4 style={{ fontSize: '11px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.5px', color: '#334155', margin: '0 0 8px 0' }}>
+                    Bill Component Payment Breakdown
+                  </h4>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', border: '1px solid #cbd5e1' }}>
+                    <thead>
+                      <tr style={{ backgroundColor: '#f1f5f9', borderBottom: '2px solid #94a3b8', textTransform: 'uppercase', fontSize: '10px', color: '#334155' }}>
+                        <th style={{ padding: '8px 12px', textAlign: 'left' }}>Item / Component Description</th>
+                        <th style={{ padding: '8px 12px', textAlign: 'left' }}>Category</th>
+                        <th style={{ padding: '8px 12px', textAlign: 'right' }}>Expected Levy (GHS)</th>
+                        <th style={{ padding: '8px 12px', textAlign: 'right' }}>Paid This Receipt (GHS)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr style={{ borderBottom: '1px solid #e2e8f0' }}>
+                        <td style={{ padding: '12px', fontWeight: '700', color: '#0f172a' }}>
+                          <div style={{ textTransform: 'uppercase' }}>{compName}</div>
+                          {componentMeta?.description && (
+                            <div style={{ fontSize: '10px', color: '#64748b', fontWeight: 'normal', marginTop: '2px' }}>{componentMeta.description}</div>
+                          )}
+                        </td>
+                        <td style={{ padding: '12px', color: '#475569' }}>
+                          <span style={{ backgroundColor: '#e2e8f0', color: '#334155', padding: '2px 8px', borderRadius: '4px', fontSize: '9.5px', fontWeight: '600' }}>
+                            {componentMeta?.category || 'Standard Levy'}
+                          </span>
+                        </td>
+                        <td style={{ padding: '12px', textAlign: 'right', fontFamily: 'monospace', fontWeight: '600', color: '#334155' }}>
+                          {compExpected.toFixed(2)}
+                        </td>
+                        <td style={{ padding: '12px', textAlign: 'right', fontFamily: 'monospace', fontWeight: '800', color: '#166534', backgroundColor: '#f0fdf4', fontSize: '13px' }}>
+                          GHS {payment.amount.toFixed(2)}
+                        </td>
+                      </tr>
+                      {payment.remarks && (
+                        <tr>
+                          <td colSpan={4} style={{ padding: '8px 12px', fontSize: '10px', fontStyle: 'italic', color: '#475569', backgroundColor: '#f8fafc' }}>
+                            <strong>Official Note:</strong> {payment.remarks}
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Dual Settlement Cards: Specific Component vs Overall Ledger */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', fontSize: '11px' }}>
+                  {/* Specific Component Settlement Card */}
+                  <div style={{ border: '1.5px solid #10b981', borderRadius: '8px', padding: '12px', backgroundColor: '#ecfdf5' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #a7f3d0', paddingBottom: '6px', marginBottom: '8px' }}>
+                      <strong style={{ textTransform: 'uppercase', fontSize: '10px', color: '#065f46' }}>{compName} Settlement Position</strong>
+                      <span style={{ fontSize: '9px', fontWeight: '800', padding: '2px 6px', borderRadius: '4px', backgroundColor: isFullySettled ? '#059669' : '#d97706', color: '#ffffff' }}>
+                        {isFullySettled ? 'FULLY SETTLED' : 'PARTIAL SETTLEMENT'}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '10.5px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: '#047857' }}>Component Expected Levy:</span>
+                        <span style={{ fontFamily: 'monospace', fontWeight: '700' }}>GHS {compExpected.toFixed(2)}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: '#047857' }}>Cumulative Paid To-Date:</span>
+                        <span style={{ fontFamily: 'monospace', fontWeight: '700', color: '#15803d' }}>GHS {compPaid.toFixed(2)}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #a7f3d0', paddingTop: '4px', fontWeight: 'bold' }}>
+                        <span style={{ color: '#065f46' }}>Remaining Component Balance:</span>
+                        <span style={{ fontFamily: 'monospace', color: compBalance > 0 ? '#b91c1c' : '#15803d' }}>GHS {compBalance.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Overall Student Ledger Card */}
+                  <div style={{ border: '1.5px solid #cbd5e1', borderRadius: '8px', padding: '12px', backgroundColor: '#f8fafc' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e2e8f0', paddingBottom: '6px', marginBottom: '8px' }}>
+                      <strong style={{ textTransform: 'uppercase', fontSize: '10px', color: '#334155' }}>Overall Student Dues Summary</strong>
+                      <span style={{ fontSize: '9px', color: '#64748b' }}>{bill.term}</span>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '10.5px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: '#64748b' }}>Total Billed Dues:</span>
+                        <span style={{ fontFamily: 'monospace', fontWeight: '700' }}>GHS {totalExpected.toFixed(2)}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: '#64748b' }}>Total Installments Credited:</span>
+                        <span style={{ fontFamily: 'monospace', fontWeight: '700', color: '#15803d' }}>GHS {totalPaid.toFixed(2)}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #e2e8f0', paddingTop: '4px', fontWeight: 'bold' }}>
+                        <span style={{ color: '#1e293b' }}>Cumulative Unpaid Balance:</span>
+                        <span style={{ fontFamily: 'monospace', color: totalOutstanding > 0 ? '#b91c1c' : '#15803d' }}>GHS {totalOutstanding.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Security Verification & Signatures */}
+                <div style={{ borderTop: '1px dashed #94a3b8', paddingTop: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <div style={{ padding: '4px', backgroundColor: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '6px' }}>
+                      <QRCodeSVG
+                        value={`${window.location.origin}/?tab=fees&studentId=${bill.studentId}&receiptNo=${payment.receiptNo}&component=${encodeURIComponent(compName)}&amount=${payment.amount}`}
+                        size={64}
+                        level="M"
+                      />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '10px', fontWeight: '800', textTransform: 'uppercase', color: '#1e293b' }}>Electronic Verification Seal</div>
+                      <div style={{ fontSize: '8.5px', color: '#64748b', maxWidth: '240px', lineHeight: '1.3', marginTop: '2px' }}>
+                        Scan QR code with any camera or device to authenticate this official fee settlement record against the primary institutional database.
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '32px', textAlign: 'center' }}>
+                    <div style={{ minWidth: '130px' }}>
+                      <div style={{ borderBottom: '1px dashed #64748b', height: '36px', display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+                        <span style={{ fontSize: '10px', fontWeight: 'bold', fontStyle: 'italic', color: '#334155' }}>Official Clearance</span>
+                      </div>
+                      <span style={{ fontSize: '9px', fontWeight: '700', textTransform: 'uppercase', color: '#475569', display: 'block', marginTop: '4px' }}>Accounts Officer</span>
+                    </div>
+
+                    <div style={{ minWidth: '130px', position: 'relative' }}>
+                      {schoolInfo.signatureUrl && (
+                        <img
+                          src={schoolInfo.signatureUrl}
+                          alt="Signature"
+                          referrerPolicy="no-referrer"
+                          style={{ height: '32px', position: 'absolute', top: '0', left: '50%', transform: 'translateX(-50%)', opacity: 0.8 }}
+                        />
+                      )}
+                      <div style={{ borderBottom: '1px dashed #64748b', height: '36px', display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+                        <span style={{ fontSize: '10px', fontWeight: 'bold', color: '#1e293b' }}>{schoolInfo.headteacherName || 'Bursar'}</span>
+                      </div>
+                      <span style={{ fontSize: '9px', fontWeight: '700', textTransform: 'uppercase', color: '#475569', display: 'block', marginTop: '4px' }}>Bursar / Cashier</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Footer Notice */}
+                <div style={{ textAlign: 'center', fontSize: '8.5px', color: '#94a3b8', borderTop: '1px solid #f1f5f9', paddingTop: '6px' }}>
+                  This is an official computer-generated receipt issued by {schoolInfo.name}. Valid only when verified via the electronic school ledger portal.
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+      </div>
+
+      {/* SPECIFIC BILL COMPONENT PDF RECEIPTS HUB MODAL */}
+      <AnimatePresence>
+        {showComponentReceiptsModal && (
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowComponentReceiptsModal(false);
+            }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-900/60 backdrop-blur-xs overflow-y-auto no-print"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 12 }}
+              transition={{ ease: "easeOut", duration: 0.18 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white max-w-5xl w-full rounded-2xl sm:rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh] text-left"
+            >
+              {/* Modal Header */}
+              <div className="p-5 sm:p-6 pb-4 bg-white border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 flex items-center justify-center shrink-0">
+                    <Receipt className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h2 className="text-base font-bold text-slate-900 leading-snug">
+                      Specific Bill Component PDF Receipts Hub
+                    </h2>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Generate, preview, and download official PDF receipts specifically itemized by fee component
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleBulkPrintComponentReceipts}
+                    disabled={filteredComponentPayments.length === 0}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition shadow-xs disabled:opacity-50 cursor-pointer"
+                    title="Print all filtered component receipts"
+                  >
+                    <Printer className="w-3.5 h-3.5" /> Batch Print Filtered ({filteredComponentPayments.length})
+                  </button>
+                  <button
+                    onClick={() => setShowComponentReceiptsModal(false)}
+                    className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Filter Controls Bar */}
+              <div className="p-4 sm:px-6 bg-slate-50 border-b border-slate-200/80 flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between shrink-0">
+                <div className="flex flex-wrap items-center gap-2.5 flex-1">
+                  {/* Component Selector */}
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Component:</span>
+                    <select
+                      value={selectedReceiptComponent}
+                      onChange={(e) => setSelectedReceiptComponent(e.target.value)}
+                      className="text-xs font-bold border border-slate-300 rounded-xl px-3 py-2 bg-white text-slate-800 shadow-2xs focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+                    >
+                      <option value="All">All Components ({availableComponentNames.length})</option>
+                      {availableComponentNames.map((name) => (
+                        <option key={name} value={name}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Class Filter */}
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Class:</span>
+                    <select
+                      value={receiptComponentClassFilter}
+                      onChange={(e) => setReceiptComponentClassFilter(e.target.value as any)}
+                      className="text-xs font-bold border border-slate-300 rounded-xl px-3 py-2 bg-white text-slate-800 shadow-2xs focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+                    >
+                      <option value="All">All Classes</option>
+                      {CLASSES.map((cls) => (
+                        <option key={cls} value={cls}>{cls}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Search Box */}
+                <div className="relative w-full md:w-64">
+                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                  <input
+                    type="text"
+                    value={receiptComponentSearchQuery}
+                    onChange={(e) => setReceiptComponentSearchQuery(e.target.value)}
+                    placeholder="Search student name or ID..."
+                    className="w-full text-xs pl-9 pr-3 py-2 border border-slate-300 rounded-xl bg-white text-slate-800 placeholder-slate-400 shadow-2xs focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                  {receiptComponentSearchQuery && (
+                    <button
+                      onClick={() => setReceiptComponentSearchQuery('')}
+                      className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 text-xs"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Component Stats Ribbon */}
+              <div className="px-5 sm:px-6 py-3 bg-white border-b border-slate-100 grid grid-cols-2 sm:grid-cols-4 gap-3 shrink-0">
+                <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-100">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Active Focus</p>
+                  <p className="text-xs font-bold text-slate-800 truncate mt-0.5">{selectedReceiptComponent}</p>
+                </div>
+                <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-100">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Payment Records</p>
+                  <p className="text-xs font-bold font-mono text-indigo-700 mt-0.5">{filteredComponentPayments.length} transactions</p>
+                </div>
+                <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-100">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Received</p>
+                  <p className="text-xs font-bold font-mono text-emerald-700 mt-0.5">
+                    GHS {filteredComponentPayments.reduce((sum, item) => sum + item.payment.amount, 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </p>
+                </div>
+                <div className="p-2.5 bg-slate-50 rounded-xl border border-slate-100">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Term Cycle</p>
+                  <p className="text-xs font-bold text-slate-700 truncate mt-0.5">{selectedAcademicYear} • {selectedTerm}</p>
+                </div>
+              </div>
+
+              {/* Filtered Payments Table */}
+              <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+                <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-slate-100/80 border-b border-slate-200 text-[10px] font-bold text-slate-600 uppercase tracking-wider">
+                        <th className="py-3 px-3.5">Date</th>
+                        <th className="py-3 px-3.5">Receipt Code</th>
+                        <th className="py-3 px-3.5">Student</th>
+                        <th className="py-3 px-3.5">Class</th>
+                        <th className="py-3 px-3.5">Component</th>
+                        <th className="py-3 px-3.5 text-right">Amount Paid</th>
+                        <th className="py-3 px-3.5 text-center">Settlement Status</th>
+                        <th className="py-3 px-3.5 text-center">Download PDF</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {filteredComponentPayments.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} className="py-12 text-center text-slate-400 font-mono text-xs">
+                            <Receipt className="w-8 h-8 mx-auto text-slate-300 mb-2" />
+                            No payment transactions found matching the selected component and search criteria.
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredComponentPayments.map(({ bill, payment }) => {
+                          const compExpected = getComponentExpectedAmount(bill, payment.component);
+                          const compPaid = getComponentPaidAmount(bill, payment.component);
+                          const compBalance = Math.max(0, compExpected - compPaid);
+                          const isFullySettled = compExpected > 0 && compPaid >= compExpected;
+
+                          return (
+                            <tr key={payment.id} className="hover:bg-slate-50/80 transition">
+                              <td className="py-2.5 px-3.5 font-mono text-[11px] text-slate-600">{payment.date}</td>
+                              <td className="py-2.5 px-3.5 font-mono font-bold text-slate-900">{payment.receiptNo}</td>
+                              <td className="py-2.5 px-3.5">
+                                <div className="font-bold text-slate-800">{bill.studentName}</div>
+                                <div className="text-[10px] font-mono text-slate-400">{bill.studentId}</div>
+                              </td>
+                              <td className="py-2.5 px-3.5 font-medium text-slate-600">{bill.class}</td>
+                              <td className="py-2.5 px-3.5">
+                                <span className="inline-block bg-emerald-50 text-emerald-800 border border-emerald-200 text-[10px] font-bold px-2 py-0.5 rounded uppercase">
+                                  {payment.component}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-3.5 text-right font-mono font-bold text-emerald-700">
+                                GHS {payment.amount.toFixed(2)}
+                              </td>
+                              <td className="py-2.5 px-3.5 text-center">
+                                <div className="inline-flex flex-col items-center gap-0.5">
+                                  <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase ${
+                                    isFullySettled ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                                  }`}>
+                                    {isFullySettled ? 'Fully Settled' : 'Partially Paid'}
+                                  </span>
+                                  {compExpected > 0 && (
+                                    <span className="text-[9px] text-slate-400 font-mono">
+                                      Bal: GHS {compBalance.toFixed(2)}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="py-2.5 px-3.5 text-center">
+                                <div className="inline-flex items-center gap-1.5 justify-center">
+                                  <button
+                                    onClick={() => handleGenerateComponentPdfReceipt(bill, payment)}
+                                    disabled={isGeneratingComponentPdf}
+                                    title={`Download official PDF receipt for ${payment.component}`}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold rounded-lg transition shadow-2xs disabled:opacity-50 cursor-pointer active:scale-95"
+                                  >
+                                    <FileDown className="w-3.5 h-3.5" /> PDF
+                                  </button>
+                                  <button
+                                    onClick={() => setActiveReceiptPayment({ bill, payment })}
+                                    title="Preview slip & print receipt"
+                                    className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition cursor-pointer"
+                                  >
+                                    <Receipt className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Modal Footer */}
+              <div className="p-4 sm:px-6 bg-slate-50 border-t border-slate-200 flex items-center justify-between shrink-0">
+                <span className="text-xs text-slate-500">
+                  Showing <strong>{filteredComponentPayments.length}</strong> matching component receipt records
+                </span>
+                <button
+                  onClick={() => setShowComponentReceiptsModal(false)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-xl text-xs font-bold transition cursor-pointer"
+                >
+                  Close Receipt Hub
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Create New Bill Category Modal */}
+      <CreateBillCategoryModal
+        isOpen={isCreateCategoryModalOpen}
+        onClose={() => {
+          setIsCreateCategoryModalOpen(false);
+          setCustomBillComponents(DbController.getCustomBillComponents());
+        }}
+        onSuccess={(newComp) => {
+          setCustomBillComponents(DbController.getCustomBillComponents());
+          setPaymentComponent(newComp.name);
+        }}
+      />
+
+      {/* Academic Year Selection & Calendar Creator Modal */}
+      <AcademicYearModal
+        isOpen={showAcademicYearModal}
+        onClose={() => setShowAcademicYearModal(false)}
+        onSelectYear={(yr) => setSelectedAcademicYear(yr)}
+        currentYear={selectedAcademicYear}
+      />
 
     </div>
   );

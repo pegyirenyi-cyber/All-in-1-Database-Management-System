@@ -15,8 +15,8 @@ import {
   TrendingUp, Users, Calendar, Coins, Percent, Award, Landmark, AlertCircle,
   FileCheck, Download, CreditCard, ChevronRight, ChevronDown, ChevronUp, CheckCircle2, CircleDollarSign,
   Clock, ShieldAlert, Key, ShieldCheck, RefreshCw, SlidersHorizontal, Eye, EyeOff, LayoutGrid,
-  Search, Sparkles, BookOpen, UserCheck, GraduationCap, History, StickyNote, Pin, Plus, Trash2, Edit3, X, Tag,
-  Bold, Italic, Heading, List, ListOrdered, CheckSquare, Code, Quote, Type, FileText, Megaphone, Bell, MapPin, Radio, Check, Database
+  Search, BookOpen, UserCheck, GraduationCap, History, StickyNote, Pin, Plus, Trash2, Edit3, X, Tag,
+  Bold, Italic, Heading, List, ListOrdered, CheckSquare, Code, Quote, Type, FileText, Megaphone, Bell, MapPin, Radio, Check, Database, Lock
 } from 'lucide-react';
 
 interface Props {
@@ -90,11 +90,6 @@ const GrowthTooltip = ({ active, payload, label }: { active?: boolean; payload?:
           <span className="text-slate-300 font-medium">Enrolled Students:</span>
           <span className="font-black text-white text-sm font-mono">{value}</span>
         </div>
-        {isSimulated && (
-          <div className="text-[9px] text-amber-400 font-medium italic pt-1 border-t border-slate-800 leading-normal">
-            * Projected reference projection
-          </div>
-        )}
       </div>
     );
   }
@@ -225,16 +220,10 @@ const RatioTooltip = ({ active, payload }: { active?: boolean; payload?: any[] }
 
 const PerformanceTooltip = ({ active, payload, label }: { active?: boolean; payload?: any[]; label?: string }) => {
   if (active && payload && payload.length) {
-    const isSimulated = payload[0].payload.isSimulated;
     return (
       <div className="bg-slate-900 border border-slate-800 text-slate-100 p-3.5 rounded-xl shadow-xl max-w-xs font-sans text-xs space-y-2">
         <div className="border-b border-slate-800 pb-1.5 flex justify-between items-center gap-4">
           <span className="font-bold text-[12px] text-white uppercase tracking-wide">{label}</span>
-          {isSimulated && (
-            <span className="bg-amber-500/25 text-amber-300 font-bold px-2 py-0.5 rounded-md font-mono text-[9px]">
-              Demo Mode
-            </span>
-          )}
         </div>
         <div className="space-y-1.5">
           {payload.map((p, idx) => (
@@ -247,11 +236,6 @@ const PerformanceTooltip = ({ active, payload, label }: { active?: boolean; payl
             </div>
           ))}
         </div>
-        {isSimulated && (
-          <div className="text-[9px] text-amber-400 font-medium italic pt-1 border-t border-slate-800 leading-normal">
-            * Standard curriculum average baseline
-          </div>
-        )}
       </div>
     );
   }
@@ -654,24 +638,6 @@ export default function DashboardSummaryTab({
     }
   };
 
-  // Real-time synchronization polling
-  useEffect(() => {
-    let isSubscribed = true;
-    const interval = setInterval(async () => {
-      if (DbController.isFirebaseEnabled() && isSubscribed) {
-        try {
-          await DbController.syncAllDataFromFirebase();
-          if (isSubscribed) onRefresh();
-        } catch (e) {
-          console.warn("Background sync error:", e);
-        }
-      }
-    }, 60000); // Reduce frequency to 60 seconds for performance
-    return () => {
-      isSubscribed = false;
-      clearInterval(interval);
-    };
-  }, [onRefresh]);
 
   // --- WIDGET VISIBILITY & LAYOUT CUSTOMIZATION ---
   const [widgets, setWidgets] = useState(() => {
@@ -1522,13 +1488,13 @@ export default function DashboardSummaryTab({
                     setActiveTab('settings');
                   }}
                   className={`px-3.5 py-1.5 rounded-xl text-xs font-black shadow-xs transition active:translate-y-0.5 cursor-pointer flex items-center gap-1.5 ${
-                    subStatus.isTrial || subStatus.isLocked
+                    subStatus.isLocked
                       ? 'bg-rose-600 hover:bg-rose-700 text-white' 
                       : 'bg-emerald-600 hover:bg-emerald-700 text-white'
                   }`}
                 >
                   <Key size={13} />
-                  {subStatus.isTrial ? 'Renew License' : 'Manage License'}
+                  {subStatus.isLocked ? 'Activate License' : 'Manage License'}
                 </button>
               )}
             </div>
@@ -1548,7 +1514,7 @@ export default function DashboardSummaryTab({
                     Educator Access
                   </span>
                   <span className="flex items-center gap-1.5 text-emerald-400 text-[10px] font-black uppercase tracking-wider">
-                    <Sparkles size={11} className="animate-pulse" />
+                    <CheckCircle2 size={11} />
                     Focused Workspace
                   </span>
                 </div>
@@ -2043,30 +2009,30 @@ export default function DashboardSummaryTab({
           initial={{ opacity: 0, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
           className={`p-4 rounded-2xl border ${
-            subStatus.isTrial 
-              ? 'bg-amber-50/70 border-amber-200 text-amber-900' 
+            subStatus.isLocked 
+              ? 'bg-rose-50/70 border-rose-200 text-rose-950' 
               : 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
           } flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xs no-print`}
         >
           <div className="flex items-start gap-3.5">
             <div className={`p-2.5 rounded-xl shrink-0 flex items-center justify-center ${
-              subStatus.isTrial 
-                ? 'bg-amber-100 text-amber-700' 
+              subStatus.isLocked 
+                ? 'bg-rose-100 text-rose-700' 
                 : 'bg-emerald-100 text-emerald-700'
             }`}>
-              {subStatus.isTrial ? <Clock size={20} className="animate-pulse" /> : <ShieldCheck size={20} />}
+              {subStatus.isLocked ? <Lock size={20} className="animate-pulse" /> : <ShieldCheck size={20} />}
             </div>
             <div className="space-y-1">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-xs font-black uppercase tracking-wider font-mono">
-                  {subStatus.licenseType === 'trial' ? 'System Trial Mode' : 'Annual School License'}
+                  {subStatus.isLocked ? 'License Required' : 'Annual School License'}
                 </span>
                 <span className={`text-[10px] px-2 py-0.5 rounded-md font-extrabold uppercase font-mono ${
-                  subStatus.isTrial 
-                    ? 'bg-amber-100 text-amber-800 border border-amber-200' 
+                  subStatus.isLocked 
+                    ? 'bg-rose-100 text-rose-800 border border-rose-200' 
                     : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
                 }`}>
-                  {subStatus.remainingDays} Days Remaining
+                  {subStatus.isLocked ? 'Locked / Inactive' : `${subStatus.remainingDays} Days Remaining`}
                 </span>
               </div>
               <p className="text-xs text-slate-600 max-w-4xl font-medium leading-relaxed">
@@ -2079,7 +2045,7 @@ export default function DashboardSummaryTab({
             <div className="text-right hidden sm:block">
               <span className="text-[9px] text-slate-400 block uppercase font-mono font-bold">Expiration Boundary</span>
               <span className="text-xs font-black text-slate-700">
-                {subStatus.expiryDate.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}
+                {subStatus.isLocked ? 'Action Required' : subStatus.expiryDate.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}
               </span>
             </div>
             {setActiveTab && (
@@ -2091,13 +2057,13 @@ export default function DashboardSummaryTab({
                   setActiveTab('settings');
                 }}
                 className={`px-3.5 py-1.5 rounded-xl text-xs font-black shadow-xs transition active:translate-y-0.5 cursor-pointer flex items-center gap-1.5 ${
-                  subStatus.isTrial 
+                  subStatus.isLocked 
                     ? 'bg-amber-600 hover:bg-amber-700 text-white' 
                     : 'bg-emerald-600 hover:bg-emerald-700 text-white'
                 }`}
               >
                 <Key size={13} />
-                {subStatus.isTrial ? 'Renew License' : 'Manage License'}
+                {subStatus.isLocked ? 'Activate License' : 'Manage License'}
               </button>
             )}
           </div>
@@ -2317,16 +2283,16 @@ export default function DashboardSummaryTab({
           switch (key) {
             case 'quickNotes':
               return renderWidgetContainer(key, (
-                <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4 flex flex-col justify-between h-full text-left">
+                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4 flex flex-col justify-between h-full text-left">
                   <div className="space-y-4">
                     {/* Header bar */}
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
                       <div>
-                        <h4 className="text-xs font-black text-slate-800 dark:text-slate-100 uppercase tracking-wider flex items-center gap-1.5">
+                        <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
                           <StickyNote className="text-amber-500" size={16} />
                           Quick Notes & Urgent Memos
                         </h4>
-                        <p className="text-[10px] text-slate-400 dark:text-slate-500 font-semibold uppercase mt-0.5">
+                        <p className="text-[10px] text-slate-400 font-semibold uppercase mt-0.5">
                           Persistent administrative reminders & staff notices ({quickNotes.length} saved)
                         </p>
                       </div>
@@ -2343,7 +2309,7 @@ export default function DashboardSummaryTab({
                                 expandAllNotes(filteredQuickNotes.map(n => n.id));
                               }
                             }}
-                            className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-300 font-bold rounded-xl text-xs flex items-center gap-1 transition shadow-xs cursor-pointer shrink-0 border border-slate-200 dark:border-slate-700"
+                            className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs flex items-center gap-1 transition shadow-xs cursor-pointer shrink-0 border border-slate-200"
                             title={filteredQuickNotes.every(n => expandedNoteIds.has(n.id)) ? 'Collapse All Notes' : 'Expand All Notes'}
                           >
                             {filteredQuickNotes.every(n => expandedNoteIds.has(n.id)) ? (
@@ -2361,15 +2327,15 @@ export default function DashboardSummaryTab({
                         )}
 
                         {/* Priority Filter */}
-                        <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-200 dark:border-slate-750 text-[10px]">
+                        <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-[10px]">
                           {(['all', 'urgent', 'high', 'medium', 'low'] as const).map((p) => (
                             <button
                               key={p}
                               onClick={() => setNotePriorityFilter(p)}
                               className={`px-2 py-0.5 rounded-md font-bold capitalize transition cursor-pointer ${
                                 notePriorityFilter === p
-                                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs'
-                                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+                                  ? 'bg-white text-slate-900 shadow-xs'
+                                  : 'text-slate-500 hover:text-slate-800'
                               }`}
                             >
                               {p}
@@ -2390,7 +2356,7 @@ export default function DashboardSummaryTab({
 
                     {/* Department Category Filter Bar */}
                     <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-[10px] no-scrollbar">
-                      <span className="text-[9px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mr-1 shrink-0 flex items-center gap-1">
+                      <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mr-1 shrink-0 flex items-center gap-1">
                         <Tag size={10} /> Department:
                       </span>
                       <button
@@ -2398,7 +2364,7 @@ export default function DashboardSummaryTab({
                         className={`px-2.5 py-1 rounded-lg font-bold shrink-0 transition cursor-pointer border ${
                           noteCategoryFilter === 'all'
                             ? 'bg-amber-500 text-white border-amber-600 shadow-xs'
-                            : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-750'
+                            : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
                         }`}
                       >
                         All ({quickNotes.length})
@@ -2413,8 +2379,8 @@ export default function DashboardSummaryTab({
                             onClick={() => setNoteCategoryFilter(cat)}
                             className={`px-2.5 py-1 rounded-lg font-bold shrink-0 transition cursor-pointer flex items-center gap-1 border ${
                               noteCategoryFilter === cat
-                                ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900 border-slate-900 shadow-xs'
-                                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-750'
+                                ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                                : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
                             }`}
                           >
                             <CatIcon size={11} />
@@ -2432,7 +2398,7 @@ export default function DashboardSummaryTab({
                           placeholder="Search notes or memos..."
                           value={noteSearch}
                           onChange={(e) => setNoteSearch(e.target.value)}
-                          className="w-full pl-9 pr-8 py-1.5 text-xs bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500/30 text-slate-700 dark:text-slate-200"
+                          className="w-full pl-9 pr-8 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500/30 text-slate-700"
                         />
                         {noteSearch && (
                           <button

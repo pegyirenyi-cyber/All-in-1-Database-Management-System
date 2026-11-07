@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { 
   X, Printer, FileDown, Settings, Layout, Check, 
   HelpCircle, Eye, RefreshCw, FileText, Compass, Info,
-  Smartphone, Monitor, Palette, Code, Sparkles, Sliders,
+  Smartphone, Monitor, Palette, Code, Sliders,
   Table, Paintbrush, ChevronDown, ChevronUp,
   Plus, Minus, ZoomIn, ZoomOut, Maximize, Minimize,
   PanelLeftClose, PanelLeftOpen, Maximize2, Minimize2, RotateCcw
@@ -1536,14 +1536,14 @@ export const PrintPreviewModal: React.FC<PrintPreviewModalProps> = ({
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.97, y: 12 }}
         transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-        className={`relative bg-slate-900 border border-slate-800 shadow-2xl flex flex-col z-10 transition-all duration-200 overflow-hidden ${
+        className={`relative bg-slate-950 border border-slate-800 shadow-2xl flex flex-col z-10 transition-all duration-200 overflow-hidden ${
           isFullscreen 
             ? 'w-full h-full rounded-none border-none' 
             : 'w-full max-w-[1650px] h-[95vh] rounded-2xl'
         }`}
       >
         {/* Header Ribbon */}
-        <div className="px-4 sm:px-6 py-3.5 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 bg-slate-950/80 rounded-t-2xl no-print select-none">
+        <div className="px-4 sm:px-6 py-3.5 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 bg-slate-900/90 backdrop-blur-md rounded-t-2xl no-print select-none">
           {/* Left Title & Sidebar Toggle */}
           <div className="flex items-center gap-3">
             <div className="p-2 bg-indigo-500/10 text-indigo-400 rounded-lg border border-indigo-500/20 shrink-0">
@@ -1651,12 +1651,18 @@ export const PrintPreviewModal: React.FC<PrintPreviewModalProps> = ({
                 ? (mobileActiveTab === 'settings' ? 'block' : 'hidden md:block')
                 : (mobileActiveTab === 'settings' ? 'block md:hidden' : 'hidden')
             }`}>
-              <div className="flex items-center justify-between pb-1">
-                <span className="text-[11px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-                  <Sliders size={13} className="text-indigo-400" /> Page Settings
-                </span>
-                <span className="text-[9px] font-mono text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded-full border border-indigo-500/20">
-                  Customizable
+              <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-500/30 to-purple-500/20 border border-indigo-500/40 flex items-center justify-center text-indigo-300 shadow-inner">
+                    <Sliders size={14} />
+                  </div>
+                  <div>
+                    <span className="text-xs font-black text-slate-100 uppercase tracking-wide block">Print &amp; Theme Studio</span>
+                    <span className="text-[9.5px] text-slate-400 font-sans">Executive document styling</span>
+                  </div>
+                </div>
+                <span className="text-[9px] font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/30 shadow-xs">
+                  Pro Theme
                 </span>
               </div>
             {/* Accordion 1: Page & Paper Layout */}
@@ -1967,7 +1973,7 @@ export const PrintPreviewModal: React.FC<PrintPreviewModalProps> = ({
                 className="w-full flex items-center justify-between p-3 bg-slate-950/45 text-left font-bold text-slate-200 text-[11px] uppercase tracking-wider transition hover:bg-slate-950/65"
               >
                 <span className="flex items-center gap-1.5">
-                  <Sparkles size={13} className="text-amber-400" /> Advanced CSS Styles
+                  <Sliders size={13} className="text-indigo-400" /> Advanced CSS Styles
                 </span>
                 <ChevronDown size={14} className={`text-slate-400 transform transition-transform duration-200 ${advancedExpanded ? 'rotate-180' : ''}`} />
               </button>

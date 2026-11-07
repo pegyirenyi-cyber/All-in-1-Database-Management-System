@@ -5,9 +5,9 @@ import { DbController } from '../db';
 import { ThemeStyles } from './ThemeWrapper';
 import { getWatermarkHtml } from '../utils';
 import { 
-  Building, ShieldCheck, ClipboardCheck, Users, UsersRound, Eye, Plus, Trash2, 
-  Sparkles, Save, Printer, HelpCircle, HardHat, FileBox, LineChart, CheckCircle2,
-  AlertTriangle, BookOpen, Warehouse, Waves, HeartHandshake, Award, Gauge
+  RefreshCw, Save, Printer, HelpCircle, HardHat, FileBox, LineChart, CheckCircle2,
+  AlertTriangle, BookOpen, Warehouse, Waves, HeartHandshake, Award, Gauge, Sliders,
+  Building, Users, UsersRound, ShieldCheck
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -545,7 +545,7 @@ export default function EmisTab({ theme }: Props) {
               className="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-black text-xs px-4 py-2.5 rounded-xl border border-emerald-400/20 flex items-center gap-1.5 shadow-md active:translate-y-0.5 transition cursor-pointer"
               title="Automatically count and sync boys/girls enrolment, SEN, dropouts and teacher qualifications from registered app databases"
             >
-              <Sparkles size={14} className="animate-spin" style={{ animationDuration: '3s' }} />
+              <RefreshCw size={14} className="text-white" />
               Auto-Aggregate Registers
             </button>
           </div>
@@ -572,7 +572,7 @@ export default function EmisTab({ theme }: Props) {
               className="absolute bottom-4 right-6 bg-blue-600 text-white rounded-xl px-4 py-2.5 font-bold text-xs flex flex-col justify-start gap-0.5 shadow-lg z-50 border border-blue-400"
             >
               <div className="flex items-center gap-1.5">
-                <Sparkles size={13} className="text-yellow-300" />
+                <CheckCircle2 size={13} className="text-yellow-300" />
                 <span>Microdata aggregation successfully updated!</span>
               </div>
               <span className="text-[10px] text-blue-100 font-mono font-medium">Synced active student & roster logs directly into forms. Verify and click save!</span>
@@ -1420,7 +1420,7 @@ export default function EmisTab({ theme }: Props) {
                   {/* Inclusive Education, Sports & Services */}
                   <div className="bg-slate-50/70 border border-slate-100 p-4 rounded-2xl space-y-3 md:col-span-2">
                     <h3 className="text-xs font-black text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
-                      <Sparkles size={14} className="text-purple-500" /> Inclusive Education, Recreational & Language Services
+                      <Award size={14} className="text-purple-500" /> Inclusive Education, Recreational & Language Services
                     </h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                       {/* Special Needs */}
@@ -1699,7 +1699,7 @@ export default function EmisTab({ theme }: Props) {
                   {/* Interactive Catchment Controller Panel */}
                   <div className="bg-slate-50 border border-slate-250 p-5 rounded-2xl space-y-4 no-print">
                     <div className="flex items-center gap-2">
-                      <Sparkles size={16} className="text-amber-500" />
+                      <Sliders size={16} className="text-indigo-600" />
                       <h3 className="text-xs font-black uppercase tracking-wider text-slate-800">
                         Catchment Community Calibration (Live Planner)
                       </h3>

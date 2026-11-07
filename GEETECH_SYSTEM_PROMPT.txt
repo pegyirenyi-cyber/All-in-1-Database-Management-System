@@ -1,0 +1,100 @@
+================================================================================
+GEETECH MULTIMEDIA SCHOOL MANAGEMENT & TERMINAL REPORTING SYSTEM
+COMPLETE SYSTEM PROMPT & ARCHITECTURAL SPECIFICATION
+================================================================================
+
+# SYSTEM OVERVIEW & OBJECTIVE
+You are building an ultra-modern, production-ready, comprehensive School Management, Academic Ledger, Assessment & Terminal Reporting System tailored for Ghanaian Basic, Junior High (JHS), and Senior High Schools (GES / NaCCA / Ministry of Education curriculum compliant).
+
+The application is built with React 19, TypeScript, Tailwind CSS, Framer Motion, Lucide Icons, and Firebase / Firestore real-time cloud data storage with offline-first IndexedDB / LocalStorage fallback.
+
+--------------------------------------------------------------------------------
+# CORE CAPABILITIES & FUNCTIONAL MODULES
+
+1. INSTITUTIONAL SCHOOL PROFILE (Rule 3 Multi-Tenancy):
+   - School Name, Motto, EMIS Registration Code, School ID Number, GPS Digital Address.
+   - School Type (Public / Government Maintained vs Private Institution).
+   - Headteacher Profile: Name, Phone, Email, Academic & Professional Qualifications (CSLM, PGDE, DBE, NTC License, Cert A).
+   - Link Headteacher to registered Faculty member from Teachers roster.
+   - Graphical Assets: Official School Emblem/Logo, Headmaster Digital Signature, School Seal/Stamp, Custom Watermark Crest (with Ghana National Coat of Arms SVG fallback).
+   - Academic Jurisdiction: District / Municipal Directorate and Educational Circuit.
+   - Multi-tenant school code isolation: Bidirectional synchronization across headteachers and assigned subject/class teachers using unique School IDs.
+   - Live synchronization status badges (Saving, Synced, Offline) and instant responsive inputs with debounced background persistence.
+
+2. AUTHENTICATION & MULTI-ROLE ACCESS CONTROL (RBAC):
+   - Roles: Super Admin (Owner), Headteacher (Administrator), Class Teacher, Subject Teacher.
+   - Authentication Mechanisms:
+     a) Google One-Tap & Firebase Authentication.
+     b) Quick Biometric Fingerprint / FaceID Login (WebAuthn / Passkey / Biometric Simulation).
+     c) Real-time QR Code Badge Camera Scanner for instant staff & student check-in.
+   - Strict Role-Based Tab Visibility & Permissions:
+     - Admin / Headteacher: Full system access including School Profiles, Fees/Finances, System Settings, Class Assignment, Staff Rosters, Broad Ledger, and Backup / Deep Format.
+     - Teachers: Restricted access to assigned classes and subjects, Mark Entries, SBA Assessments, Class Attendance, and Report Comments. Finances and School-level wipe actions are guarded.
+   - Session Security: Configurable idle auto-logout timers (e.g. 30 mins) with graceful disconnect screen.
+
+3. STUDENT ADMISSIONS & ROSTER DIRECTORY:
+   - Student Identification: Auto-generated Student ID, Full Name, Gender, Date of Birth, Age calculation.
+   - Academic Details: Assigned Class (Nursery 1-2, KG 1-2, Basic 1-9 / BS1-BS9, JHS 1-3, SHS 1-3), Stream/Division (A, B, Gold, Green), Roll/Index Number.
+   - Guardian & Family Ledger: Father/Mother Name, Primary Contact Number, WhatsApp Number, Email, Residential Address, Emergency Contact, House / Denomination.
+   - Passport Photos: Web camera live batch capture, image compression, file upload, or default avatar initials.
+   - Student ID Badges: Printable photo ID cards with high-density QR codes for scanning and parent report card lookup.
+   - Bulk CSV Import / Export for student roster migrations.
+
+4. ACADEMIC CALENDAR & GRADING SCHEMES:
+   - Dynamic Academic Years (e.g. 2025/2026, 2026/2027, 2027/2028) and Term Configurations (Term 1, Term 2, Term 3).
+   - Vacation dates, next term reopening dates, total attendance days.
+   - Flexible Grading Scales:
+     - GES / NaCCA Standard (1-9 Scale: 1 = Higher Distinction, 2 = Distinction, 3-4 = Credit, 5-6 = Pass, 7-8 = Weak Pass, 9 = Fail).
+     - Standard Letter Scale (A+, A, B+, B, C, D, E, F).
+     - Percentage-based score thresholds (0 - 100%).
+
+5. CONTINUOUS ASSESSMENT (SBA) & TERMINAL EXAMS:
+   - SBA 50% / Exam 50% OR Class Assessment 30% / Exam 70% OR Custom weighting.
+   - Core Subjects: English Language, Mathematics, Integrated Science, Social Studies, Ghanaian Language (Twi, Fante, Ga, Ewe, etc.), French, Computing / ICT, Religious and Moral Education (R.M.E), Career Technology, Creative Arts and Design, Physical Education.
+   - Class-based broadsheet marks entry with real-time total, average, grade, rank/position calculation, and auto-generated qualitative remarks.
+   - CSV Bulk Marksheet Import & Export.
+
+6. TERMINAL REPORT CARD GENERATION & PARENT PORTAL:
+   - Comprehensive, broadcast-ready terminal report cards featuring:
+     - School Header with Logo, District, Circuit, and EMIS codes.
+     - Student Bio, Attendance record (Present / Total Days), Conduct, Attitude, Interest remarks.
+     - Subject Performance Breakdown: Class Score, Exam Score, Total (100%), Grade, Position in Class, Remarks.
+     - Headteacher signature, school seal stamp, and faint background watermark crest.
+     - Promoted To / Repeated in Class status flags.
+     - Auto-generated or custom Teacher & Headteacher comments.
+   - High-fidelity printing: Clean CSS print media queries, multi-page prevention, zero page breaks inside tables.
+   - Direct PDF generation and Google Drive cloud export.
+   - Parent Access Secure Portal: Tokenized, password-free or QR-based web lookup where parents view only their ward's terminal report card with WhatsApp sharing integration.
+
+7. ATTENDANCE TRACKER & BIOMETRIC REGISTER:
+   - Daily and Session Attendance (Present, Absent, Late, Excused).
+   - Visual monthly calendar grid and class percentage attendance rates.
+   - Automated absentee notification SMS / WhatsApp link dispatch.
+
+8. SCHOOL FEES & FINANCIAL LEDGER:
+   - Custom Bill Categories (Tuition, Feeding, PTA Dues, Uniform, Books, Computer Lab, Excursion).
+   - Student Billing Management: Assigned billing schedules per class.
+   - Installment Payment Processing: Receipt numbers, cash, MoMo (MTN, Telecel, AT), Paystack integration.
+   - Debtors and Outstanding Balances Ledger with printable / downloadable statements.
+
+9. SMS & NOTIFICATION GATEWAY:
+   - Bulk SMS broadcast engine for parents and staff (custom sender IDs, Twilio / local SMS integration).
+   - Pre-formatted templates for reopening reminders, PTA meetings, emergency announcements, and term bills.
+
+10. SYSTEM RESILIENCE & DATA HYGIENE:
+    - Multi-layer storage hierarchy: Firebase Cloud Firestore -> IndexedDB -> LocalStorage -> In-memory cache.
+    - Offline support with automatic re-sync when network reconnects.
+    - Danger Zone System Controls: Business data clear (students, attendance, marks) and Deep Format / Wipe (deletes Firestore partitioned documents, local caches, and resets to clean slate).
+    - Data Export / Full Backup in JSON / CSV formats with one-click restore.
+
+================================================================================
+# TECHNICAL STACK & ARCHITECTURE
+
+- Framework: React 19 SPA with Vite
+- Language: TypeScript (strict typing)
+- UI & Styling: Tailwind CSS v4, Framer Motion animations, Lucide React icons
+- State Management: Centralized DbController singleton with reactive event dispatchers (`school-system-sync`, `app-toast`)
+- Database: Cloud Firestore + IndexedDB (`IndexedDbEngine`) + LocalStorage
+- Media Processing: Client-side HTML5 canvas image compression (`compressImage`)
+
+================================================================================

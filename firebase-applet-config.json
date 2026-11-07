@@ -1,12 +1,12 @@
 {
-  "projectId": "basic-abode-lb34d",
-  "appId": "1:775289531181:web:1973dce88c579d3f5e01a4",
-  "apiKey": "AIzaSyD5D25Ty0hRHxujO4Zr6-3cHMlfj8fmZdc",
-  "authDomain": "basic-abode-lb34d.firebaseapp.com",
+  "projectId": "flutter-ai-playground-200f4",
+  "appId": "1:78396070674:web:de538f445df90ef10df1cb",
+  "apiKey": "AIzaSyD1WVTMLEYxDFQRyq-YFK_I_gBj1C35Gko",
+  "authDomain": "flutter-ai-playground-200f4.firebaseapp.com",
   "firestoreDatabaseId": "ai-studio-schoolmanagement-a2d8d304-855b-466a-8f1a-47e69bbb165b",
-  "storageBucket": "basic-abode-lb34d.firebasestorage.app",
-  "messagingSenderId": "775289531181",
+  "storageBucket": "flutter-ai-playground-200f4.firebasestorage.app",
+  "messagingSenderId": "78396070674",
   "measurementId": "",
-  "oAuthClientId": "775289531181-s8aha2rbvdun935eere2vfjm105epoj6.apps.googleusercontent.com",
+  "oAuthClientId": "78396070674-4qct3mh8ecqmpraur5mupsgqqop8ot6u.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }

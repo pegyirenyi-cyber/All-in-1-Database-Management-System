@@ -11,11 +11,12 @@ import {
   FileSpreadsheet, 
   Info,
   CalendarDays,
-  Sparkles
+  Plus
 } from 'lucide-react';
 import { DbController } from '../db';
 import { AcademicCalendarConfig, AcademicYearType, TermType, ACADEMIC_YEARS } from '../types';
 import { evaluateSubscription } from '../subscription';
+import { AcademicYearModal } from './common/AcademicYearModal';
 
 interface AcademicCalendarTabProps {
   themeStyles: any;
@@ -24,7 +25,7 @@ interface AcademicCalendarTabProps {
 
 export default function AcademicCalendarTab({ themeStyles, onConfigChanged }: AcademicCalendarTabProps) {
   const currentUser = DbController.getCurrentUser();
-  const isAdmin = currentUser?.role === 'Admin' || currentUser?.email.toLowerCase().trim() === 'pegyirenyi@gmail.com';
+  const isAdmin = currentUser?.role === 'Admin' || (currentUser?.email || '').toLowerCase().trim() === 'pegyirenyi@gmail.com';
 
   const [calendar, setCalendar] = useState<AcademicCalendarConfig>(DbController.getAcademicCalendar());
   const [selectedYear, setSelectedYear] = useState<AcademicYearType>(calendar.activeAcademicYear);
@@ -38,7 +39,16 @@ export default function AcademicCalendarTab({ themeStyles, onConfigChanged }: Ac
     setSelectedYear(activeCal.activeAcademicYear);
   }, []);
 
-  const yearsOptions: AcademicYearType[] = ACADEMIC_YEARS;
+  const [academicYearsList, setAcademicYearsList] = useState<AcademicYearType[]>(() => DbController.getAcademicYears());
+  const [showAcademicYearModal, setShowAcademicYearModal] = useState(false);
+
+  useEffect(() => {
+    const handleSyncYears = () => setAcademicYearsList(DbController.getAcademicYears());
+    window.addEventListener('academic-years-updated', handleSyncYears);
+    return () => window.removeEventListener('academic-years-updated', handleSyncYears);
+  }, []);
+
+  const yearsOptions: AcademicYearType[] = academicYearsList;
   const termsOptions: TermType[] = ['Term 1', 'Term 2', 'Term 3'];
 
   // Handle high-level fields update
@@ -161,21 +171,21 @@ export default function AcademicCalendarTab({ themeStyles, onConfigChanged }: Ac
               Administrative Engine
             </span>
             <span className="flex items-center gap-1 text-amber-400 text-xs font-bold font-mono">
-              <Sparkles size={13} /> GTM Systems
+              <Clock size={13} /> GTM Systems
             </span>
           </div>
           <h2 className="text-2xl font-black font-display tracking-tight uppercase">
             Institutional <span className="text-amber-400">Academic Calendar</span>
           </h2>
           <p className="text-slate-400 text-xs max-w-2xl font-sans leading-relaxed">
-            Configure default operational term boundaries, holiday timelines, and seasonal duration limits for student assessments. This module establishes core scheduling parameters that dynamically override license trial durations and activation lifecycles across the ecosystem.
+            Configure default operational term boundaries, holiday timelines, and seasonal duration limits for student assessments. This module establishes core scheduling parameters and term operational boundaries across the ecosystem.
           </p>
         </div>
 
         {userSub && (
           <div className="relative z-10 flex-shrink-0 bg-slate-800/80 rounded-xl p-4 border border-slate-700 max-w-sm">
             <span className="text-[10px] uppercase tracking-wider font-mono font-bold block text-slate-400 mb-1">
-              Active Server Gateway & Trial Bounds
+              Active Server Gateway & License Bounds
             </span>
             <div className="flex items-center gap-2.5">
               <div className={`p-2 rounded-lg ${userSub.isLocked ? 'bg-rose-500/20 text-rose-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
@@ -185,7 +195,7 @@ export default function AcademicCalendarTab({ themeStyles, onConfigChanged }: Ac
                 <p className="text-[11px] font-mono text-slate-300 leading-tight">
                   Subscription Status: 
                   <strong className={userSub.isLocked ? "text-rose-400" : "text-emerald-400"}>
-                    {userSub.isLocked ? " LICENSING LOCKED" : " ACTIVE TRIAL / HEALTHY"}
+                    {userSub.isLocked ? " LICENSING LOCKED" : " ACTIVE LICENSE / HEALTHY"}
                   </strong>
                 </p>
                 <p className="text-xs font-black text-white mt-1">
@@ -243,18 +253,42 @@ export default function AcademicCalendarTab({ themeStyles, onConfigChanged }: Ac
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-bold text-slate-700 uppercase mb-2">
-                  Active Institutional Year
-                </label>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-xs font-bold text-slate-700 uppercase">
+                    Active Institutional Year
+                  </label>
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAcademicYearModal(true)}
+                      className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5 cursor-pointer hover:underline transition"
+                      title="Add or configure Academic Year"
+                    >
+                      <Plus size={11} />
+                      <span>+ Add Year</span>
+                    </button>
+                  )}
+                </div>
                 <select
                   disabled={!isAdmin}
                   value={calendar.activeAcademicYear}
-                  onChange={(e) => handleActiveYearChange(e.target.value as AcademicYearType)}
+                  onChange={(e) => {
+                    if (e.target.value === '__ADD_ACADEMIC_YEAR__') {
+                      setShowAcademicYearModal(true);
+                    } else {
+                      handleActiveYearChange(e.target.value as AcademicYearType);
+                    }
+                  }}
                   className={`w-full text-slate-800 bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white disabled:opacity-75 disabled:cursor-not-allowed`}
                 >
                   {yearsOptions.map(y => (
                     <option key={y} value={y}>{y} Academic Year</option>
                   ))}
+                  {isAdmin && (
+                    <option value="__ADD_ACADEMIC_YEAR__" className="font-bold text-indigo-600 bg-indigo-50/50">
+                      ➕ Add Academic Year...
+                    </option>
+                  )}
                 </select>
                 <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
                   Controls the active class registers, print summaries, and broadsheet scoring logs.
@@ -276,7 +310,7 @@ export default function AcademicCalendarTab({ themeStyles, onConfigChanged }: Ac
                   ))}
                 </select>
                 <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed">
-                  Defines default assessment terms. Trial licenses expire precisely at the end of this active term.
+                  Defines default assessment terms and active academic grading session.
                 </p>
               </div>
             </div>
@@ -301,13 +335,35 @@ export default function AcademicCalendarTab({ themeStyles, onConfigChanged }: Ac
                 <span className="text-[11px] font-bold text-slate-500 font-mono">Select Year to Edit:</span>
                 <select
                   value={selectedYear}
-                  onChange={(e) => setSelectedYear(e.target.value as AcademicYearType)}
+                  onChange={(e) => {
+                    if (e.target.value === '__ADD_ACADEMIC_YEAR__') {
+                      setShowAcademicYearModal(true);
+                    } else {
+                      setSelectedYear(e.target.value as AcademicYearType);
+                    }
+                  }}
                   className="bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs font-black text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                 >
                   {yearsOptions.map(y => (
                     <option key={y} value={y}>{y}</option>
                   ))}
+                  {isAdmin && (
+                    <option value="__ADD_ACADEMIC_YEAR__" className="font-bold text-indigo-600 bg-indigo-50/50">
+                      ➕ Add Academic Year...
+                    </option>
+                  )}
                 </select>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAcademicYearModal(true)}
+                    className="p-1.5 text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition cursor-pointer text-[10px] font-bold flex items-center gap-0.5"
+                    title="Add or configure Academic Year"
+                  >
+                    <Plus size={11} />
+                    <span>+ Add Year</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -394,7 +450,7 @@ export default function AcademicCalendarTab({ themeStyles, onConfigChanged }: Ac
                         </div>
                         <div>
                           <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">
-                            Term Closing Date (Trial Expiry)
+                            Term Closing Date (Academic End)
                           </label>
                           <input
                             type="date"
@@ -582,11 +638,10 @@ export default function AcademicCalendarTab({ themeStyles, onConfigChanged }: Ac
                   <Info size={12} /> Expiry Bounds Impact
                 </span>
                 <p className="text-[11px] text-slate-400 font-sans leading-relaxed">
-                  Your academic calendar settings are live on key processes. Subscriptions and trials verify this state:
+                  Your academic calendar settings are live on key processes. Subscriptions verify this state:
                 </p>
                 <div className="text-[10px] font-mono text-slate-400 space-y-1 pl-2 border-l border-slate-800">
-                  <p>• Trial: Expres end of <strong className="text-indigo-300">{calendar.activeTerm}</strong></p>
-                  <p>• Licensed: Expires end of <strong className="text-amber-400">{calendar.activeAcademicYear}</strong></p>
+                  <p>• Licensed: Synchronized with active academic year <strong className="text-amber-400">{calendar.activeAcademicYear}</strong></p>
                 </div>
               </div>
 
@@ -600,6 +655,17 @@ export default function AcademicCalendarTab({ themeStyles, onConfigChanged }: Ac
         </div>
 
       </div>
+
+      {/* Academic Year Selection & Calendar Creator Modal */}
+      <AcademicYearModal
+        isOpen={showAcademicYearModal}
+        onClose={() => setShowAcademicYearModal(false)}
+        onSelectYear={(yr) => {
+          handleActiveYearChange(yr);
+          setSelectedYear(yr);
+        }}
+        currentYear={selectedYear || calendar.activeAcademicYear}
+      />
 
     </motion.div>
   );

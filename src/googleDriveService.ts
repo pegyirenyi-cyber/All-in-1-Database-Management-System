@@ -29,7 +29,7 @@ provider.addScope('https://www.googleapis.com/auth/gmail.modify');
 provider.addScope('https://mail.google.com/');
 
 let isSigningIn = false;
-let cachedAccessToken: string | null = (typeof window !== 'undefined') ? localStorage.getItem('google_drive_access_token') : null;
+let cachedAccessToken: string | null = (typeof sessionStorage !== 'undefined') ? sessionStorage.getItem('google_drive_access_token') : null;
 let currentGoogleUser: User | null = null;
 
 // Track state listeners
@@ -51,11 +51,11 @@ export const initGoogleAuth = (
     currentGoogleUser = user;
     if (!user) {
       cachedAccessToken = null;
-      if (typeof window !== 'undefined') {
-        localStorage.removeItem('google_drive_access_token');
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.removeItem('google_drive_access_token');
       }
     } else {
-      const storedToken = (typeof window !== 'undefined') ? localStorage.getItem('google_drive_access_token') : null;
+      const storedToken = (typeof sessionStorage !== 'undefined') ? sessionStorage.getItem('google_drive_access_token') : null;
       if (storedToken) {
         cachedAccessToken = storedToken;
       }
@@ -86,8 +86,8 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     cachedAccessToken = credential.accessToken;
     currentGoogleUser = result.user;
     
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('google_drive_access_token', credential.accessToken);
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem('google_drive_access_token', credential.accessToken);
     }
     
     // Notify list
@@ -116,8 +116,8 @@ export const googleSignOut = async () => {
   }
   cachedAccessToken = null;
   currentGoogleUser = null;
-  if (typeof window !== 'undefined') {
-    localStorage.removeItem('google_drive_access_token');
+  if (typeof sessionStorage !== 'undefined') {
+    sessionStorage.removeItem('google_drive_access_token');
   }
   authStateListeners.forEach(listener => {
     try {

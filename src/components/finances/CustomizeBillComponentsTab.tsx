@@ -15,7 +15,7 @@ import { ThemeStyles } from '../ThemeWrapper';
 import { triggerToast } from '../../utils';
 import { 
   Sliders, Plus, Edit2, Trash2, CheckCircle2, XCircle, Search, 
-  Layers, Sparkles, AlertCircle, 
+  Layers, Tag, AlertCircle, 
   Download, Receipt, DollarSign, Lock, ArrowRight,
   TrendingDown, FileSpreadsheet, Calendar, Printer
 } from 'lucide-react';
@@ -1315,7 +1315,7 @@ export default function CustomizeBillComponentsTab({
               {!editingComponent && (
                 <div className="p-4 bg-amber-50/50 border-b border-amber-100/70">
                   <div className="flex items-center gap-1.5 mb-2">
-                    <Sparkles size={13} className="text-amber-600" />
+                    <Tag size={13} className="text-amber-600" />
                     <span className="text-[11px] font-extrabold uppercase tracking-wider text-amber-800 font-mono">
                       Quick Preset Templates (Click to fill)
                     </span>

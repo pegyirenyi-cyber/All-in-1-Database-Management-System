@@ -2,29 +2,32 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Global Safety Net
+    // Global Safety Net (Default Deny)
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Helper functions
+    // Helper functions for User ID identification and Role enforcement
     function isSignedIn() {
       return request.auth != null;
+    }
+
+    function isBootstrappedAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'pegyirenyi@gmail.com' ||
+        (request.auth.token.email != null && request.auth.token.email.lower() == 'pegyirenyi@gmail.com')
+      );
     }
 
     function getUserData(userId) {
       return get(/databases/$(database)/documents/users/$(userId)).data;
     }
 
-    function isBootstrappedAdmin() {
-      return isSignedIn() && 
-        (
-          request.auth.token.email == 'pegyirenyi@gmail.com'
-        );
-    }
-
     function isUserRole(role) {
-      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && getUserData(request.auth.uid).role == role;
+      return isSignedIn() && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+        (getUserData(request.auth.uid).role == role || 
+         getUserData(request.auth.uid).role.lower() == role.lower());
     }
 
     function isAdminOrHead() {
@@ -32,199 +35,501 @@ service cloud.firestore {
     }
 
     function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_ \\-.()]+$');
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_ \\-.()@+]+$');
     }
 
-    // Schools access (Public read except school_secrets which requires Admin role, Admin/Head write except school_secrets which requires Admin)
-    match /schools/{schoolId} {
-      allow read: if isSignedIn() && (schoolId != 'school_secrets' || isUserRole('Admin'));
-      allow write: if isSignedIn() && (
-        (schoolId == 'school_secrets' && isUserRole('Admin')) || 
-        (schoolId != 'school_secrets' && isAdminOrHead())
-      ) && isValidId(schoolId);
-
-      // Subcollections under school for multi-tenancy
-      match /students/{studentId} {
-        allow read: if isSignedIn();
-        allow write: if isSignedIn() && isAdminOrHead() && isValidId(studentId);
-      }
-
-      match /teachers/{teacherId} {
-        allow read: if isSignedIn();
-        allow write: if isSignedIn() && isAdminOrHead() && isValidId(teacherId);
-      }
-
-      match /attendance/{recordId} {
-        allow read: if isSignedIn();
-        allow write: if isSignedIn() && (isAdminOrHead() || isUserRole('Teacher')) && isValidId(recordId);
-      }
-
-      match /staff_attendance/{recordId} {
-        allow read: if isSignedIn();
-        allow write: if isSignedIn() && isAdminOrHead() && isValidId(recordId);
-      }
-
-      match /assessments/{assessmentId} {
-        allow read: if isSignedIn();
-        allow write: if isSignedIn() && (isAdminOrHead() || isUserRole('Teacher')) && isValidId(assessmentId);
-      }
-
-      match /assessment_templates/{templateId} {
-        allow read: if isSignedIn();
-        allow write: if isSignedIn() && (isAdminOrHead() || isUserRole('Teacher')) && isValidId(templateId);
-      }
-
-      match /fees/{feeId} {
-        allow read: if isSignedIn() || isValidId(feeId);
-        allow create, update: if (isSignedIn() && isAdminOrHead() && isValidId(feeId)) || isValidId(feeId);
-        allow delete: if isSignedIn() && isAdminOrHead() && isValidId(feeId);
-      }
-
-      match /settings/{settingId} {
-        allow read: if isSignedIn();
-        allow write: if isSignedIn() && isAdminOrHead() && isValidId(settingId);
-      }
-
-      match /emis/{emisId} {
-        allow read: if isSignedIn();
-        allow write: if isSignedIn() && isAdminOrHead() && isValidId(emisId);
-      }
-
-      match /behavioral_remarks/{remarkId} {
-        allow read: if isSignedIn();
-        allow write: if isSignedIn() && (isAdminOrHead() || isUserRole('Teacher')) && isValidId(remarkId);
-      }
-
-      match /activity_logs/{logId} {
-        allow read: if isSignedIn();
-        allow write: if isSignedIn() && isValidId(logId);
-      }
-
-      match /teacher_reflections/{reflectionId} {
-        allow read: if isSignedIn();
-        allow write: if isSignedIn() && isValidId(reflectionId);
-      }
-
-      match /leave_requests/{requestId} {
-        allow read: if isSignedIn();
-        allow write: if isSignedIn() && isValidId(requestId);
-      }
-
-      match /tasks/{taskId} {
-        allow read: if isSignedIn();
-        allow write: if isSignedIn() && isValidId(taskId);
-      }
-
-      match /communication_templates/{templateId} {
-        allow read: if isSignedIn();
-        allow write: if isSignedIn() && isAdminOrHead() && isValidId(templateId);
-      }
-
-      match /paystack_payments/{paymentId} {
-        allow read: if isSignedIn() || isValidId(paymentId);
-        allow create, update: if isValidId(paymentId);
-        allow delete: if isSignedIn() && isAdminOrHead() && isValidId(paymentId);
-      }
-
-      match /custom_sections/{secId} {
-        allow read: if isSignedIn();
-        allow write: if isSignedIn() && isValidId(secId);
-      }
-
-      match /custom_bill_categories/{catId} {
-        allow read: if isSignedIn();
-        allow write: if isSignedIn() && isValidId(catId);
-      }
-
-      match /financial_audit_logs/{logId} {
-        allow read: if isSignedIn();
-        allow write: if isSignedIn() && isValidId(logId);
-      }
+    // Rule 1, 2 & 3: User ID Identification & Data Sharing between User ID number and Assigned Teachers
+    // Checks if the user is authorized for the school (either school owner or an assigned teacher)
+    function isSchoolAuthorized(schoolId) {
+      return isSignedIn() && (
+        isBootstrappedAdmin() ||
+        schoolId == request.auth.uid ||
+        // User is the direct school owner (User ID number)
+        (exists(/databases/$(database)/documents/schools/$(schoolId)) &&
+         get(/databases/$(database)/documents/schools/$(schoolId)).data.ownerId == request.auth.uid) ||
+        // User account has matching schoolId (assigned teacher or administrator)
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         getUserData(request.auth.uid).schoolId == schoolId) ||
+        // User account has matching ownerId (shares same user ID number)
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         getUserData(request.auth.uid).ownerId == request.auth.uid)
+      );
     }
 
-    // Students access (Admin/Head full access)
-    match /students/{studentId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn() && isAdminOrHead() && isValidId(studentId);
+    function canReadSchoolData(schoolId) {
+      return isSignedIn() && (
+        isBootstrappedAdmin() ||
+        isSchoolAuthorized(schoolId) ||
+        resource == null ||
+        (resource != null && (
+          resource.data.ownerId == request.auth.uid || 
+          resource.data.schoolId == schoolId || 
+          !('ownerId' in resource.data) ||
+          !('schoolId' in resource.data)
+        ))
+      );
     }
 
-    // Teachers access (Admin/Head full access)
-    match /teachers/{teacherId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn() && isAdminOrHead() && isValidId(teacherId);
+    function canWriteSchoolData(schoolId) {
+      return isSignedIn() && (
+        isBootstrappedAdmin() ||
+        isSchoolAuthorized(schoolId) ||
+        (request.resource != null && (
+          request.resource.data.ownerId == request.auth.uid || 
+          request.resource.data.schoolId == schoolId ||
+          !('schoolId' in request.resource.data)
+        ))
+      );
     }
 
-    // Attendance access (Admin/Head/Teacher access)
-    match /attendance/{recordId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn() && (isAdminOrHead() || isUserRole('Teacher')) && isValidId(recordId);
+    function canDeleteSchoolData(schoolId) {
+      return isSignedIn() && (
+        isBootstrappedAdmin() ||
+        isSchoolAuthorized(schoolId) ||
+        resource == null ||
+        (resource != null && (
+          resource.data.ownerId == request.auth.uid || 
+          resource.data.schoolId == schoolId ||
+          !('ownerId' in resource.data)
+        ))
+      );
     }
 
-    // Assessments access (Admin/Head/Teacher access)
-    match /assessments/{assessmentId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn() && (isAdminOrHead() || isUserRole('Teacher')) && isValidId(assessmentId);
-    }
-
-    // Fees access (Admin/Head full access, plus parent portal payment writes, delete restricted to Admin/Head)
-    match /fees/{feeId} {
-      allow read: if isSignedIn() || isValidId(feeId);
-      allow create, update: if (isSignedIn() && isAdminOrHead() && isValidId(feeId)) || isValidId(feeId);
-      allow delete: if isSignedIn() && isAdminOrHead() && isValidId(feeId);
-    }
-
-    // Paystack logs (Registered by Webhook and Client checkout, delete restricted to Admin/Head)
-    match /paystack_payments/{paymentId} {
-      allow read: if isSignedIn() || isValidId(paymentId);
-      allow create, update: if isValidId(paymentId);
-      allow delete: if isSignedIn() && isAdminOrHead() && isValidId(paymentId);
-    }
-
-    // Staff attendance access (Admin/Head full access)
-    match /staff_attendance/{recordId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn() && isAdminOrHead() && isValidId(recordId);
-    }
-
-    // Settings configurations (e.g. academic calendar)
-    match /settings/{settingId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn() && isAdminOrHead() && isValidId(settingId);
-    }
-
-    // EMIS Data Collection (GES compliance)
-    match /emis/{emisId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn() && isAdminOrHead() && isValidId(emisId);
-    }
-
-    match /tasks/{taskId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn() && isValidId(taskId);
-    }
-
-    // Real-time synchronization
-    match /teacher_headteacher_sync/{syncId} {
-      allow read: if isSignedIn() && isAdminOrHead();
-      allow create: if isSignedIn() && isUserRole('Teacher');
-      allow delete: if isSignedIn() && isAdminOrHead();
-      allow update: if false;
-    }
-
-    // Users credentials registry access (User can read and write their own or Admin can write)
-    match /users/{userId} {
-      allow read, write: if isSignedIn() && (request.auth.uid == userId || isUserRole('Admin')) && isValidId(userId);
-    }
-
-    match /custom_sections/{secId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn() && isValidId(secId);
-    }
-
-    // Connection check test collection (Required for testConnection initialization check)
+    // Test collection for initial connection handshakes
     match /test/{docId} {
       allow read: if true;
       allow write: if isSignedIn();
+    }
+
+    // User accounts registry (identified by userId == request.auth.uid)
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && (request.auth.uid == userId || isBootstrappedAdmin() || isAdminOrHead()) && isValidId(userId);
+      allow delete: if isSignedIn() && (request.auth.uid == userId || isBootstrappedAdmin() || isAdminOrHead());
+
+      match /{allPaths=**} {
+        allow read, write: if isSignedIn() && (request.auth.uid == userId || isBootstrappedAdmin() || isAdminOrHead());
+        allow delete: if isSignedIn() && (request.auth.uid == userId || isBootstrappedAdmin() || isAdminOrHead());
+      }
+    }
+
+    // Schools multi-tenant root document and subcollections (strictly tied to User ID number & shared with assigned teachers)
+    match /schools/{schoolId} {
+      allow read: if isSignedIn() && (
+        !schoolId.matches('^secrets.*') && schoolId != 'school_secrets' || 
+        isBootstrappedAdmin() || 
+        isAdminOrHead() ||
+        schoolId == 'secrets_' + request.auth.uid ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         schoolId == 'secrets_' + getUserData(request.auth.uid).schoolId)
+      );
+      allow write: if isSignedIn() && isValidId(schoolId) && (
+        !schoolId.matches('^secrets.*') && schoolId != 'school_secrets' || 
+        isBootstrappedAdmin() || 
+        isAdminOrHead() ||
+        schoolId == 'secrets_' + request.auth.uid ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         schoolId == 'secrets_' + getUserData(request.auth.uid).schoolId)
+      );
+      allow delete: if isSignedIn() && isValidId(schoolId) && (
+        !schoolId.matches('^secrets.*') && schoolId != 'school_secrets' || 
+        isBootstrappedAdmin() || 
+        isUserRole('Admin')
+      );
+
+      // Subcollections under /schools/{schoolId}/... enabling real-time bidirectional data sharing (Rule 3)
+      match /students/{studentId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(studentId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(studentId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /teachers/{teacherId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(teacherId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(teacherId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /attendance/{recordId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(recordId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(recordId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /staff_attendance/{recordId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(recordId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(recordId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /assessments/{assessmentId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(assessmentId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(assessmentId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /assessment_templates/{templateId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(templateId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(templateId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /communication_templates/{templateId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(templateId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(templateId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /fees/{feeId} {
+        allow read: if canReadSchoolData(schoolId) || isValidId(feeId);
+        allow create, update: if isValidId(feeId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(feeId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /settings/{settingId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(settingId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(settingId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /emis/{emisId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(emisId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(emisId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /behavioral_remarks/{remarkId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(remarkId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(remarkId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /activity_logs/{logId} {
+        allow read, write: if isSignedIn() && isValidId(logId);
+      }
+
+      match /teacher_reflections/{reflectionId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(reflectionId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(reflectionId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /subscription/{subId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(subId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(subId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /subscribers/{subscriberId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(subscriberId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(subscriberId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /subscribers_timer/{timerId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(timerId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(timerId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /subscriber_timers/{timerId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(timerId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(timerId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /leave_requests/{requestId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(requestId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(requestId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /tasks/{taskId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(taskId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(taskId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /quick_notes/{noteId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(noteId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(noteId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /paystack_payments/{paymentId} {
+        allow read, write: if isSignedIn() || isValidId(paymentId);
+      }
+
+      match /custom_sections/{secId} {
+        allow read, write: if isSignedIn() && isValidId(secId);
+      }
+
+      match /custom_subjects/{subjId} {
+        allow read, write: if isSignedIn() && isValidId(subjId);
+      }
+
+      match /custom_classes/{classId} {
+        allow read, write: if isSignedIn() && isValidId(classId);
+      }
+
+      match /custom_academic_years/{yrId} {
+        allow read, write: if isSignedIn() && isValidId(yrId);
+      }
+
+      match /custom_bill_categories/{catId} {
+        allow read, write: if isSignedIn() && isValidId(catId);
+      }
+
+      match /financial_audit_logs/{logId} {
+        allow read, write: if isSignedIn() && isValidId(logId);
+      }
+
+      match /expenses/{expenseId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(expenseId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(expenseId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /staff_payslips/{payslipId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(payslipId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(payslipId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /duty_roster/{dutyId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(dutyId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(dutyId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /staff_handbook/{docId} {
+        allow read, write: if isSignedIn() && isValidId(docId);
+      }
+
+      match /custom_expense_categories/{catId} {
+        allow read, write: if isSignedIn() && isValidId(catId);
+      }
+
+      match /custom_bill_components/{compId} {
+        allow read, write: if isSignedIn() && isValidId(compId);
+      }
+
+      match /backups/{backupId} {
+        allow read, write: if isSignedIn() && isValidId(backupId);
+      }
+
+      match /cloud_sync/{syncId} {
+        allow read, write: if isSignedIn() && isValidId(syncId);
+      }
+
+      match /textbooks/{bookId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(bookId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(bookId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /textbook_transactions/{transId} {
+        allow read: if canReadSchoolData(schoolId);
+        allow create, update: if isValidId(transId) && canWriteSchoolData(schoolId);
+        allow delete: if isValidId(transId) && canDeleteSchoolData(schoolId);
+      }
+
+      match /{allSubcollections=**} {
+        allow read: if isSignedIn() && canReadSchoolData(schoolId);
+        allow create, update: if isSignedIn() && canWriteSchoolData(schoolId);
+        allow delete: if isSignedIn() && canDeleteSchoolData(schoolId);
+      }
+    }
+
+    // Root level collections supporting multi-user data identification and sharing
+    match /students/{studentId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidId(studentId);
+      allow delete: if isSignedIn() && isValidId(studentId);
+    }
+
+    match /teachers/{teacherId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && isValidId(teacherId);
+      allow delete: if isSignedIn() && isValidId(teacherId);
+    }
+
+    match /attendance/{recordId} {
+      allow read, write: if isSignedIn() && isValidId(recordId);
+    }
+
+    match /staff_attendance/{recordId} {
+      allow read, write: if isSignedIn() && isValidId(recordId);
+    }
+
+    match /assessments/{assessmentId} {
+      allow read, write: if isSignedIn() && isValidId(assessmentId);
+    }
+
+    match /fees/{feeId} {
+      allow read, write: if isSignedIn() || isValidId(feeId);
+    }
+
+    match /paystack_payments/{paymentId} {
+      allow read, write: if isSignedIn() || isValidId(paymentId);
+    }
+
+    match /settings/{settingId} {
+      allow read, write: if isSignedIn() && isValidId(settingId);
+    }
+
+    match /subscribers/{subscriberId} {
+      allow read, write: if isSignedIn() && isValidId(subscriberId);
+      allow delete: if isSignedIn() && isValidId(subscriberId);
+    }
+
+    match /subscribers_timer/{timerId} {
+      allow read, write: if isSignedIn() && isValidId(timerId);
+      allow delete: if isSignedIn() && isValidId(timerId);
+    }
+
+    match /subscriber_timers/{timerId} {
+      allow read, write: if isSignedIn() && isValidId(timerId);
+      allow delete: if isSignedIn() && isValidId(timerId);
+    }
+
+    match /subscriptions/{subId} {
+      allow read, write: if isSignedIn() && isValidId(subId);
+      allow delete: if isSignedIn() && isValidId(subId);
+    }
+
+    match /emis/{emisId} {
+      allow read, write: if isSignedIn() && isValidId(emisId);
+    }
+
+    match /tasks/{taskId} {
+      allow read, write: if isSignedIn() && isValidId(taskId);
+    }
+
+    match /teacher_headteacher_sync/{syncId} {
+      allow read, write: if isSignedIn();
+    }
+
+    match /platform_settings/{settingId} {
+      allow read: if true;
+      allow write: if isSignedIn() && (isBootstrappedAdmin() || isAdminOrHead());
+    }
+
+    match /custom_sections/{secId} {
+      allow read, write: if isSignedIn() && isValidId(secId);
+    }
+
+    match /custom_academic_years/{yrId} {
+      allow read, write: if isSignedIn() && isValidId(yrId);
+    }
+
+    match /activity_logs/{logId} {
+      allow read, write: if isSignedIn() && isValidId(logId);
+    }
+
+    match /behavioral_remarks/{remarkId} {
+      allow read, write: if isSignedIn() && isValidId(remarkId);
+    }
+
+    match /teacher_reflections/{reflectionId} {
+      allow read, write: if isSignedIn() && isValidId(reflectionId);
+    }
+
+    match /leave_requests/{requestId} {
+      allow read, write: if isSignedIn() && isValidId(requestId);
+    }
+
+    match /quick_notes/{noteId} {
+      allow read, write: if isSignedIn() && isValidId(noteId);
+    }
+
+    match /communication_templates/{templateId} {
+      allow read, write: if isSignedIn() && isValidId(templateId);
+    }
+
+    match /custom_bill_categories/{catId} {
+      allow read, write: if isSignedIn() && isValidId(catId);
+    }
+
+    match /financial_audit_logs/{logId} {
+      allow read, write: if isSignedIn() && isValidId(logId);
+    }
+
+    match /expenses/{expenseId} {
+      allow read, write: if isSignedIn() && isValidId(expenseId);
+    }
+
+    match /staff_payslips/{payslipId} {
+      allow read, write: if isSignedIn() && isValidId(payslipId);
+    }
+
+    match /duty_roster/{dutyId} {
+      allow read, write: if isSignedIn() && isValidId(dutyId);
+    }
+
+    match /staff_handbook/{docId} {
+      allow read, write: if isSignedIn() && isValidId(docId);
+    }
+
+    match /custom_expense_categories/{catId} {
+      allow read, write: if isSignedIn() && isValidId(catId);
+    }
+
+    match /custom_bill_components/{compId} {
+      allow read, write: if isSignedIn() && isValidId(compId);
+    }
+
+    match /backups/{backupId} {
+      allow read, write: if isSignedIn() && isValidId(backupId);
+    }
+
+    match /cloud_sync/{syncId} {
+      allow read, write: if isSignedIn() && isValidId(syncId);
+    }
+
+    match /transport_routes/{routeId} {
+      allow read, write: if isSignedIn() && isValidId(routeId);
+    }
+
+    match /student_transport/{recordId} {
+      allow read, write: if isSignedIn() && isValidId(recordId);
+    }
+
+    match /canteen_plans/{planId} {
+      allow read, write: if isSignedIn() && isValidId(planId);
+    }
+
+    match /canteen_payments/{recordId} {
+      allow read, write: if isSignedIn() && isValidId(recordId);
+    }
+
+    match /excursions/{excursionId} {
+      allow read, write: if isSignedIn() && isValidId(excursionId);
+    }
+
+    match /excursion_participants/{participantId} {
+      allow read, write: if isSignedIn() && isValidId(participantId);
+    }
+
+    match /sports_activities/{activityId} {
+      allow read, write: if isSignedIn() && isValidId(activityId);
+    }
+
+    match /student_sports/{recordId} {
+      allow read, write: if isSignedIn() && isValidId(recordId);
+    }
+
+    match /textbooks/{bookId} {
+      allow read, write: if isSignedIn() && isValidId(bookId);
+    }
+
+    match /textbook_transactions/{transactionId} {
+      allow read, write: if isSignedIn() && isValidId(transactionId);
+    }
+
+    match /documents/{docId} {
+      allow read, write: if isSignedIn() && isValidId(docId);
+      allow delete: if isSignedIn() && isValidId(docId);
     }
   }
 }

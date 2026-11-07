@@ -137,6 +137,8 @@ export const shareParentPortalWhatsApp = (student: Student, year: string, term: 
   window.open(whatsappUrl, '_blank');
 };
 
+
+
 const GHANA_CREST_SVG_WATERMARK = `
 <svg viewBox="0 0 100 100" width="100%" height="100%" style="width: 420px; height: 420px; color: #0f172a;">
   <circle cx="50" cy="50" r="45" fill="none" stroke="currentColor" stroke-width="1.2" stroke-dasharray="2 1.5" />

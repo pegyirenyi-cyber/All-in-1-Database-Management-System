@@ -12,7 +12,7 @@ import {
   HelpCircle, 
   Layers, 
   Check, 
-  Sparkles 
+  Info 
 } from 'lucide-react';
 
 interface KeyboardShortcutItem {
@@ -271,7 +271,7 @@ export default function KeyboardShortcutsModal({
           {/* Footer Quick Action Buttons & Tip */}
           <div className="p-4 bg-slate-50 dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs shrink-0">
             <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400 text-[11px] font-medium">
-              <Sparkles size={14} className="text-amber-500 shrink-0" />
+              <Info size={14} className="text-indigo-500 shrink-0" />
               <span>Press <kbd className="px-1.5 py-0.5 bg-slate-200 dark:bg-slate-800 rounded font-mono font-bold text-[10px] text-slate-800 dark:text-slate-200">?</kbd> anytime to open this helper overlay.</span>
             </div>
 

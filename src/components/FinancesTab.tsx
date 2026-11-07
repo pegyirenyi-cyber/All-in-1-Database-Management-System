@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { getStorageItem, setStorageItem } from '../db';
 import { CustomBillComponent, Student, SchoolInfo, AcademicYearType, TermType } from '../types';
 import { ThemeStyles } from './ThemeWrapper';
 import SchoolFeesTab from './SchoolFeesTab';
@@ -77,7 +78,7 @@ export default function FinancesTab({
     if (initialSubTab && FINANCE_TABS.some(t => t.id === initialSubTab)) {
       return initialSubTab as FinanceSubTab;
     }
-    const saved = localStorage.getItem('sms_finances_active_subtab');
+    const saved = getStorageItem<string>('sms_finances_active_subtab', 'fees');
     if (saved && FINANCE_TABS.some(t => t.id === saved)) {
       return saved as FinanceSubTab;
     }
@@ -88,9 +89,7 @@ export default function FinancesTab({
 
   const handleSubTabChange = (tabId: FinanceSubTab) => {
     setActiveSubTab(tabId);
-    try {
-      localStorage.setItem('sms_finances_active_subtab', tabId);
-    } catch {}
+    setStorageItem('sms_finances_active_subtab', tabId);
   };
 
   return (

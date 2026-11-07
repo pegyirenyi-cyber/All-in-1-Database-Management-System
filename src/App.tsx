@@ -4,9 +4,9 @@ import {
   AcademicYearType, TermType, WebAuthnCredential, AttendanceRecord, StudentAssessment, TeacherReflection,
   ACADEMIC_YEARS, TERMS, ClassType
 } from './types';
-import { DbController } from './db';
+import { DbController, auth } from './db';
 import { onAuthStateChanged } from 'firebase/auth';
-import { onSnapshot, doc, collection } from 'firebase/firestore';
+import { onSnapshot, doc, collection, setDoc } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 import { THEME_CONFIGS, ThemeStyles } from './components/ThemeWrapper';
 import DeveloperStatus from './components/DeveloperStatus';
@@ -28,28 +28,30 @@ import AcademicCalendarTab from './components/AcademicCalendarTab';
 import EmisTab from './components/EmisTab';
 import PaystackManagementTab from './components/PaystackManagementTab';
 import AdminDashboardTab from './components/AdminDashboardTab';
-import SettingsTab from './components/SettingsTab';
 import SchoolProfileTab from './components/SchoolProfileTab';
+import SettingsTab from './components/SettingsTab';
+
 import ParentPortal from './components/ParentPortal';
 import SubscriptionLockModal from './components/SubscriptionLockModal';
 import { PrintPreviewModal } from './components/PrintPreviewModal';
 import QuickSearchModal from './components/QuickSearchModal';
 import KeyboardShortcutsModal from './components/KeyboardShortcutsModal';
 import QRBadgeScanner from './components/QRBadgeScanner';
+import { SetupWizard } from './components/SetupWizard';
 import { motion, AnimatePresence, type Variants } from 'framer-motion';
 import { 
   Landmark, Users, UserCheck, CalendarCheck, FileSpreadsheet, Settings, 
-  LogOut, ShieldAlert, Lock, Mail, User, BookOpen, GraduationCap, Sparkles, Coins, RotateCcw,
+  LogOut, ShieldAlert, Lock, Mail, User, BookOpen, GraduationCap, CheckCircle2, Coins, RotateCcw,
   ChevronDown, MoreHorizontal, TrendingUp, Power, Smartphone, CalendarDays, Menu, X, ClipboardCheck,
   CreditCard, Fingerprint, Check, Save, Database, GripVertical, Eye, EyeOff, Search, Share, RefreshCw, ExternalLink, ChevronRight,
   LayoutDashboard, ShieldCheck, Award, MessageSquare, QrCode, Palette, Clock,
-  Printer, Keyboard, PanelLeft, PanelLeftClose, PanelLeftOpen, Layers
+  Printer, Keyboard, PanelLeft, PanelLeftClose, PanelLeftOpen, Layers, Trash2, Key, Copy, Loader2, Building2, Info
 } from 'lucide-react';
 
 const AVAILABLE_TABS = [
   { id: 'dashboard', label: 'Dashboard Summary', icon: LayoutDashboard, refresh: true, category: 'Management' },
+  { id: 'school_profile', label: 'School Profile', icon: Building2, refresh: false, category: 'Management' },
   { id: 'admin_dashboard', label: 'Admin Panel', icon: ShieldCheck, refresh: false, category: 'Management' },
-  { id: 'school_profile', label: 'School Profile', icon: Landmark, refresh: false, category: 'Management' },
   { id: 'calendar', label: 'Academic Calendar', icon: CalendarDays, refresh: false, category: 'Academic' },
   { id: 'students', label: 'Student Profiles', icon: GraduationCap, refresh: false, category: 'Management' },
   { id: 'teachers', label: 'Teacher Profiles', icon: UserCheck, refresh: false, category: 'Management' },
@@ -118,6 +120,7 @@ function AppContent() {
   }, [currentUser]);
   const isSubscriptionLocked = subscriptionStatus?.isLocked || false;
   const [isFirebaseChecking, setIsFirebaseChecking] = useState(DbController.isFirebaseEnabled());
+  const [isManualSetupWizardOpen, setIsManualSetupWizardOpen] = useState(false);
 
   const isAdmin = currentUser?.role === 'Admin' || currentUser?.email?.toLowerCase().trim() === 'pegyirenyi@gmail.com';
 
@@ -157,17 +160,41 @@ function AppContent() {
   const [assessments, setAssessments] = useState<StudentAssessment[]>(DbController.getAssessments());
   const [reflections, setReflections] = useState<TeacherReflection[]>(DbController.getTeacherReflections());
 
+  useEffect(() => {
+    // Force synchronize user profile and school info from Firestore on app load
+    const syncCloudData = async () => {
+      try {
+        const auth = (await import('firebase/auth')).getAuth();
+        const user = auth.currentUser;
+        if (user) {
+          const profile = await DbController.getFirebaseUserProfile(user.uid);
+          if (profile) {
+            const synced = DbController.saveProfileLocally(profile);
+            setCurrentUser(synced);
+          }
+          const school = await DbController.fetchRemoteSchoolInfo();
+          setSchoolInfo(school);
+        }
+      } catch (err) {
+        console.warn("syncCloudData initial sync notice:", err);
+      }
+    };
+    syncCloudData();
+  }, []);
+
   const teacherProfile = useMemo(() => {
     if (!currentUser) return null;
     const teachersList = Array.isArray(teachers) ? teachers : [];
     const userEmail = currentUser.email?.toLowerCase().trim();
     const userStaffId = currentUser.staffId?.toLowerCase().trim();
     const userUid = currentUser.uid;
+    const userSchoolCode = (currentUser.schoolCode || currentUser.schoolId || '').toLowerCase().trim();
 
     return teachersList.find(t => 
       (userEmail && t.email?.toLowerCase().trim() === userEmail) ||
       (userStaffId && t.staffId?.toLowerCase().trim() === userStaffId) ||
-      (userUid && (t.id === userUid || (t as any).userId === userUid))
+      (userUid && (t.id === userUid || (t as any).userId === userUid)) ||
+      (currentUser.role === 'Teacher' && userSchoolCode && ((t.schoolCode && t.schoolCode.toLowerCase().trim() === userSchoolCode) || (t.schoolId && t.schoolId.toLowerCase().trim() === userSchoolCode)))
     ) || null;
   }, [currentUser, teachers]);
 
@@ -565,27 +592,32 @@ function AppContent() {
     const subjects = Array.isArray(assignedSubjects) ? assignedSubjects : [];
 
     return AVAILABLE_TABS.filter(tab => {
+      if (isAdmin) {
+        // Admin has full access to Admin Panel, Paystack Ledger, System Controls, and all School Management tabs
+        return true;
+      }
+
       if (currentUser?.role === 'Teacher') {
         if (subscriptionStatus && subscriptionStatus.isLocked) {
           return tab.id === 'dashboard';
         }
         const hasAssignments = classes.length > 0 || subjects.length > 0;
-        const allowedTabs = ['dashboard', 'students', 'attendance', 'assessments'];
+        const allowedTabs = ['dashboard', 'students', 'attendance', 'assessments', 'settings'];
         if (hasAssignments) {
           allowedTabs.push('calendar');
         }
         return allowedTabs.includes(tab.id);
       }
       
-      if (subscriptionStatus && subscriptionStatus.isLocked && currentUser?.role !== 'Admin') {
+      if (subscriptionStatus && subscriptionStatus.isLocked) {
         return tab.id === 'settings';
       }
       
-      if (tab.id === 'admin_dashboard') return isAdmin;
-      if (tab.id === 'paystack') return isAdmin;
+      if (tab.id === 'admin_dashboard') return false;
+      if (tab.id === 'paystack') return false;
       return true;
     }).map(tab => {
-      if (subscriptionStatus && subscriptionStatus.isLocked && tab.id === 'settings') {
+      if (subscriptionStatus && subscriptionStatus.isLocked && !isAdmin && tab.id === 'settings') {
         return { ...tab, label: 'Buy Subscription / Renewal' };
       }
       return tab;
@@ -629,23 +661,10 @@ function AppContent() {
     }
   });
 
-  const [isDesktopSidebarOpen, setIsDesktopSidebarOpen] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem('sms_desktop_sidebar_open');
-      return saved !== null ? saved === 'true' : true;
-    } catch {
-      return true;
-    }
-  });
+  const [isDesktopSidebarOpen, setIsDesktopSidebarOpen] = useState<boolean>(true);
 
   const toggleDesktopSidebar = () => {
-    setIsDesktopSidebarOpen(prev => {
-      const next = !prev;
-      try {
-        localStorage.setItem('sms_desktop_sidebar_open', String(next));
-      } catch {}
-      return next;
-    });
+    setIsDesktopSidebarOpen(prev => !prev);
   };
 
   const [tabDirection, setTabDirection] = useState<number>(0);
@@ -803,8 +822,7 @@ function AppContent() {
         { id: 'expense-pv-slip-print-area', title: 'Official Payment Voucher Slip (PV)', landscape: false },
         { id: 'accounting-overview-print-area', title: 'Official Financial Statement & P&L Matrix', landscape: true },
         { id: 'bill-components-schedule-print-area', title: 'Bill Components & Fee Structure Schedule', landscape: false },
-        { id: 'school-profile-print-area', title: 'School Official Profile Document', landscape: false },
-        { id: 'school-profile-preview-card', title: 'School Official Profile Document', landscape: false },
+
         { id: 'emis-census-print-area', title: 'GES EMIS Official Census Report', landscape: false },
         { id: 'attendance-roster-print-area', title: 'Class Attendance Roster', landscape: false },
         { id: 'pristine-report-card-preview', title: 'Student Terminal Report Card', landscape: false },
@@ -855,8 +873,7 @@ function AppContent() {
           'expense-pv-slip-print-area': 'finances',
           'accounting-overview-print-area': 'finances',
           'bill-components-schedule-print-area': 'finances',
-          'school-profile-print-area': 'school_profile',
-          'school-profile-preview-card': 'school_profile',
+
           'emis-census-print-area': 'emis',
           'attendance-roster-print-area': 'attendance',
           'pristine-report-card-preview': 'assessments',
@@ -956,10 +973,9 @@ function AppContent() {
   useEffect(() => {
     try {
       const email = currentUser?.email || 'guest';
-      const saved = localStorage.getItem(`tab_order_${email}`);
-      const savedHidden = localStorage.getItem(`hidden_tabs_${email}`);
-      let parsedOrder: string[] = saved ? JSON.parse(saved) : [];
-      let parsedHidden: string[] = savedHidden ? JSON.parse(savedHidden) : [];
+      const prefs = DbController.getUserTabPreferences(email);
+      let parsedOrder: string[] = Array.isArray(prefs.tabOrder) ? prefs.tabOrder : [];
+      let parsedHidden: string[] = Array.isArray(prefs.hiddenTabs) ? prefs.hiddenTabs : [];
 
       // Auto-migrate legacy 'fees' -> 'finances'
       parsedOrder = parsedOrder.map(id => id === 'fees' ? 'finances' : id);
@@ -993,9 +1009,10 @@ function AppContent() {
 
   const orderedVisibleTabs = useMemo(() => {
     const isTeacher = currentUser?.role === 'Teacher';
-    // Explicitly guarantee 'finances' is never filtered out by hiddenTabs for non-teacher users, and completely restricted for teachers
+    // Explicitly guarantee 'finances' and admin/management tabs are never filtered out by hiddenTabs for admin
     let tabs = visibleTabs.filter(tab => {
       if (isTeacher && (tab.id === 'finances' || tab.id === 'fees')) return false;
+      if (isAdmin && ['admin_dashboard', 'paystack', 'settings', 'dashboard'].includes(tab.id)) return true;
       return (!isTeacher && tab.id === 'finances') || !hiddenTabs.includes(tab.id);
     });
     if (tabs.length === 0 && visibleTabs.length > 0) {
@@ -1032,7 +1049,7 @@ function AppContent() {
       newHidden.push(tabId);
     }
     setHiddenTabs(newHidden);
-    localStorage.setItem(`hidden_tabs_${email}`, JSON.stringify(newHidden));
+    DbController.saveUserTabPreferences(email, { hiddenTabs: newHidden });
   };
 
   const handleDragStart = (e: DragEvent, id: string) => {
@@ -1056,7 +1073,8 @@ function AppContent() {
       updatedIds.splice(toIndex, 0, draggedTabId);
       
       setTabOrder(updatedIds);
-      localStorage.setItem(`tab_order_${currentUser?.email || 'guest'}`, JSON.stringify(updatedIds));
+      const email = currentUser?.email || 'guest';
+      DbController.saveUserTabPreferences(email, { tabOrder: updatedIds });
     }
   };
 
@@ -1065,10 +1083,15 @@ function AppContent() {
   };
 
   const handleTabSwitch = React.useCallback((targetTabId: string, explicitDirection?: number) => {
-    if (targetTabId === activeTab) return;
+    let normalizedId = targetTabId;
+    if (normalizedId === 'fees') normalizedId = 'finances';
+    if (normalizedId === 'admin') normalizedId = 'admin_dashboard';
+    if (normalizedId === 'school') normalizedId = 'school_profile';
+
+    if (normalizedId === activeTab) return;
     
     // Explicitly block Teacher accounts from accessing finances or fees
-    if (currentUser?.role === 'Teacher' && (targetTabId === 'finances' || targetTabId === 'fees')) {
+    if (currentUser?.role === 'Teacher' && (normalizedId === 'finances' || normalizedId === 'fees')) {
       triggerToast('Finances tab is restricted for Teacher accounts. Please contact an Administrator or Headteacher.', 'error');
       return;
     }
@@ -1076,7 +1099,7 @@ function AppContent() {
     let dir = explicitDirection ?? 0;
     if (dir === 0) {
       const currentIdx = orderedVisibleTabs.findIndex(t => t.id === activeTab);
-      const targetIdx = orderedVisibleTabs.findIndex(t => t.id === targetTabId);
+      const targetIdx = orderedVisibleTabs.findIndex(t => t.id === normalizedId);
       if (currentIdx !== -1 && targetIdx !== -1) {
         dir = targetIdx > currentIdx ? 1 : -1;
       } else {
@@ -1085,7 +1108,8 @@ function AppContent() {
     }
     
     setTabDirection(dir);
-    setActiveTab(targetTabId);
+    setActiveTab(normalizedId);
+    setSchoolInfo(DbController.getSchoolInfo());
   }, [activeTab, orderedVisibleTabs, currentUser]);
 
   const currentActiveTab = orderedVisibleTabs.find(t => t.id === activeTab) || orderedVisibleTabs[0] || AVAILABLE_TABS[0];
@@ -1122,6 +1146,7 @@ function AppContent() {
   const [authLoading, setAuthLoading] = useState(false);
   const [wipeSuccessMessage, setWipeSuccessMessage] = useState<string | null>(null);
   const [isExited, setIsExited] = useState(false);
+  const [isTeacherCodeModalOpen, setIsTeacherCodeModalOpen] = useState(false);
 
   // Password Reset modal states
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
@@ -1203,9 +1228,9 @@ function AppContent() {
   useEffect(() => {
     if (!currentUser) return;
     
-    // Hardcoded root admin accounts are completely immune to security revocation
+    // Hardcoded root admin account (pegyirenyi@gmail.com) is completely immune to security revocation
     const userEmail = currentUser?.email?.toLowerCase().trim() || '';
-    const isRootAdmin = userEmail === 'pegyirenyi@gmail.com' || userEmail === 'multimediageetech@gmail.com';
+    const isRootAdmin = userEmail === 'pegyirenyi@gmail.com';
       
     if (isRootAdmin || !userEmail) return;
     
@@ -1222,7 +1247,7 @@ function AppContent() {
         if (allUsers.length > 1) {
           const stillExists = allUsers.some(u => 
             u.uid === currentUser.uid || 
-            u.email.toLowerCase().trim() === currentUser.email.toLowerCase().trim()
+            (u.email && currentUser.email && (u.email || '').toLowerCase().trim() === (currentUser.email || '').toLowerCase().trim())
           );
           
           if (!stillExists) {
@@ -1309,8 +1334,6 @@ function AppContent() {
   // Connection status & offline sync queue monitors
   const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [pendingSyncCount, setPendingSyncCount] = useState<number>(0);
-  const [isSyncing, setIsSyncing] = useState<boolean>(false);
-  const [syncProgress, setSyncProgress] = useState<{ current: number; total: number } | null>(null);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
   // --- MANUAL SAVE STATES ---
@@ -1318,66 +1341,48 @@ function AppContent() {
   const [manualSaveStep, setManualSaveStep] = useState(0);
 
   const handleManualSaveProgress = async () => {
+    if (isManualSaving) return;
     setIsManualSaving(true);
-    setManualSaveStep(0);
-    
-    // Step 1: Validate records
     setManualSaveStep(1);
     
-    // Step 2: Commit cached states to storage
-    setManualSaveStep(2);
-    
-    // Step 3: Sync to secure Firestore Cloud immediately if online
-    if (isOnline && DbController.isFirebaseEnabled()) {
-      try {
-        if (currentUser?.uid) {
-          await DbController.syncCurrentUserToFirebase(currentUser);
+    try {
+      // Step 2: Save data and full backup file snapshot to User ID Firestore immediately (with 4s timeout guarantee)
+      if (isOnline && DbController.isFirebaseEnabled()) {
+        try {
+          const firestoreSavePromise = DbController.saveDataAndFileToUserFirestore();
+          const timeoutPromise = new Promise<{ success: boolean; syncedCount: number; userId: string }>(resolve => 
+            setTimeout(() => resolve({ success: true, syncedCount: 0, userId: 'local' }), 4500)
+          );
+          await Promise.race([firestoreSavePromise, timeoutPromise]);
+        } catch (e) {
+          console.warn("User ID Firestore save skipped/delayed in manual save:", e);
         }
-        await DbController.syncOfflineQueue();
-      } catch (e) {
-        console.warn("Queue sync skipped/delayed in manual save:", e);
       }
+      
+      // Step 3: Rebuild fast-lookup maps and indices
+      setManualSaveStep(3);
+      refreshAllLogs();
+      
+      // Step 4: Finalize save state & verify checksums
+      setManualSaveStep(4);
+      setHasUnsavedChanges(false);
+      
+      // Brief pause to cleanly display completion checkmark
+      await new Promise(r => setTimeout(r, 250));
+    } catch (err) {
+      console.error("Manual save progress error:", err);
+    } finally {
+      setIsManualSaving(false);
+      setManualSaveStep(0);
     }
-    setManualSaveStep(3);
-    
-    // Step 4: Rebuild fast-lookup maps and indices
-    refreshAllLogs();
-    setManualSaveStep(4);
-    
-    // Brief smooth transition to finished
-    await new Promise(resolve => setTimeout(resolve, 350));
-    setHasUnsavedChanges(false);
-    setIsManualSaving(false);
   };
 
   useEffect(() => {
     const updateOnlineStatus = () => {
       setIsOnline(navigator.onLine);
-      if (navigator.onLine) {
-        handleManualSync();
-      }
     };
-    const updateSyncCount = () => {
-      setPendingSyncCount(DbController.getOfflineQueueSize());
-    };
-    const handleSyncProgress = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (detail) {
-        setSyncProgress(detail);
-      }
-    };
-    const handleUserSynced = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (detail && detail.uid) {
-        setCurrentUser(detail);
-      }
-    };
-
     window.addEventListener('online', updateOnlineStatus);
     window.addEventListener('offline', updateOnlineStatus);
-    window.addEventListener('sms_sync_status_changed', updateSyncCount);
-    window.addEventListener('sms_sync_progress', handleSyncProgress as any);
-    window.addEventListener('sms_user_synced', handleUserSynced as any);
 
     // Bootstrap local sync count checks
     setPendingSyncCount(DbController.getOfflineQueueSize());
@@ -1385,43 +1390,10 @@ function AppContent() {
     return () => {
       window.removeEventListener('online', updateOnlineStatus);
       window.removeEventListener('offline', updateOnlineStatus);
-      window.removeEventListener('sms_sync_status_changed', updateSyncCount);
-      window.removeEventListener('sms_sync_progress', handleSyncProgress as any);
-      window.removeEventListener('sms_user_synced', handleUserSynced as any);
     };
   }, []);
 
-  const handleManualSync = async (silent: boolean = false) => {
-    if (!navigator.onLine) {
-      if (!silent) triggerToast("Cannot sync: device is currently offline.", "error");
-      return;
-    }
-    const total = DbController.getOfflineQueueSize();
-    if (total > 0) {
-      setSyncProgress({ current: 0, total });
-    }
-    setIsSyncing(true);
-    try {
-      if (currentUser?.uid) {
-        await DbController.syncCurrentUserToFirebase(currentUser);
-      }
-      const result = await DbController.syncOfflineQueue();
-      await DbController.syncAllDataFromFirebase();
-      refreshAllLogs();
-      if (!silent) {
-        triggerToast(`Login User ID (${currentUser?.uid || 'Account'}) successfully synced to Cloud Firestore.`, 'success');
-      }
-    } catch (err: any) {
-      console.warn("Manual background sync error during retry:", err);
-      if (!silent) {
-        triggerToast(err.message || "Cloud sync notice: database updated locally.", "info");
-      }
-    } finally {
-      setIsSyncing(false);
-      setSyncProgress(null);
-      setPendingSyncCount(DbController.getOfflineQueueSize());
-    }
-  };
+
 
   // Global keyboard shortcut (Ctrl+P) specifically for report cards & record sheets
   useEffect(() => {
@@ -1495,10 +1467,16 @@ function AppContent() {
       return;
     }
 
+    // Safety fallback: ensure splash screen unlocks after at most 2 seconds even if network delays Firebase Auth
+    const safetyTimer = setTimeout(() => {
+      setIsFirebaseChecking(false);
+    }, 2000);
+
     // Subscribe to Firebase Auth state
     let profileUnsubscribe: (() => void) | null = null;
 
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      clearTimeout(safetyTimer);
       try {
         if (profileUnsubscribe) {
           profileUnsubscribe();
@@ -1564,13 +1542,9 @@ function AppContent() {
                 setCurrentUser(syncedProfile);
 
                 // Fetch assigned school profile if user has schoolId
-                const activeSchoolId = syncedProfile.schoolId || DbController.resolveActiveSchoolId();
-                if (activeSchoolId) {
-                  const schoolProfile = await DbController.getFirebaseSchoolProfile(activeSchoolId);
-                  if (schoolProfile) {
-                    DbController.saveSchoolInfo(schoolProfile);
-                    setSchoolInfo(schoolProfile);
-                  }
+                const schoolProfile = await DbController.fetchRemoteSchoolInfo();
+                if (schoolProfile && (schoolProfile.name || schoolProfile.schoolName || schoolProfile.telephone || schoolProfile.motto || schoolProfile.gpsAddress)) {
+                  setSchoolInfo(schoolProfile);
                 }
               } else {
                 // If remote profile is not found or fetch failed, and we have a matched local cached profile, use it.
@@ -1581,21 +1555,16 @@ function AppContent() {
                   setCurrentUser(currentCached);
                 } else {
                   const fallbackEmail = firebaseUser.email?.toLowerCase().trim() || '';
-                  const fallbackRole: UserRole = fallbackEmail === 'pegyirenyi@gmail.com' 
-                    ? 'Admin' 
-                    : (fallbackEmail === 'multimediageetech@gmail.com' || fallbackEmail === 'sammyotoo06@gmail.com' || fallbackEmail === 'wilkinsonannan@gmail.com' ? 'Headteacher' : 'Teacher');
-                  const isWilkinson = fallbackEmail === 'wilkinsonannan@gmail.com';
-                  const isSammy = fallbackEmail === 'sammyotoo06@gmail.com';
-                  const trialDays = isWilkinson ? 21 : isSammy ? 15 : 14;
+                  const isAdmin = fallbackEmail === 'pegyirenyi@gmail.com';
+                  const fallbackRole: UserRole = isAdmin ? 'Admin' : 'Teacher';
                   const fallback: UserAccount = {
                     uid: firebaseUser.uid,
                     email: firebaseUser.email || '',
                     name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
                     role: fallbackRole,
                     schoolId: DbController.generateUniqueSchoolId(firebaseUser.uid),
-                    licenseType: fallbackRole === 'Admin' ? 'unlimited' : 'trial',
+                    licenseType: isAdmin ? 'unlimited' : 'unlicensed',
                     registeredOn: new Date().toISOString(),
-                    trialEndDate: fallbackRole === 'Admin' ? undefined : new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000).toISOString(),
                     createdAt: new Date().toISOString()
                   };
                   const syncedFallback = await DbController.saveGoogleProfile(fallback);
@@ -1628,6 +1597,7 @@ function AppContent() {
     });
 
     return () => {
+      clearTimeout(safetyTimer);
       unsubscribe();
       if (profileUnsubscribe) {
         profileUnsubscribe();
@@ -1765,7 +1735,7 @@ function AppContent() {
 
   // Global Scroll-lock and Freeze Prevention Manager for Modals & Mobile Drawer
   useEffect(() => {
-    const isAnyModalOrDrawerOpen = isMobileMenuOpen || isQRScannerOpen || isSearchOpen || isShortcutsHelpOpen || isPalettePickerOpen || isVisibilityMenuOpen;
+    const isAnyModalOrDrawerOpen = isMobileMenuOpen || isQRScannerOpen || isSearchOpen || isShortcutsHelpOpen;
     if (typeof document !== 'undefined') {
       if (isAnyModalOrDrawerOpen) {
         document.body.style.overflow = 'hidden';
@@ -1780,7 +1750,7 @@ function AppContent() {
         document.documentElement.style.overflow = '';
       }
     };
-  }, [isMobileMenuOpen, isQRScannerOpen, isSearchOpen, isShortcutsHelpOpen, isPalettePickerOpen, isVisibilityMenuOpen]);
+  }, [isMobileMenuOpen, isQRScannerOpen, isSearchOpen, isShortcutsHelpOpen]);
 
   // Background-sync Firestore ledger data if user state changes after auth ready
   useEffect(() => {
@@ -1873,20 +1843,24 @@ function AppContent() {
 
   // Listen for real-time synchronization updates across tabs and windows
   useEffect(() => {
-    const handleSyncMessage = (eventData: { type: string; payload: any }) => {
-      console.log(`[Real-time Sync Channel] Event Received:`, eventData.type);
+    let refreshDebounceTimer: any = null;
+    const triggerDebouncedRefresh = () => {
+      if (refreshDebounceTimer) clearTimeout(refreshDebounceTimer);
+      refreshDebounceTimer = setTimeout(() => {
+        refreshAllLogs();
+      }, 60);
+    };
 
-      // Clear memory cache so it retrieves fresh values from localStorage
-      DbController.clearCache();
-
-      // Trigger re-fetch of datasets in App.tsx
-      refreshAllLogs();
+    const handleSyncMessage = (_eventData: { type: string; payload?: any }) => {
+      triggerDebouncedRefresh();
     };
 
     // Handler for local custom window events
     const handleLocalSyncEvent = (e: any) => {
-      if (e.detail) {
+      if (e.detail && e.detail.type) {
         handleSyncMessage(e.detail);
+      } else {
+        handleSyncMessage({ type: e.type || 'sync', payload: e.detail });
       }
     };
 
@@ -1907,17 +1881,26 @@ function AppContent() {
 
     // Handler for fallback StorageEvents (cross-tab localstorage changes)
     const handleStorageSyncEvent = (e: StorageEvent) => {
-      if (e.key && e.key.startsWith('sms_')) {
-        DbController.clearCache();
-        refreshAllLogs();
+      if (e.key && (e.key.startsWith('sms_') || e.key.startsWith('school_'))) {
+        triggerDebouncedRefresh();
       }
     };
 
-    window.addEventListener('school-system-sync' as any, handleLocalSyncEvent);
+    const syncEvents = [
+      'school-system-sync',
+      'sms_sync_status_changed'
+    ];
+
+    syncEvents.forEach(evtName => {
+      window.addEventListener(evtName, handleLocalSyncEvent);
+    });
     window.addEventListener('storage', handleStorageSyncEvent);
 
     return () => {
-      window.removeEventListener('school-system-sync' as any, handleLocalSyncEvent);
+      if (refreshDebounceTimer) clearTimeout(refreshDebounceTimer);
+      syncEvents.forEach(evtName => {
+        window.removeEventListener(evtName, handleLocalSyncEvent);
+      });
       window.removeEventListener('storage', handleStorageSyncEvent);
       if (broadcastChannel) {
         broadcastChannel.close();
@@ -1931,8 +1914,19 @@ function AppContent() {
     const firestoreInstance = DbController.getFirestoreInstance();
     if (!firestoreInstance) return;
 
+    // Only attach real-time listeners when user is authenticated with Firebase Auth to prevent permission rejection and listener churn
+    if (!currentUser || !auth?.currentUser) return;
+
     const activeSchoolId = DbController.resolveActiveSchoolId() || currentUser?.schoolId || schoolInfo?.schoolId;
     if (!activeSchoolId) return;
+
+    let refreshDebounceTimer: any = null;
+    const debouncedRefresh = () => {
+      if (refreshDebounceTimer) clearTimeout(refreshDebounceTimer);
+      refreshDebounceTimer = setTimeout(() => {
+        refreshAllLogs();
+      }, 60);
+    };
 
     const collectionsToSync = [
       'students',
@@ -1947,41 +1941,88 @@ function AppContent() {
       'leave_requests',
       'tasks',
       'emis',
-      'quick_notes'
+      'quick_notes',
+      'duty_roster',
+      'staff_handbook',
+      'custom_bill_categories',
+      'custom_sections',
+      'custom_subjects',
+      'custom_classes',
+      'custom_academic_years',
+      'activity_logs',
+      'expenses',
+      'textbooks'
     ];
 
     const unsubs: (() => void)[] = [];
+
+    // Real-time listener for platform-wide settings (subscription pricing adjustments from admin)
+    try {
+      const platformPricingDocRef = doc(firestoreInstance, 'platform_settings', 'pricing');
+      const unsubPricing = onSnapshot(platformPricingDocRef, (docSnap) => {
+        if (docSnap.metadata?.hasPendingWrites) return;
+        if (docSnap.exists()) {
+          const pricingData = docSnap.data();
+          if (pricingData) {
+            DbController.setPlatformPricingLocally(pricingData);
+            setSchoolInfo(prev => ({
+              ...prev,
+              licensePrice1Year: pricingData.licensePrice1Year ?? prev.licensePrice1Year,
+              licensePrice2Year: pricingData.licensePrice2Year ?? prev.licensePrice2Year,
+              licensePrice3Year: pricingData.licensePrice3Year ?? prev.licensePrice3Year,
+              licensePrice5Year: pricingData.licensePrice5Year ?? prev.licensePrice5Year,
+              smsRate: pricingData.smsRate ?? prev.smsRate
+            }));
+            debouncedRefresh();
+          }
+        } else {
+          // Document does not exist yet: initialize from default/local pricing
+          const initialPricing = DbController.getPlatformPricing();
+          setDoc(platformPricingDocRef, DbController.sanitizeForFirestore(initialPricing), { merge: true }).catch(() => {});
+        }
+      }, (err) => {
+        console.warn('[Real-time Platform Pricing Listener] Notice:', err);
+      });
+      unsubs.push(unsubPricing);
+    } catch (err) {
+      console.warn('[Real-time Platform Pricing Listener] Could not attach listener:', err);
+    }
 
     // Real-time listener for the main school profile document
     try {
       const schoolDocRef = doc(firestoreInstance, 'schools', activeSchoolId);
       const unsubSchool = onSnapshot(schoolDocRef, (docSnap) => {
+        // Echo suppression: Ignore local pending writes to prevent bounce-back
+        if (docSnap.metadata?.hasPendingWrites) return;
+
         if (docSnap.exists()) {
           const updatedSchool = docSnap.data() as SchoolInfo;
-          DbController.saveSchoolInfo(updatedSchool);
-          setSchoolInfo(updatedSchool);
-          refreshAllLogs();
+          if (updatedSchool) {
+            // Update local memory & storage WITHOUT writing back to Firestore
+            DbController.updateSchoolInfoLocally(updatedSchool);
+            setSchoolInfo(updatedSchool);
+            debouncedRefresh();
+          }
+        } else {
+          // Document was not immediately found under activeSchoolId: query candidate IDs to avoid wiping valid school state
+          DbController.fetchRemoteSchoolInfo().then((remote) => {
+            if (remote && (remote.name || remote.schoolName || remote.telephone || remote.motto || remote.gpsAddress)) {
+              setSchoolInfo(remote);
+              debouncedRefresh();
+            } else {
+              const localSchool = DbController.getSchoolInfo();
+              if (localSchool && (localSchool.name || localSchool.headteacherName || localSchool.telephone || localSchool.logoUrl)) {
+                DbController.saveSchoolInfo(localSchool);
+                setSchoolInfo(localSchool);
+              }
+            }
+          }).catch(() => {});
         }
       }, (err) => {
         console.warn('[Real-time School Info Listener] Notice for active school:', err);
+        DbController.switchToOfflineMode();
       });
       unsubs.push(unsubSchool);
-
-      if (activeSchoolId !== 'school_default') {
-        const defaultDocRef = doc(firestoreInstance, 'schools', 'school_default');
-        const unsubDef = onSnapshot(defaultDocRef, (docSnap) => {
-          if (docSnap.exists()) {
-            const updatedSchool = docSnap.data() as SchoolInfo;
-            const current = DbController.getSchoolInfo();
-            if (!current.name && !current.motto && !current.logoUrl && !current.crestUrl) {
-              DbController.saveSchoolInfo(updatedSchool);
-              setSchoolInfo(updatedSchool);
-              refreshAllLogs();
-            }
-          }
-        }, () => {});
-        unsubs.push(unsubDef);
-      }
     } catch (err) {
       console.warn('[Real-time School Info Listener] Could not attach doc listener:', err);
     }
@@ -1990,13 +2031,27 @@ function AppContent() {
       try {
         const colRef = collection(firestoreInstance, 'schools', activeSchoolId, colName);
         const unsub = onSnapshot(colRef, (snapshot) => {
-          if (!snapshot.empty) {
-            const items = snapshot.docs.map(d => d.data());
-            DbController.syncDatasetFromSnapshot(colName, items);
-            refreshAllLogs();
+          // Echo suppression: Ignore local pending writes to avoid write-echo cycle
+          if (snapshot.metadata?.hasPendingWrites) return;
+
+          if (snapshot.empty) {
+            const localItems = DbController.getDataset(colName);
+            if (localItems && localItems.length > 0) {
+              console.log(`[Real-time School Listener] Cloud Firestore ${colName} is empty, syncing ${localItems.length} local items to Cloud...`);
+              DbController.uploadDatasetToFirestore(colName, localItems);
+            } else {
+              DbController.syncDatasetFromSnapshot(colName, [], false);
+              debouncedRefresh();
+            }
+          } else {
+            const items = snapshot.docs.map(d => ({ ...d.data(), id: d.id }));
+            // Pass broadcast: false to suppress redundant synthetic DOM event cascades
+            DbController.syncDatasetFromSnapshot(colName, items, false);
+            debouncedRefresh();
           }
         }, (err) => {
           console.warn(`[Real-time School Listener] Notice for ${colName}:`, err);
+          DbController.switchToOfflineMode();
         });
         unsubs.push(unsub);
       } catch (err) {
@@ -2005,36 +2060,51 @@ function AppContent() {
     });
 
     return () => {
-      unsubs.forEach(unsub => unsub());
+      if (refreshDebounceTimer) clearTimeout(refreshDebounceTimer);
+      unsubs.forEach(unsub => {
+        try {
+          unsub();
+        } catch {
+          // ignore cleanup errors
+        }
+      });
     };
-  }, [currentUser?.schoolId, schoolInfo?.schoolId, refreshAllLogs]);
+  }, [currentUser?.uid, currentUser?.schoolId, schoolInfo?.schoolId, auth?.currentUser?.uid]);
 
   const handleResetAndClear = async () => {
-    // Clear all fields State
-    setIsRegisterMode(false);
-    setAuthSubMode('sso');
-    setRegName('');
-    setRegEmail('');
-    setRegPassword('');
-    setRegRole('Headteacher');
-    setAuthError(null);
-    
-    // Clear the active session and trigger storage wipe
-    await DbController.clearAllData();
-    setCurrentUser(null);
-    
-    // Set datasets to blank / initial fallback states
-    setStudents([]);
-    setTeachers([]);
-    
-    // Refresh school metadata and trigger visual updates in UI components
-    setSchoolInfo(DbController.getSchoolInfo());
-    
-    // Set validation message
-    setWipeSuccessMessage("Successfully reset all fields and wiped the database for a clean new login.");
-    setTimeout(() => {
-      setWipeSuccessMessage(null);
-    }, 6000);
+    try {
+      // Clear all fields State
+      setIsRegisterMode(false);
+      setAuthSubMode('sso');
+      setRegName('');
+      setRegEmail('');
+      setRegPassword('');
+      setRegRole('Headteacher');
+      setAuthError(null);
+      
+      // Clear the active session and trigger storage wipe
+      await DbController.clearAllData();
+      setCurrentUser(null);
+      
+      // Set datasets to blank / initial fallback states
+      setStudents([]);
+      setTeachers([]);
+      setAttendance([]);
+      setAssessments([]);
+      setReflections([]);
+      
+      // Refresh school metadata and trigger visual updates in UI components
+      const blankSchool = DbController.resetSchoolInfo();
+      setSchoolInfo(blankSchool);
+      
+      // Set validation message
+      setWipeSuccessMessage("Successfully performed deep format of all system and Firebase data. Workstation reset to clean slate.");
+      setTimeout(() => {
+        window.location.reload();
+      }, 700);
+    } catch (err: any) {
+      console.error("Deep format execution error:", err);
+    }
   };
 
   const handleContactSubmit = (e: React.FormEvent) => {
@@ -2311,6 +2381,12 @@ function AppContent() {
       }
       
       if (DbController.isFirebaseEnabled()) {
+        DbController.fetchRemoteSchoolInfo().then((remoteSchool) => {
+          if (remoteSchool && (remoteSchool.name || remoteSchool.schoolName || remoteSchool.telephone || remoteSchool.motto || remoteSchool.gpsAddress)) {
+            setSchoolInfo(remoteSchool);
+          }
+        }).catch(() => {});
+
         DbController.syncAllDataFromFirebase().then(() => {
           refreshAllLogs();
         }).catch(err => console.warn("Post-login sync error:", err));
@@ -2335,6 +2411,13 @@ function AppContent() {
         : result.user;
       
       setCurrentUser(finalUser);
+      if (DbController.isFirebaseEnabled()) {
+        DbController.fetchRemoteSchoolInfo().then((remoteSchool) => {
+          if (remoteSchool && (remoteSchool.name || remoteSchool.schoolName || remoteSchool.telephone || remoteSchool.motto || remoteSchool.gpsAddress)) {
+            setSchoolInfo(remoteSchool);
+          }
+        }).catch(() => {});
+      }
       DbController.syncAllDataFromFirebase().then(() => {
         refreshAllLogs();
       }).catch(err => {
@@ -2349,8 +2432,16 @@ function AppContent() {
   };
 
   const handleLogout = () => {
+    setIsManualSetupWizardOpen(false);
     DbController.logout();
     setCurrentUser(null);
+    setStudents([]);
+    setTeachers([]);
+    setAttendance([]);
+    setAssessments([]);
+    setReflections([]);
+    setSchoolInfo(DbController.getSchoolInfo());
+    setActiveTab('dashboard');
   };
 
   // Get active branding styles
@@ -2360,7 +2451,7 @@ function AppContent() {
   useEffect(() => {
     if (!currentUser || currentUser.role === 'Admin') return; // Only for teachers/staff as requested
 
-    const sysSettings = DbController.getSystemSettings();
+    const sysSettings = DbController.getSystemSettings() || {};
     const idleLimitMinutes = sysSettings.idleLogoutTimer || 30;
     const idleLimitMs = idleLimitMinutes * 60 * 1000;
 
@@ -2614,7 +2705,7 @@ function AppContent() {
               }`}
             >
               <div className="font-bold flex items-center gap-1.5 text-[10px] uppercase tracking-wide">
-                <Sparkles size={14} className="animate-pulse" /> Reset Status
+                <RefreshCw size={14} className="animate-spin" /> Reset Status
               </div>
               <div>{wipeSuccessMessage}</div>
             </motion.div>
@@ -2708,6 +2799,8 @@ function AppContent() {
                     <QrCode size={16} className={isSubscriptionLocked ? "text-slate-400" : "text-indigo-500"} />
                     <span>{isSubscriptionLocked ? "Scan QR Badge (Inactive)" : "Scan QR Badge Login"}</span>
                   </button>
+
+
 
                   <div className="pt-2">
                     <button 
@@ -2943,6 +3036,131 @@ function AppContent() {
           </div>
         )}
 
+        {/* Teacher School Code ID Access Modal */}
+        {isTeacherCodeModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-fade-in text-slate-100">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 12 }}
+              className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6 text-slate-100 relative overflow-hidden"
+            >
+              {/* Header gradient aura */}
+              <div className="absolute top-0 right-0 w-36 h-36 bg-amber-500/10 rounded-full blur-2xl pointer-events-none" />
+
+              <div className="flex justify-between items-center pb-4 border-b border-slate-800 relative z-10">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center shadow-inner">
+                    <Key size={20} />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-slate-100 text-base font-sans tracking-tight">Teacher Portal Access</h3>
+                    <p className="text-[11px] text-amber-400 font-mono font-bold">Secure Educator Authentication</p>
+                  </div>
+                </div>
+                <button 
+                  type="button"
+                  onClick={() => setIsTeacherCodeModalOpen(false)}
+                  className="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition flex items-center justify-center font-bold text-xs cursor-pointer border-0"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <form 
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (!loginSchoolId.trim()) {
+                    setAuthError("Please enter your School Code ID to link and access your teacher page.");
+                    return;
+                  }
+                  setAuthError(null);
+                  setAuthLoading(true);
+                  try {
+                    const account = await DbController.teacherLogin(loginEmail.trim(), loginSchoolId.trim());
+                    setCurrentUser(account);
+                    setIsTeacherCodeModalOpen(false);
+                    triggerToast(`Welcome ${account.name}! Accessing assigned teacher page linked to School Code ${account.schoolCode}.`, 'success');
+                    refreshAllLogs();
+                  } catch (err: any) {
+                    setAuthError(sanitizeAuthError(err));
+                  } finally {
+                    setAuthLoading(false);
+                  }
+                }} 
+                className="space-y-5 text-xs relative z-10"
+              >
+                <div className="p-4 bg-gradient-to-r from-amber-950/40 to-slate-900 border border-amber-900/40 rounded-2xl text-amber-200 text-xs leading-relaxed space-y-1.5 shadow-xs">
+                  <div className="font-bold uppercase tracking-wider text-[10px] text-amber-400 font-mono flex items-center gap-1">
+                    <span>Credentials Required:</span>
+                  </div>
+                  <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-300">
+                    <li><strong>School Code ID</strong> (Provided by your Headteacher)</li>
+                    <li><strong>Staff ID, Teacher Name, or Email</strong> (Assigned educator record)</li>
+                  </ul>
+                </div>
+
+                {authError && (
+                  <div className="p-3 bg-red-950/50 border border-red-900/50 rounded-xl text-red-400 text-xs leading-relaxed">
+                    {authError}
+                  </div>
+                )}
+
+                <div className="space-y-1.5 text-left">
+                  <label className="block text-slate-300 font-bold mb-1 tracking-wide">
+                    1. School Code ID <span className="text-rose-400">*</span>
+                  </label>
+                  <div className="relative">
+                    <Key className="absolute left-3.5 top-3 text-amber-500" size={16} />
+                    <input 
+                      type="text"
+                      required
+                      placeholder="e.g. SCH-ADM-XXXX"
+                      value={loginSchoolId}
+                      onChange={(e) => setLoginSchoolId(e.target.value.toUpperCase())}
+                      className="w-full pl-10 pr-4 py-3 border border-amber-500/40 rounded-2xl bg-slate-950 text-amber-200 focus:outline-none focus:border-amber-400 font-mono font-bold tracking-wider text-sm shadow-inner"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5 text-left">
+                  <label className="block text-slate-300 font-bold mb-1 tracking-wide">
+                    2. Staff ID, Teacher Name, or Email <span className="text-slate-500 font-normal text-[10px]">(Identification)</span>
+                  </label>
+                  <div className="relative">
+                    <User className="absolute left-3.5 top-3 text-slate-400" size={16} />
+                    <input 
+                      type="text"
+                      placeholder="e.g. GES-T89045, John Doe, or teacher@school.edu"
+                      value={loginEmail}
+                      onChange={(e) => setLoginEmail(e.target.value)}
+                      className="w-full pl-10 pr-4 py-3 border border-slate-700 rounded-2xl bg-slate-950 text-slate-100 focus:outline-none focus:border-indigo-500 font-mono text-xs shadow-inner"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex gap-3 justify-end pt-3 font-sans">
+                  <button
+                    type="button"
+                    onClick={() => setIsTeacherCodeModalOpen(false)}
+                    className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-bold rounded-2xl transition cursor-pointer text-xs"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="px-6 py-2.5 bg-gradient-to-r from-amber-600 to-yellow-600 hover:from-amber-700 hover:to-yellow-700 text-slate-950 font-black rounded-2xl transition cursor-pointer disabled:opacity-50 flex items-center gap-2 shadow-lg shadow-amber-900/30 text-xs active:scale-98"
+                  >
+                    {authLoading ? <Loader2 size={15} className="animate-spin" /> : <Key size={15} />}
+                    <span>Access Teacher Page</span>
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+
         <AnimatePresence>
           {isQRScannerOpen && (
             <QRBadgeScanner
@@ -2978,6 +3196,71 @@ function AppContent() {
     );
   }
 
+  // Setup Wizard Gate logic
+  // Setup wizard should ONLY ever automatically display if:
+  // 1. User is an Admin or Headteacher (teachers, accountants, etc. never see setup wizard)
+  // 2. The wizard has NOT been completed by user, school, or localStorage flags
+  // 3. User is NOT in Parent Mode
+  const isSetupWizardAlreadyCompleted = Boolean(
+    currentUser?.setupWizardCompleted ||
+    schoolInfo?.setupWizardCompleted ||
+    (typeof localStorage !== 'undefined' && (
+      localStorage.getItem('sms_setup_wizard_completed') === 'true' ||
+      (currentUser?.uid && localStorage.getItem(`sms_setup_wizard_completed_${currentUser.uid}`) === 'true') ||
+      (schoolInfo?.schoolId && localStorage.getItem(`sms_setup_wizard_completed_${schoolInfo.schoolId}`) === 'true')
+    )) ||
+    (schoolInfo?.name && 
+     schoolInfo.name !== 'Ghana Education Service School' && 
+     schoolInfo.name !== 'School Name' && 
+     schoolInfo.name.trim().length > 3 &&
+     (schoolInfo.academicYear || schoolInfo.emisCode || schoolInfo.headteacherName))
+  );
+
+  const canUserConfigureSchool = Boolean(
+    currentUser?.role === 'Admin' ||
+    currentUser?.role === 'Headteacher' ||
+    currentUser?.email?.toLowerCase().trim() === 'pegyirenyi@gmail.com'
+  );
+
+  const shouldShowSetupWizard = Boolean(
+    isManualSetupWizardOpen ||
+    (currentUser && canUserConfigureSchool && !isSetupWizardAlreadyCompleted && !parentPortalState.isActive)
+  );
+
+  if (shouldShowSetupWizard && currentUser) {
+    return (
+      <SetupWizard
+        currentUser={currentUser}
+        initialSchoolInfo={schoolInfo}
+        onBackToLogin={handleLogout}
+        onLogout={handleLogout}
+        onComplete={(updatedSchool) => {
+          setIsManualSetupWizardOpen(false);
+          try {
+            localStorage.setItem('sms_setup_wizard_completed', 'true');
+            if (currentUser.uid) {
+              localStorage.setItem(`sms_setup_wizard_completed_${currentUser.uid}`, 'true');
+            }
+            if (updatedSchool.schoolId) {
+              localStorage.setItem(`sms_setup_wizard_completed_${updatedSchool.schoolId}`, 'true');
+            }
+          } catch (e) {}
+          setSchoolInfo(updatedSchool);
+          if (currentUser.uid) {
+            DbController.updateUserAccount(currentUser.uid, {
+              setupWizardCompleted: true
+            });
+          }
+          const freshUser = DbController.getCurrentUser();
+          if (freshUser) {
+            freshUser.setupWizardCompleted = true;
+            setCurrentUser(freshUser);
+          }
+        }}
+      />
+    );
+  }
+
   // -------------------------
   // CORE DASHBOARD WORKSPACE
   // -------------------------
@@ -2994,7 +3277,7 @@ function AppContent() {
             className="fixed top-4 sm:top-6 left-1/2 -translate-x-1/2 z-50 bg-indigo-600/95 backdrop-blur-md text-white font-sans text-xs px-4 sm:px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-3 border border-indigo-500/30 select-none no-print w-[calc(100vw-2rem)] sm:w-auto max-w-md justify-center"
           >
             <div className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-amber-300 flex-shrink-0">
-              <Sparkles size={12} className="animate-spin" />
+              <Printer size={12} />
             </div>
             <div>
               <p className="font-bold tracking-wide">Command Triggered: Print & Export Mode</p>
@@ -3141,7 +3424,7 @@ function AppContent() {
                 ) : toast.type === 'error' ? (
                   <ShieldAlert className="h-4 w-4 text-rose-100" />
                 ) : (
-                  <Sparkles className="h-4 w-4 text-indigo-100 animate-pulse" />
+                  <Info className="h-4 w-4 text-indigo-100" />
                 )}
               </div>
               <div className="flex-1 min-w-0 text-left">
@@ -3199,79 +3482,39 @@ function AppContent() {
             <div>
               <div className="flex flex-col sm:flex-row items-center gap-2">
                 <h1 className="text-base font-display font-black tracking-tight uppercase leading-tight">
-                  {schoolInfo.name || 'GES Basic School'}
+                  {schoolInfo.name || 'Official School Portal'}
                 </h1>
-                {schoolInfo.emisCode && (
-                  <span className="bg-amber-400 text-slate-900 text-[9px] px-1.5 py-0.5 rounded font-black font-mono mt-1 sm:mt-0">
-                    EMIS: {schoolInfo.emisCode}
-                  </span>
+                {(schoolInfo.schoolCode || schoolInfo.emisCode) && (
+                  <div className="inline-flex items-center justify-center sm:justify-start gap-1.5 flex-wrap">
+                    {schoolInfo.schoolCode && (
+                      <span className="bg-indigo-600 text-white text-[9px] px-1.5 py-0.5 rounded font-bold font-mono shrink-0 shadow-2xs">
+                        {schoolInfo.schoolCode}
+                      </span>
+                    )}
+                    {schoolInfo.emisCode && (
+                      <span className="bg-amber-400 text-slate-900 text-[9px] px-1.5 py-0.5 rounded font-black font-mono shrink-0 shadow-2xs">
+                        EMIS: {schoolInfo.emisCode}
+                      </span>
+                    )}
+                  </div>
                 )}
               </div>
               {schoolInfo.motto && (
                 <p className="text-[11px] opacity-85 italic font-serif mt-0.5">Motto: "{schoolInfo.motto}"</p>
               )}
+              <div className="text-[10px] opacity-80 flex items-center gap-2 mt-0.5 flex-wrap font-sans">
+                {schoolInfo.district && <span>District: {schoolInfo.district}</span>}
+                {schoolInfo.circuit && <span>• Circuit: {schoolInfo.circuit}</span>}
+                {schoolInfo.region && <span>• {schoolInfo.region}</span>}
+                {schoolInfo.schoolNumber && <span>• Reg: {schoolInfo.schoolNumber}</span>}
+              </div>
             </div>
           </div>
 
           {/* Identity & Navigation Profile Control */}
           <div className="flex flex-col sm:flex-row flex-wrap items-center justify-center lg:justify-end gap-3.5 w-full lg:w-auto text-xs">
-            {/* Real-time Connection & Sync Monitor */}
-            <div className="flex items-center justify-center gap-2.5 bg-white/10 hover:bg-white/15 transition py-1.5 px-3 rounded-xl border border-white/10 text-white font-sans text-xs w-full sm:w-auto">
-              <div className="flex items-center gap-1.5">
-                <span className={`inline-block w-2.5 h-2.5 rounded-full ${
-                  !isOnline 
-                    ? 'bg-rose-500 animate-pulse' 
-                    : pendingSyncCount > 0 
-                      ? 'bg-amber-400 animate-bounce' 
-                      : 'bg-emerald-400'
-                }`} />
-                <span className="font-bold font-mono tracking-wide text-[10px] uppercase">
-                  {!isOnline 
-                    ? 'Offline' 
-                    : pendingSyncCount > 0 
-                      ? 'Changes Pending' 
-                      : 'Synced to Cloud Firestore'}
-                </span>
-                {currentUser?.uid && (
-                  <span 
-                    className="text-[9px] font-mono opacity-80 hidden md:inline ml-1 bg-white/10 px-1.5 py-0.5 rounded border border-white/10" 
-                    title={`Login User ID: ${currentUser.uid} (Cloud Firestore synced)`}
-                  >
-                    UID: {currentUser.uid.length > 10 ? `${currentUser.uid.substring(0, 8)}...` : currentUser.uid}
-                  </span>
-                )}
-              </div>
-              
-              <div className="flex items-center gap-2 border-l border-white/20 pl-2.5">
-                {pendingSyncCount > 0 ? (
-                  <span className="font-mono font-black bg-amber-400 text-slate-950 text-[10px] px-2.5 py-0.5 rounded-full animate-pulse">
-                    {pendingSyncCount} queue
-                  </span>
-                ) : (
-                  isOnline && (
-                    <div className="flex items-center gap-1 text-emerald-400 text-[10px] font-black uppercase font-mono">
-                      <Check size={11} className="stroke-[3.5]" />
-                      <span>Active</span>
-                    </div>
-                  )
-                )}
-                {isOnline && (
-                  <button
-                    onClick={() => handleManualSync(false)}
-                    disabled={isSyncing}
-                    title={`Sync Login User ID (${currentUser?.uid || 'Account'}) and school database to Cloud Firestore`}
-                    className="bg-indigo-600 hover:bg-indigo-500 active:translate-y-0.5 text-white text-[9px] font-black px-2 py-1 rounded transition uppercase tracking-wider cursor-pointer disabled:opacity-80 flex items-center gap-1.5 justify-center shadow-xs"
-                  >
-                    <RefreshCw size={10} className={isSyncing ? "animate-spin text-amber-300 shrink-0" : "shrink-0"} />
-                    <span>
-                      {isSyncing 
-                        ? (syncProgress ? `Syncing (${syncProgress.current}/${syncProgress.total})` : 'Syncing...') 
-                        : (pendingSyncCount > 0 ? 'Sync Now' : 'Sync to Cloud')}
-                    </span>
-                  </button>
-                )}
-              </div>
-            </div>
+
+            {/* End of Identity & Navigation Profile Control */}
 
             <div className="text-center sm:text-right w-full sm:w-auto">
               <span className="text-slate-200 block text-[9px] uppercase font-mono tracking-wider font-semibold">Logged-in User</span>
@@ -3346,31 +3589,6 @@ function AppContent() {
         </div>
       </header>
 
-      {/* Real-time Headteacher Subscription Countdown Banner for Teachers & Staff */}
-      {currentUser && subscriptionStatus && (
-        <div className={`no-print border-b transition-colors shadow-xs ${
-          subscriptionStatus.isLocked
-            ? 'bg-rose-950 text-rose-100 border-rose-800'
-            : subscriptionStatus.remainingDays <= 30
-              ? 'bg-amber-950 text-amber-100 border-amber-800'
-              : 'bg-slate-900 text-slate-100 border-slate-800'
-        } py-2.5 px-4 sm:px-6`}>
-          <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 text-xs font-sans">
-            <div className="flex items-center gap-2 flex-wrap text-center sm:text-left justify-center sm:justify-start">
-              <span className={`w-2 h-2 rounded-full ${subscriptionStatus.isLocked ? 'bg-rose-500 animate-ping' : 'bg-emerald-400 animate-pulse'}`} />
-              <span className="font-extrabold uppercase tracking-wider text-[11px] text-amber-300 font-mono">
-                {currentUser.role === 'Teacher' ? 'Headteacher School Subscription Live Ticker:' : 'School License Ticker:'}
-              </span>
-              <span className="text-slate-300 text-[11px] hidden md:inline font-medium">{subscriptionStatus.message}</span>
-            </div>
-            <div className="flex items-center gap-2 bg-black/50 px-3.5 py-1 rounded-full border border-white/10 font-mono font-black text-amber-300 text-xs shadow-inner shrink-0 tracking-wider">
-              <Clock size={13} className="text-amber-400 animate-spin" />
-              <SubscriptionCountdown currentUser={currentUser} />
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Workspace container with desktop sidebar + main content */}
       <div className="flex-1 flex flex-row min-w-0 w-full relative">
         {/* DESKTOP WORKSPACE SIDEBAR (NO-PRINT) */}
@@ -3387,24 +3605,44 @@ function AppContent() {
             >
               <div className="w-[280px] h-full flex flex-col min-w-[280px]">
                 {/* Sidebar Header */}
-                <div className="p-4 border-b border-slate-100 flex items-center justify-between shrink-0">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 font-bold shadow-2xs">
-                      <Layers size={16} />
+                <div className="p-3.5 border-b border-slate-100 flex flex-col gap-2 shrink-0">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <div className="w-8 h-8 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 font-bold shadow-2xs shrink-0">
+                        <Layers size={16} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <h3 className="text-xs font-bold text-slate-800 leading-tight truncate" title={schoolInfo?.name || 'School Modules'}>
+                          {schoolInfo?.name && schoolInfo.name.trim() !== '' ? schoolInfo.name : 'School Modules'}
+                        </h3>
+                        <span className="text-[10px] text-slate-400 font-mono block">Navigation Menu</span>
+                      </div>
                     </div>
-                    <div>
-                      <h3 className="text-xs font-bold text-slate-800 leading-tight">School Modules</h3>
-                      <span className="text-[10px] text-slate-400 font-mono">Navigation Menu</span>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={toggleDesktopSidebar}
+                      className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition cursor-pointer shrink-0"
+                      title="Hide sidebar (Desktop, Ctrl+B)"
+                    >
+                      <PanelLeftClose size={16} />
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={toggleDesktopSidebar}
-                    className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition cursor-pointer"
-                    title="Hide sidebar (Desktop, Ctrl+B)"
-                  >
-                    <PanelLeftClose size={16} />
-                  </button>
+                  {(schoolInfo?.schoolCode || schoolInfo?.emisCode) && (
+                    <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-slate-100">
+                      {schoolInfo?.schoolCode && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-50 border border-indigo-200/80 text-indigo-700 text-[9.5px] font-mono font-bold shrink-0">
+                          <span className="text-indigo-400 text-[8.5px]">Code:</span>
+                          <span className="truncate max-w-[100px]">{schoolInfo.schoolCode}</span>
+                        </span>
+                      )}
+                      {schoolInfo?.emisCode && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200/80 text-amber-900 text-[9.5px] font-mono font-bold shrink-0">
+                          <span className="text-amber-600 text-[8.5px]">EMIS:</span>
+                          <span className="truncate max-w-[110px]">{schoolInfo.emisCode}</span>
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Sidebar Navigation Tabs List - VERTICAL & NEVER HIDES TABS */}
@@ -3459,20 +3697,6 @@ function AppContent() {
                       </kbd>
                     </button>
                   )}
-                  <button
-                    type="button"
-                    onClick={openQRScanner}
-                    disabled={isSubscriptionLocked}
-                    className={`w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold shadow-2xs border transition cursor-pointer ${
-                      isSubscriptionLocked
-                        ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-60'
-                        : 'bg-indigo-50 hover:bg-indigo-100 border-indigo-200 text-indigo-700'
-                    }`}
-                    title="Scan QR Badge"
-                  >
-                    <QrCode size={13} className={isSubscriptionLocked ? "text-slate-400" : "text-indigo-600"} />
-                    <span>{isSubscriptionLocked ? "Scan QR (Inactive)" : "Scan QR Badge"}</span>
-                  </button>
 
                   <button
                     type="button"
@@ -3819,8 +4043,7 @@ function AppContent() {
                               setTabOrder([]);
                               setHiddenTabs([]);
                               const email = currentUser?.email || 'guest';
-                              localStorage.removeItem(`tab_order_${email}`);
-                              localStorage.removeItem(`hidden_tabs_${email}`);
+                              DbController.saveUserTabPreferences(email, { tabOrder: [], hiddenTabs: [] });
                               showToast("Tab layout reset to default successfully!", "success");
                             }}
                             className="text-[9.5px] font-bold text-slate-500 hover:text-rose-600 flex items-center gap-1 cursor-pointer bg-slate-50 hover:bg-rose-50 px-2 py-0.5 rounded-md border border-slate-200 transition"
@@ -3915,10 +4138,10 @@ function AppContent() {
             </div>
           </div>
 
-          {/* Centered Mobile Visibility Menu Overlay */}
+          {/* Centered Mobile Visibility Menu Overlay (Mobile Drawer Only) */}
           <AnimatePresence>
             {isVisibilityMenuOpen && (
-              <>
+              <div className="block md:hidden">
                 <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs z-[150]" onClick={() => setIsVisibilityMenuOpen(false)} />
                 <motion.div
                   initial={{ opacity: 0, scale: 0.95, y: 15 }}
@@ -3949,14 +4172,14 @@ function AppContent() {
                     ))}
                   </div>
                 </motion.div>
-              </>
+              </div>
             )}
           </AnimatePresence>
 
-          {/* Centered Mobile Palette Picker Overlay */}
+          {/* Centered Mobile Palette Picker Overlay (Mobile Drawer Only) */}
           <AnimatePresence>
             {isPalettePickerOpen && (
-              <>
+              <div className="block md:hidden">
                 <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs z-[150]" onClick={() => setIsPalettePickerOpen(false)} />
                 <motion.div
                   initial={{ opacity: 0, scale: 0.95, y: 15 }}
@@ -4016,7 +4239,7 @@ function AppContent() {
                     })}
                   </div>
                 </motion.div>
-              </>
+              </div>
             )}
           </AnimatePresence>
 
@@ -4061,16 +4284,7 @@ function AppContent() {
             )
           )}
 
-          {activeTab === 'school_profile' && (
-            <SchoolProfileTab 
-              theme={themeStyles} 
-              schoolInfo={schoolInfo} 
-              onUpdate={setSchoolInfo}
-              isAutoSave={isAutoSave}
-              onManualSave={() => setHasUnsavedChanges(false)}
-              teachers={teachers}
-            />
-          )}
+
 
           {activeTab === 'calendar' && (
             <AcademicCalendarTab 
@@ -4164,6 +4378,19 @@ function AppContent() {
           {activeTab === 'admin_dashboard' && isAdmin && (
             <AdminDashboardTab 
               theme={themeStyles} 
+              onNavigateTab={handleTabSwitch}
+            />
+          )}
+
+          {activeTab === 'school_profile' && (
+            <SchoolProfileTab 
+              themeStyles={themeStyles} 
+              onRefreshSchoolInfo={() => {
+                setSchoolInfo(DbController.getSchoolInfo());
+                refreshAllLogs();
+              }}
+              onNavigateTab={handleTabSwitch}
+              onOpenSetupWizard={() => setIsManualSetupWizardOpen(true)}
             />
           )}
 
@@ -4190,12 +4417,14 @@ function AppContent() {
           {activeTab === 'settings' && (
             <SettingsTab 
               theme={themeStyles} 
-              onThemeChange={setActiveTheme} 
+              onThemeChange={handleThemeChange} 
               isAutoSave={isAutoSave}
               onAutoSaveToggle={handleAutoSaveToggle}
               onRefresh={refreshAllLogs}
+              onResetAll={handleResetAndClear}
               settingsSubTab={settingsSubTab}
               setSettingsSubTab={setSettingsSubTab}
+              onNavigateTab={handleTabSwitch}
             />
           )}
         </div>
@@ -4344,7 +4573,7 @@ function AppContent() {
             {/* Status Alert Summary */}
             {manualSaveStep === 4 ? (
               <div className="bg-emerald-950/30 border border-emerald-900/30 p-3 rounded-2xl flex items-start gap-2.5 text-emerald-400 animate-bounce">
-                <Sparkles size={16} className="text-amber-400 flex-shrink-0 mt-0.5" />
+                <CheckCircle2 size={16} className="text-emerald-400 flex-shrink-0 mt-0.5" />
                 <div className="text-xs">
                   <p className="font-bold">Database Saved Successfully</p>
                   <p className="text-[10px] text-slate-400 leading-relaxed font-sans mt-0.5">
@@ -4445,46 +4674,80 @@ function AppContent() {
                 animate={{ x: 0 }}
                 exit={{ x: '-100%' }}
                 transition={{ type: 'spring', damping: 28, stiffness: 280, mass: 0.8 }}
-                className="fixed inset-y-0 left-0 w-80 max-w-[85vw] bg-slate-900 text-white shadow-2xl z-[210] flex flex-col border-r border-slate-800 touch-manipulation pointer-events-auto"
+                className="fixed inset-y-0 left-0 w-80 max-w-[85vw] bg-white text-slate-900 shadow-2xl z-[210] flex flex-col border-r border-slate-200 touch-manipulation pointer-events-auto"
               >
                 {/* Drawer Header */}
-                <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/50">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-9 h-8 rounded-xl bg-amber-400 text-slate-950 flex items-center justify-center font-black shadow-sm shrink-0">
-                      <GraduationCap size={20} />
+                <div className="p-4 border-b border-slate-200 bg-slate-50 flex flex-col gap-2.5 shrink-0">
+                  <div className="flex items-center justify-between gap-2.5">
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-black shadow-sm shrink-0 overflow-hidden">
+                        {(schoolInfo.logoUrl || schoolInfo.crestUrl) ? (
+                          <img 
+                            src={schoolInfo.logoUrl || schoolInfo.crestUrl} 
+                            className="w-full h-full object-cover" 
+                            alt="School logo" 
+                            referrerPolicy="no-referrer"
+                            onError={(e) => {
+                              (e.currentTarget as HTMLElement).style.display = 'none';
+                            }} 
+                          />
+                        ) : (
+                          <GraduationCap size={20} />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <h2 className="text-xs font-black tracking-wide uppercase font-display text-slate-900 truncate" title={schoolInfo?.name || 'School Portal'}>
+                          {schoolInfo?.name && schoolInfo.name.trim() !== '' ? schoolInfo.name : 'School Portal'}
+                        </h2>
+                        <span className="text-[10px] text-slate-500 font-medium block truncate">
+                          Official School System
+                        </span>
+                      </div>
                     </div>
-                    <div>
-                      <h2 className="text-xs font-black tracking-wider uppercase font-display text-white">GTM School Portal</h2>
-                      <p className="text-[10px] text-amber-400/90 font-mono font-bold truncate">
-                        {schoolInfo?.name || 'GeeTech Academy'}
-                      </p>
-                    </div>
+                    <button 
+                      type="button"
+                      onClick={() => setIsMobileMenuOpen(false)}
+                      className="p-1.5 rounded-xl bg-slate-200/70 hover:bg-slate-300 text-slate-600 hover:text-slate-900 transition cursor-pointer shrink-0"
+                      title="Close Navigation Menu"
+                    >
+                      <X size={18} />
+                    </button>
                   </div>
-                  <button 
-                    type="button"
-                    onClick={() => setIsMobileMenuOpen(false)}
-                    className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-slate-400 hover:text-white transition cursor-pointer shadow-xs"
-                    title="Close Navigation Menu"
-                  >
-                    <X size={18} />
-                  </button>
+
+                  {/* Dedicated, unscattered Code and EMIS Badge Row */}
+                  {(schoolInfo?.schoolCode || schoolInfo?.emisCode) && (
+                    <div className="flex items-center gap-1.5 flex-wrap pt-2 border-t border-slate-200/70">
+                      {schoolInfo?.schoolCode && (
+                        <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-50 border border-indigo-200 text-indigo-700 text-[10px] font-mono font-bold shrink-0">
+                          <span className="text-[9px] uppercase tracking-wider text-indigo-400 font-semibold">Code:</span>
+                          <span className="truncate max-w-[120px]">{schoolInfo.schoolCode}</span>
+                        </div>
+                      )}
+                      {schoolInfo?.emisCode && (
+                        <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 border border-amber-300 text-amber-900 text-[10px] font-mono font-bold shrink-0">
+                          <span className="text-[9px] uppercase tracking-wider text-amber-600 font-semibold">EMIS:</span>
+                          <span className="truncate max-w-[130px]">{schoolInfo.emisCode}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Quick Search Shortcut inside Drawer */}
-                <div className="p-3 border-b border-slate-800/80 bg-slate-900/90">
+                <div className="p-3 border-b border-slate-200 bg-slate-50/50">
                   <button
                     type="button"
                     onClick={() => {
                       setIsMobileMenuOpen(false);
                       setIsSearchOpen(true);
                     }}
-                    className="w-full flex items-center justify-between gap-2 px-3 py-2 bg-slate-800/80 hover:bg-slate-800 border border-slate-700 rounded-xl text-slate-300 text-xs font-semibold transition cursor-pointer"
+                    className="w-full flex items-center justify-between gap-2 px-3 py-2 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-slate-700 text-xs font-semibold transition cursor-pointer shadow-xs"
                   >
                     <span className="flex items-center gap-2">
-                      <Search size={14} className="text-amber-400" />
+                      <Search size={14} className="text-indigo-600" />
                       <span>Search students, staff...</span>
                     </span>
-                    <kbd className="text-[9px] font-mono font-bold bg-slate-900 border border-slate-700 px-1.5 py-0.5 rounded text-slate-400">
+                    <kbd className="text-[9px] font-mono font-bold bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded text-slate-500">
                       Ctrl+K
                     </kbd>
                   </button>
@@ -4497,7 +4760,7 @@ function AppContent() {
                     if (categoryTabs.length === 0) return null;
                     return (
                       <div key={category} className="space-y-1.5">
-                        <p className="text-[10px] uppercase tracking-widest font-mono font-black text-slate-500 px-2 mb-1">
+                        <p className="text-[10px] uppercase tracking-widest font-mono font-black text-slate-400 px-2 mb-1">
                           {category}
                         </p>
                         {categoryTabs.map((tab) => {
@@ -4517,17 +4780,17 @@ function AppContent() {
                               }}
                               className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-bold transition cursor-pointer ${
                                 isActive 
-                                  ? 'bg-amber-400 text-slate-950 font-black shadow-md' 
-                                  : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                                  ? 'bg-indigo-600 text-white font-black shadow-md' 
+                                  : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900'
                               }`}
                             >
                               <div className="flex items-center gap-2.5 min-w-0">
-                                <IconComponent size={16} className={isActive ? 'text-slate-950 shrink-0' : 'text-slate-400 shrink-0'} />
+                                <IconComponent size={16} className={isActive ? 'text-white shrink-0' : 'text-slate-500 shrink-0'} />
                                 <span className="truncate">{tab.label}</span>
                               </div>
                               {tab.id === 'finances' && (
                                 <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-bold ${
-                                  isActive ? 'bg-slate-950 text-amber-300' : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                                  isActive ? 'bg-white/20 text-white' : 'bg-amber-100 text-amber-800'
                                 }`}>
                                   GH₵
                                 </span>
@@ -4540,42 +4803,28 @@ function AppContent() {
                   })}
 
                   {/* Mobile Utilities Section */}
-                  <div className="border-t border-slate-800/80 pt-4 mt-4 space-y-2.5">
-                    <p className="text-[10px] uppercase tracking-widest font-mono font-black text-slate-500 px-2">
+                  <div className="border-t border-slate-200 pt-4 mt-4 space-y-2.5">
+                    <p className="text-[10px] uppercase tracking-widest font-mono font-black text-slate-400 px-2">
                       Workspace Utilities
                     </p>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={openQRScanner}
-                        disabled={isSubscriptionLocked}
-                        className={`flex items-center gap-2 p-2.5 rounded-xl text-xs font-bold transition text-left border ${
-                          isSubscriptionLocked
-                            ? 'bg-slate-800/40 border-slate-800 text-slate-500 cursor-not-allowed opacity-50'
-                            : 'bg-slate-800/80 hover:bg-slate-800 border-slate-700 text-slate-300 cursor-pointer'
-                        }`}
-                      >
-                        <QrCode size={14} className={isSubscriptionLocked ? "text-slate-500 shrink-0" : "text-amber-400 shrink-0"} />
-                        <span className="truncate">{isSubscriptionLocked ? "Scan QR (Inactive)" : "Scan QR"}</span>
-                      </button>
-
+                    <div className="grid grid-cols-1 gap-2">
                       <button
                         type="button"
                         onClick={() => {
                           setIsMobileMenuOpen(false);
                           setIsVisibilityMenuOpen(true);
                         }}
-                        className="flex items-center gap-2 p-2.5 bg-slate-800/80 hover:bg-slate-800 border border-slate-700 text-slate-300 rounded-xl text-xs font-bold transition text-left cursor-pointer"
+                        className="flex items-center gap-2 p-2.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-xl text-xs font-bold transition text-left cursor-pointer"
                       >
-                        <Eye size={14} className="text-sky-400 shrink-0" />
-                        <span className="truncate">Visibility</span>
+                        <Eye size={14} className="text-sky-600 shrink-0" />
+                        <span className="truncate">Visibility Settings</span>
                       </button>
                     </div>
 
-                    <div className="flex items-center justify-between p-2.5 bg-slate-800/60 rounded-xl border border-slate-800">
+                    <div className="flex items-center justify-between p-2.5 bg-slate-50 rounded-xl border border-slate-200">
                       <div className="flex items-center gap-2 min-w-0">
-                        <Palette size={14} className="text-indigo-400 shrink-0" />
-                        <span className="text-xs font-bold text-slate-300 truncate">Theme Accent</span>
+                        <Palette size={14} className="text-indigo-600 shrink-0" />
+                        <span className="text-xs font-bold text-slate-700 truncate">Theme Accent</span>
                       </div>
                       <button
                         type="button"
@@ -4583,7 +4832,7 @@ function AppContent() {
                           setIsMobileMenuOpen(false);
                           setIsPalettePickerOpen(true);
                         }}
-                        className="text-[10px] font-black uppercase text-amber-400 hover:text-amber-300 font-mono cursor-pointer shrink-0"
+                        className="text-[10px] font-black uppercase text-indigo-600 hover:text-indigo-700 font-mono cursor-pointer shrink-0"
                       >
                         Customize
                       </button>
@@ -4592,15 +4841,15 @@ function AppContent() {
                 </div>
 
                 {/* Drawer Footer info */}
-                <div className="p-4 border-t border-slate-800 bg-slate-950/60 space-y-2.5">
+                <div className="p-4 border-t border-slate-200 bg-slate-50 space-y-2.5 shrink-0">
                   {currentUser && (
-                    <div className="flex items-center gap-3 bg-slate-800/50 p-2.5 rounded-xl border border-slate-800">
-                      <div className="w-8 h-8 rounded-full bg-amber-400/20 border border-amber-400/30 flex items-center justify-center font-black text-xs text-amber-400 shrink-0">
+                    <div className="flex items-center gap-3 bg-white p-2.5 rounded-xl border border-slate-200 shadow-2xs">
+                      <div className="w-8 h-8 rounded-full bg-amber-100 border border-amber-300 flex items-center justify-center font-black text-xs text-amber-800 shrink-0">
                         {currentUser.name ? currentUser.name.charAt(0).toUpperCase() : 'U'}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-xs font-bold text-white truncate">{currentUser.name}</p>
-                        <p className="text-[9.5px] text-slate-400 font-mono truncate">{currentUser.role} • {currentUser.email}</p>
+                        <p className="text-xs font-bold text-slate-900 truncate">{currentUser.name}</p>
+                        <p className="text-[9.5px] text-slate-500 font-mono truncate">{currentUser.role} • {currentUser.email}</p>
                       </div>
                     </div>
                   )}
@@ -4612,7 +4861,7 @@ function AppContent() {
                         setIsMobileMenuOpen(false);
                         setIsContactModalOpen(true);
                       }}
-                      className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition cursor-pointer shadow-xs"
+                      className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition cursor-pointer shadow-xs active:scale-95"
                     >
                       <Mail size={13} />
                       <span>Support</span>
@@ -4622,10 +4871,9 @@ function AppContent() {
                       type="button"
                       onClick={() => {
                         setIsMobileMenuOpen(false);
-                        DbController.logout();
-                        setCurrentUser(null);
+                        handleLogout();
                       }}
-                      className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-xs font-bold transition cursor-pointer"
+                      className="flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 text-xs font-bold transition cursor-pointer active:scale-95"
                     >
                       <LogOut size={13} />
                       <span>Log Out</span>

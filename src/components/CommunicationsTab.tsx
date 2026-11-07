@@ -922,8 +922,7 @@ export default function CommunicationsTab({ theme, students, isAdmin }: Props) {
   const syncSmsBalance = async (quiet = false) => {
     if (!quiet) setIsSyncingBalance(true);
     try {
-      await DbController.syncAllDataFromFirebase();
-      const freshSchoolInfo = DbController.getSchoolInfo();
+      const freshSchoolInfo = await DbController.fetchRemoteSchoolInfo();
       setSchool(freshSchoolInfo);
     } catch (e) {
       console.error("Failed to fetch fresh school profile context during sync:", e);

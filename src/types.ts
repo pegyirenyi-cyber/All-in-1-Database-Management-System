@@ -14,6 +14,13 @@ export interface SchoolInfo {
   highestAcademicQualifications: string;
   district: string;
   circuit: string;
+  region?: string;
+  officialAddress?: string;
+  whatsappNumber?: string;
+  professionalCertificate?: string;
+  facebookUrl?: string;
+  twitterUrl?: string;
+  instagramUrl?: string;
   reopeningDate?: string;
   signatureUrl?: string;
   stampUrl?: string;
@@ -32,9 +39,59 @@ export interface SchoolInfo {
   licensePrice5Year?: number;
   smsRate?: number;
   crestUrl?: string;
+  watermarkUrl?: string;
+  headteacherSignatureUrl?: string;
+  bursarSignatureUrl?: string;
+  bursarName?: string;
   schoolId?: string;
   assignedTeacherId?: string;
+  schoolCode?: string;
+  userId?: string;
+  ownerId?: string;
+  setupWizardCompleted?: boolean;
+  schoolName?: string;
+  phone?: string;
+  address?: string;
+  country?: string;
+  currency?: string;
+  gesRegNumber?: string;
+  establishmentYear?: string;
+  currentTerm?: string;
+  academicYear?: string;
+  termStartDate?: string;
+  termEndDate?: string;
+  headteacherEmail?: string;
+  headteacherPhone?: string;
+  primaryColor?: string;
+  gradingSystem?: string;
+  defaultTermFee?: number;
+  bankName?: string;
+  bankAccountNum?: string;
+  momoMerchantNumber?: string;
+  nextTermStartDate?: string;
+  selectedClasses?: string[];
 }
+
+export interface PlatformPricing {
+  id: string; // 'pricing'
+  licensePrice1Year: number;
+  licensePrice2Year: number;
+  licensePrice3Year: number;
+  licensePrice5Year: number;
+  smsRate: number;
+  updatedAt?: string;
+  updatedBy?: string;
+  updatedByName?: string;
+}
+
+export const DEFAULT_PLATFORM_PRICING: PlatformPricing = {
+  id: 'pricing',
+  licensePrice1Year: 350,
+  licensePrice2Year: 600,
+  licensePrice3Year: 800,
+  licensePrice5Year: 1200,
+  smsRate: 20
+};
 
 export type ClassType =
   | 'Creche'
@@ -50,7 +107,8 @@ export type ClassType =
   | 'Basic 6'
   | 'Basic 7'
   | 'Basic 8'
-  | 'Basic 9';
+  | 'Basic 9'
+  | (string & {});
 
 export const CLASSES: ClassType[] = [
   'Creche',
@@ -69,9 +127,9 @@ export const CLASSES: ClassType[] = [
   'Basic 9'
 ];
 
-export type SectionType = 'None' | 'Faith' | 'Harmony' | 'Humility' | 'Peace' | string;
+export type SectionType = string;
 
-export const SECTIONS: SectionType[] = ['None', 'Faith', 'Harmony', 'Humility', 'Peace'];
+export const SECTIONS: string[] = ['None', 'Faith', 'Harmony', 'Humility', 'Peace'];
 
 export const COMMON_MEDICAL_CONDITIONS = [
   'None',
@@ -112,16 +170,16 @@ export interface Student {
   guardianEmail?: string;
   email?: string;
   residentialAddress: string;
-  ghanaPostGps?: string;
-  // Parent Info (Mother & Father)
+  gpsAddress?: string; // Ghana Post Address
+  ghanaPostGps?: string; // Alternative alias for Ghana Post GPS address
   motherName?: string;
   motherTelephone?: string;
   motherOccupation?: string;
-  motherStatus?: 'Alive' | 'Death' | string;
+  motherStatus?: 'Alive' | 'Deceased' | string;
   fatherName?: string;
   fatherTelephone?: string;
   fatherOccupation?: string;
-  fatherStatus?: 'Alive' | 'Death' | string;
+  fatherStatus?: 'Alive' | 'Deceased' | string;
   photoUrl: string; // Base64 or local path
   createdAt: string;
   academicYear?: AcademicYearType;
@@ -130,6 +188,11 @@ export interface Student {
   medicalConditionOther?: string;
   medicalNotes?: string;
   formerSchool?: string; // Formal School / Previous school attended
+  enrolledSubjects?: SubjectType[]; // List of registered curriculum subjects for this student
+  userId?: string;
+  schoolCode?: string;
+  schoolId?: string;
+  ownerId?: string;
 }
 
 export type TeacherRank =
@@ -182,6 +245,9 @@ export interface Teacher {
   photoUrl: string;
   createdAt: string;
   schoolId?: string;
+  schoolCode?: string;
+  userId?: string;
+  ownerId?: string;
   email?: string;
   phone?: string;
   subjectSpecialization?: string;
@@ -210,6 +276,8 @@ export interface AttendanceRecord {
   class: ClassType;
   status: AttendanceStatus;
   schoolId?: string;
+  schoolCode?: string;
+  ownerId?: string;
 }
 
 export type StaffAttendanceStatus = 'Present' | 'Absent' | 'On Leave' | 'Unmarked';
@@ -223,6 +291,9 @@ export interface StaffAttendanceRecord {
   arrivalTime?: string;   // e.g. "07:30"
   departureTime?: string; // e.g. "16:00"
   remarks?: string;
+  schoolId?: string;
+  schoolCode?: string;
+  ownerId?: string;
 }
 
 export type AcademicYearType =
@@ -240,7 +311,8 @@ export type AcademicYearType =
   | '2036/2037'
   | '2037/2038'
   | '2038/2039'
-  | '2039/2040';
+  | '2039/2040'
+  | (string & {});
 
 export const ACADEMIC_YEARS: AcademicYearType[] = [
   '2025/2026',
@@ -282,7 +354,8 @@ export type SubjectType =
   | 'Writing'
   | 'Drawing'
   | 'Colouring'
-  | 'Environmental Studies';
+  | 'Environmental Studies'
+  | (string & {});
 
 export const SUBJECTS: SubjectType[] = [
   'English Language',
@@ -313,6 +386,9 @@ export interface StudentAssessment {
   academicYear: AcademicYearType;
   term: TermType;
   subject: SubjectType;
+  schoolId?: string;
+  schoolCode?: string;
+  ownerId?: string;
   // Assessments schema
   exercises: number[]; // Array of exactly 4 numbers (0-10 each) -> total 40
   tests: number[]; // Array of exactly 2 numbers (0-20 each) -> total 40
@@ -334,15 +410,45 @@ export interface StudentAssessment {
   customAssessments?: number[]; // Scores for custom components
   isArchived?: boolean;
   archivedAt?: string;
-  schoolId?: string;
 }
 
 export interface AssessmentTemplate {
   id: string; // class + subject + year + term
   components: { name: string; maxScore: number }[];
+  schoolId?: string;
+  schoolCode?: string;
+  ownerId?: string;
 }
 
 export type UserRole = 'Admin' | 'Headteacher' | 'Teacher';
+
+export interface SubscriberTimerData {
+  id: string; // userId or schoolId
+  userId: string;
+  userEmail: string;
+  userName?: string;
+  role?: string;
+  schoolId?: string;
+  schoolCode?: string;
+  ownerId?: string;
+  licenseType: 'unlicensed' | 'activated' | 'unlimited' | 'trial';
+  licensePeriod?: number; // Number of years
+  registeredOn: string;
+  trialStartDate?: string;
+  trialEndDate?: string;
+  lastActivatedOn?: string;
+  expiryDate: string;
+  remainingDays: number;
+  remainingHours: number;
+  remainingMinutes: number;
+  remainingSeconds: number;
+  countdownString: string;
+  isLocked: boolean;
+  isSuspended: boolean;
+  requestCode?: string;
+  activationCode?: string;
+  updatedAt: string;
+}
 
 export interface UserAccount {
   uid: string;
@@ -351,18 +457,24 @@ export interface UserAccount {
   role: UserRole;
   staffId?: string;
   schoolId?: string;
+  schoolCode?: string;
+  ownerId?: string;
   createdAt: string;
-  licenseType?: 'trial' | 'activated' | 'unlimited';
+  licenseType?: 'unlicensed' | 'activated' | 'unlimited' | 'trial';
   licensePeriod?: number; // Number of years: 1, 2, 3, or 5
   registeredOn?: string;
+  trialStartDate?: string;
   trialEndDate?: string;
   lastActivatedOn?: string;
+  expiryDate?: string;
   activationCode?: string;
   requestCode?: string;
   promoDiscountRate?: number;
   autoRenew?: boolean;
   isSuspended?: boolean;
   usedCodes?: string[];
+  setupWizardCompleted?: boolean;
+  subscriptionTimer?: SubscriberTimerData;
 }
 
 export interface WebAuthnCredential {
@@ -387,6 +499,14 @@ export interface FeePayment {
   remarks?: string;
 }
 
+export interface CustomBillComponentItem {
+  componentId: string;
+  componentName: string;
+  amount: number;
+  category?: string;
+  isRequired?: boolean;
+}
+
 export interface StudentFeeBill {
   id: string; // studentId + "_" + academicYear + "_" + term
   studentId: string;
@@ -403,6 +523,9 @@ export interface StudentFeeBill {
   transportationBill: number;
   otherFee: number;
   otherFeeDescription?: string;
+
+  // Granular Bill Components (e.g., Exam Fees, Library Levy, ICT Levy)
+  customComponents?: CustomBillComponentItem[];
   
   // Installments list
   payments: FeePayment[];
@@ -554,6 +677,8 @@ export interface BehavioralRemark {
   academicYear: string;
   term: string;
   schoolId?: string;
+  schoolCode?: string;
+  ownerId?: string;
 }
 
 export interface TeacherReflection {
@@ -562,6 +687,8 @@ export interface TeacherReflection {
   teacherName: string;
   date: string; // YYYY-MM-DD
   content: string; // This will now store HTML from rich text editor
+  schoolCode?: string;
+  ownerId?: string;
   category: 'Behavior' | 'Learning Progress' | 'General' | 'Other' | 'Weekly Strategy';
   weeklyStrategyTitle?: string;
   linkedStudentIds?: string[];
@@ -570,8 +697,8 @@ export interface TeacherReflection {
   class?: ClassType;
   academicYear: AcademicYearType;
   term: TermType;
-  createdAt: string; // ISO string
   schoolId?: string;
+  createdAt: string; // ISO string
 }
 
 export interface AutoBackupConfig {
@@ -582,7 +709,7 @@ export interface AutoBackupConfig {
 
 export interface CloudSyncConfig {
   enabled: boolean;
-  provider: 'Google Drive' | 'Firebase Cloud Storage';
+  provider: 'Google Drive' | 'Firebase Cloud Storage' | 'Firebase Firestore (User ID Cloud Database)';
   interval: 'daily' | 'weekly' | 'monthly';
   lastSyncTime: string | null;
   status: 'idle' | 'syncing' | 'success' | 'failed';
@@ -659,7 +786,6 @@ export interface CustomTask {
   archivedAt?: string;
   createdAt: string;
   createdBy: string;
-  schoolId?: string;
 }
 
 export type NoteCategory = 'General' | 'Academic' | 'Finance' | 'Personnel' | 'Events' | 'Maintenance';
@@ -673,9 +799,9 @@ export interface QuickNote {
   category?: NoteCategory;
   dueDate?: string;
   isPinned: boolean;
+  schoolId?: string;
   createdAt: string;
   updatedAt?: string;
-  schoolId?: string;
   author?: string;
   // Recipient targeting & Notice/Meeting fields for Class Teachers
   targetAudience?: 'all' | 'class_teachers' | 'specific_class';
@@ -1001,10 +1127,15 @@ export interface StaffPayslip {
   updatedAt: string;
 }
 
-
-
-
-
-
-
+export interface CloudDocumentRecord {
+  id: string;
+  name: string;
+  mimeType: string;
+  dataUrl?: string;
+  sizeBytes?: number;
+  schoolId?: string;
+  ownerId?: string;
+  uploadedBy?: string;
+  createdAt: string;
+}
 

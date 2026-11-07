@@ -12,16 +12,18 @@ import {
   LineChart, Line, Cell, ReferenceLine
 } from 'recharts';
 import { 
-  Printer, Save, CheckSquare, RefreshCw, Layers, Award, FileText, LayoutGrid, BarChart3, HelpCircle, AlertCircle, Sparkles, FileDown,
+  Printer, Save, CheckSquare, RefreshCw, Layers, Award, FileText, LayoutGrid, BarChart3, HelpCircle, AlertCircle, FileDown,
   Eye, EyeOff, ShieldAlert, Trash2, RotateCcw, Eraser, FileSpreadsheet,
   Smartphone, MessageSquare, Send, CheckCircle, ExternalLink, Calendar,
-  X, Sliders, Check, Plus, Info, TrendingUp, TrendingDown, Archive, GraduationCap
+  X, Sliders, Check, Plus, Info, TrendingUp, TrendingDown, Archive, GraduationCap,
+  BookOpen, Users, Upload
 } from 'lucide-react';
-import { generateSecureToken, getWatermarkHtml, formatIdentifiableFilename, calculateAgeFromDob } from '../utils';
+import { generateSecureToken, getWatermarkHtml, formatIdentifiableFilename, calculateAgeFromDob, triggerToast } from '../utils';
 import { generatePdfFromHtml, downloadBlobLocally } from '../pdfHelper';
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 import SmartTextarea from './SmartTextarea';
 import { MultiTermPerformanceLineChart } from './MultiTermPerformanceLineChart';
+import { AcademicYearModal } from './common/AcademicYearModal';
 
 export const RankBreakdownTooltip = ({ 
   term, 
@@ -578,6 +580,203 @@ export default function AssessmentTab({
   const selectedTerm = propTerm || localTerm;
   const setSelectedTerm = propSetTerm || setLocalTerm;
 
+  const [allSubjectsList, setAllSubjectsList] = useState<string[]>(() => DbController.getSubjects());
+  const [allClassesList, setAllClassesList] = useState<string[]>(() => DbController.getClasses());
+
+  useEffect(() => {
+    const handleSyncSubjects = () => setAllSubjectsList(DbController.getSubjects());
+    window.addEventListener('subjects-updated', handleSyncSubjects);
+    return () => window.removeEventListener('subjects-updated', handleSyncSubjects);
+  }, []);
+
+  useEffect(() => {
+    const handleSyncClasses = () => setAllClassesList(DbController.getClasses());
+    window.addEventListener('classes-updated', handleSyncClasses);
+    return () => window.removeEventListener('classes-updated', handleSyncClasses);
+  }, []);
+
+  const [allAcademicYearsList, setAllAcademicYearsList] = useState<AcademicYearType[]>(() => DbController.getAcademicYears());
+  const [isAddingAcademicYear, setIsAddingAcademicYear] = useState(false);
+
+  useEffect(() => {
+    const handleSyncYears = () => setAllAcademicYearsList(DbController.getAcademicYears());
+    window.addEventListener('academic-years-updated', handleSyncYears);
+    return () => window.removeEventListener('academic-years-updated', handleSyncYears);
+  }, []);
+
+  // Expandable category creator states
+  const [isCreatingClass, setIsCreatingClass] = useState(false);
+  const [newClassInput, setNewClassInput] = useState('');
+
+  const [isCreatingSubject, setIsCreatingSubject] = useState(false);
+  const [newSubjectInput, setNewSubjectInput] = useState('');
+
+  // Manage Selections Modal States
+  const [showClassManagerModal, setShowClassManagerModal] = useState(false);
+  const [showSubjectManagerModal, setShowSubjectManagerModal] = useState(false);
+  const [newManagerClassName, setNewManagerClassName] = useState('');
+  const [newManagerSubjectName, setNewManagerSubjectName] = useState('');
+  const [bulkSubjectText, setBulkSubjectText] = useState('');
+  const importSubjectFileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleSaveNewClass = () => {
+    const trimmed = (newClassInput || '').trim();
+    if (!trimmed) {
+      triggerToast('Please enter a valid class name.', 'info');
+      return;
+    }
+    const updated = DbController.saveCustomClass(trimmed);
+    setAllClassesList(updated);
+    setSelectedClass(trimmed as ClassType);
+    setIsCreatingClass(false);
+    setNewClassInput('');
+    triggerToast(`Class "${trimmed}" created and selected!`, 'success');
+  };
+
+  const handleAddClassFromModal = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmed = (newManagerClassName || '').trim();
+    if (!trimmed) {
+      triggerToast('Please type a class name.', 'info');
+      return;
+    }
+    const updated = DbController.saveCustomClass(trimmed);
+    setAllClassesList(updated);
+    setSelectedClass(trimmed as ClassType);
+    setNewManagerClassName('');
+    triggerToast(`Class "${trimmed}" added and selected for assessment!`, 'success');
+  };
+
+  const handleDeleteClass = (className: string) => {
+    if (CLASSES.includes(className as any)) {
+      triggerToast('Core classes cannot be removed.', 'info');
+      return;
+    }
+    setConfirmModal({
+      isOpen: true,
+      title: 'Remove Class Category',
+      message: `Are you sure you want to remove the custom class "${className}"? Any student or assessment records associated will remain intact in history.`,
+      confirmText: 'Remove Class',
+      danger: true,
+      onConfirm: () => {
+        const updated = DbController.deleteCustomClass(className);
+        setAllClassesList(updated);
+        if (selectedClass === className) {
+          setSelectedClass('Basic 1');
+        }
+        triggerToast(`Class "${className}" removed from registry.`, 'success');
+      }
+    });
+  };
+
+  const handleSelectClass = (cls: string) => {
+    setSelectedClass(cls as ClassType);
+    setShowClassManagerModal(false);
+    triggerToast(`Selected class "${cls}" for assessment.`, 'info');
+  };
+
+  const handleSaveNewSubject = () => {
+    const trimmed = (newSubjectInput || '').trim();
+    if (!trimmed) {
+      triggerToast('Please enter a valid subject name.', 'info');
+      return;
+    }
+    const updated = DbController.saveCustomSubject(trimmed);
+    setAllSubjectsList(updated);
+    setSelectedSubject(trimmed as SubjectType);
+    setIsCreatingSubject(false);
+    setNewSubjectInput('');
+    triggerToast(`Subject "${trimmed}" created and selected!`, 'success');
+  };
+
+  const handleAddSubjectFromModal = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmed = (newManagerSubjectName || '').trim();
+    if (!trimmed) {
+      triggerToast('Please type a subject name.', 'info');
+      return;
+    }
+    const updated = DbController.saveCustomSubject(trimmed);
+    setAllSubjectsList(updated);
+    setSelectedSubject(trimmed as SubjectType);
+    setNewManagerSubjectName('');
+    triggerToast(`Subject "${trimmed}" added and selected for assessment!`, 'success');
+  };
+
+  const handleDeleteSubject = (subjectName: string) => {
+    if (SUBJECTS.includes(subjectName as any)) {
+      triggerToast('Default standard subjects cannot be removed.', 'info');
+      return;
+    }
+    setConfirmModal({
+      isOpen: true,
+      title: 'Remove Subject Course',
+      message: `Are you sure you want to remove the custom subject "${subjectName}"? Existing grade records and terminal history will remain safe.`,
+      confirmText: 'Remove Subject',
+      danger: true,
+      onConfirm: () => {
+        const updated = DbController.deleteCustomSubject(subjectName);
+        setAllSubjectsList(updated);
+        if (selectedSubject === subjectName) {
+          setSelectedSubject('English Language');
+        }
+        triggerToast(`Subject "${subjectName}" removed from registry.`, 'success');
+      }
+    });
+  };
+
+  const handleSelectSubject = (subj: string) => {
+    setSelectedSubject(subj as SubjectType);
+    setShowSubjectManagerModal(false);
+    triggerToast(`Selected subject "${subj}" for assessment.`, 'info');
+  };
+
+  const handleImportSubjectsCsv = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      if (!text) return;
+      const lines = text.split(/\r?\n/);
+      let count = 0;
+      lines.forEach(line => {
+        const parts = line.split(',');
+        const subjName = parts[0]?.trim().replace(/^["']|["']$/g, '');
+        if (subjName && subjName.toLowerCase() !== 'subject' && subjName.toLowerCase() !== 'name') {
+          DbController.saveCustomSubject(subjName);
+          count++;
+        }
+      });
+      setAllSubjectsList(DbController.getSubjects());
+      triggerToast(`Successfully imported ${count} subjects mapped to ${selectedTerm} (${selectedYear})!`, 'success');
+      if (importSubjectFileInputRef.current) {
+        importSubjectFileInputRef.current.value = '';
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleBulkAddSubjectsText = () => {
+    const trimmedText = bulkSubjectText.trim();
+    if (!trimmedText) {
+      triggerToast('Please enter a comma or newline-separated list of subjects.', 'info');
+      return;
+    }
+    const items = trimmedText.split(/[\n,]/);
+    let count = 0;
+    items.forEach(item => {
+      const subjName = item.trim().replace(/^["']|["']$/g, '');
+      if (subjName) {
+        DbController.saveCustomSubject(subjName);
+        count++;
+      }
+    });
+    setAllSubjectsList(DbController.getSubjects());
+    setBulkSubjectText('');
+    triggerToast(`Successfully added ${count} subjects mapped to ${selectedTerm} (${selectedYear})!`, 'success');
+  };
+
   const [selectedSubject, setSelectedSubject] = useState<SubjectType>('English Language');
   
   // Navigation states
@@ -635,9 +834,9 @@ export default function AssessmentTab({
     examScore100: number;
   }>>(() => {
     try {
-      const saved = localStorage.getItem('school_subject_mark_limits');
-      if (saved) {
-        return JSON.parse(saved);
+      const saved = DbController.getSubjectMarkLimits();
+      if (saved && Object.keys(saved).length > 0) {
+        return { ...DEFAULT_SUBJECT_LIMITS, ...saved };
       }
     } catch (e) {
       console.error(e);
@@ -664,7 +863,7 @@ export default function AssessmentTab({
       }
     };
     setSubjectLimits(nextLimits);
-    localStorage.setItem('school_subject_mark_limits', JSON.stringify(nextLimits));
+    DbController.saveSubjectMarkLimits(nextLimits);
   };
 
   // Validation Effect: Automatically scan active worksheet whenever it changes, or when subject/limits change
@@ -785,12 +984,8 @@ export default function AssessmentTab({
     const info = DbController.getSchoolInfo();
     const updated = { ...info, reopeningDate: newDate };
     DbController.saveSchoolInfo(updated);
-    if (isAutoSave) {
-      setSaveFeedback('Auto-saved next term reopening date.');
-      setTimeout(() => setSaveFeedback(''), 1550);
-    } else {
-      onManualSave();
-    }
+    setSaveFeedback('Synced next term reopening date to Cloud Firestore.');
+    setTimeout(() => setSaveFeedback(''), 2000);
   };
 
   const formatReopeningDate = (dateStr?: string): string => {
@@ -827,21 +1022,31 @@ export default function AssessmentTab({
   };
 
   const compileRandomSmsMessage = (templateText: string) => {
+    const student = students[0];
+    const liveOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+    const parentUrl = student 
+      ? `${liveOrigin}/?studentId=${student.id}&year=${encodeURIComponent(selectedYear)}&term=${encodeURIComponent(selectedTerm)}`
+      : `${liveOrigin}/?parentMode=true`;
     return templateText
-      .replace(/{guardianName}/g, 'Abigail Owusu')
-      .replace(/{firstName}/g, 'Emmanuel')
-      .replace(/{lastName}/g, 'Mensah')
-      .replace(/{studentId}/g, 'STU-8821-XP')
-      .replace(/{reportLink}/g, 'https://geetech.edu/portal?id=demo&token=secure_example');
+      .replace(/{guardianName}/g, student?.guardianName || 'Parent / Guardian')
+      .replace(/{firstName}/g, student?.firstName || 'Student')
+      .replace(/{lastName}/g, student?.lastName || '')
+      .replace(/{studentId}/g, student?.id || 'STU-001')
+      .replace(/{reportLink}/g, parentUrl);
   };
 
   const compileRandomBulkSmsMessage = (templateText: string) => {
+    const student = students[0];
+    const liveOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+    const parentUrl = student 
+      ? `${liveOrigin}/?studentId=${student.id}&year=${encodeURIComponent(selectedYear)}&term=${encodeURIComponent(selectedTerm)}`
+      : `${liveOrigin}/?parentMode=true`;
     return templateText
-      .replace(/\[Parent\]/gi, 'Abigail Owusu')
-      .replace(/\[Guardian\]/gi, 'Abigail Owusu')
-      .replace(/\[Student\]/gi, 'Emmanuel Mensah')
-      .replace(/\[ID\]/gi, 'STU-8821-XP')
-      .replace(/\[Link\]/gi, 'https://geetech.edu/portal?id=demo&token=secure_example');
+      .replace(/\[Parent\]/gi, student?.guardianName || 'Parent / Guardian')
+      .replace(/\[Guardian\]/gi, student?.guardianName || 'Parent / Guardian')
+      .replace(/\[Student\]/gi, student ? `${student.firstName} ${student.lastName}` : 'Student')
+      .replace(/\[ID\]/gi, student?.id || 'STU-001')
+      .replace(/\[Link\]/gi, parentUrl);
   };
 
   const triggerSmsModal = () => {
@@ -940,10 +1145,6 @@ export default function AssessmentTab({
           guardianTelephone: smsGuardianPhone
         };
         await DbController.saveStudent(updatedStudent);
-        // Explicitly sync back to DB to ensure persistence
-        if (navigator.onLine) {
-          DbController.syncAllDataFromFirebase().catch(e => console.warn(e));
-        }
       } catch (err) {
         console.warn("Failed to auto-save updated parent contact info:", err);
       }
@@ -1303,23 +1504,21 @@ export default function AssessmentTab({
     unsavedChangesRef.current = true;
     setUnsavedChanges(true);
 
-    if (isAutoSave) {
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current);
-      }
-      if (valueNum <= maxLimit) {
-        autoSaveTimerRef.current = setTimeout(() => {
-          DbController.saveAssessmentsSheet(latestWorksheetRef.current);
-          unsavedChangesRef.current = false;
-          setUnsavedChanges(false);
-          setSaveFeedback('Auto-saved changes!');
-          setTimeout(() => setSaveFeedback(''), 1500);
-        }, 500);
-      } else {
-        unsavedChangesRef.current = true;
-        setUnsavedChanges(true);
-        setSaveFeedback('Auto-save paused - correction required!');
-      }
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+    }
+    if (valueNum <= maxLimit) {
+      autoSaveTimerRef.current = setTimeout(() => {
+        DbController.saveAssessmentsSheet(latestWorksheetRef.current);
+        unsavedChangesRef.current = false;
+        setUnsavedChanges(false);
+        setSaveFeedback('Synced to Cloud Firestore!');
+        setTimeout(() => setSaveFeedback(''), 1500);
+      }, 500);
+    } else {
+      unsavedChangesRef.current = true;
+      setUnsavedChanges(true);
+      setSaveFeedback('Correction required (exceeds mark limit)');
     }
   };
 
@@ -1384,12 +1583,9 @@ export default function AssessmentTab({
     
     const ranked = DbController.calculatePositions(cleared);
     setActiveWorksheet(ranked);
-    setUnsavedChanges(true);
-    if (isAutoSave) {
-      DbController.saveAssessmentsSheet(ranked);
-      setUnsavedChanges(false);
-    }
-    alert("Resetted active gradesheet assessment scores to zero values.");
+    DbController.saveAssessmentsSheet(ranked);
+    setUnsavedChanges(false);
+    alert("Resetted active gradesheet assessment scores to zero values and synced to Cloud Firestore.");
   };
 
   const handleDeleteActiveSelection = () => {
@@ -1431,12 +1627,9 @@ export default function AssessmentTab({
 
           const ranked = DbController.calculatePositions(cleared);
           setActiveWorksheet(ranked);
-          setUnsavedChanges(true);
-          if (isAutoSave) {
-            DbController.saveAssessmentsSheet(ranked);
-            setUnsavedChanges(false);
-          }
-          alert("Grades deleted and reset for the selected student.");
+          DbController.saveAssessmentsSheet(ranked);
+          setUnsavedChanges(false);
+          alert("Grades deleted, reset, and synced to Cloud Firestore for the selected student.");
         }
       });
     } else {
@@ -2394,7 +2587,7 @@ export default function AssessmentTab({
            a.term === selectedTerm
     );
 
-    return SUBJECTS.map(subj => {
+    return allSubjectsList.map(subj => {
       const subjAssessments = filtered.filter(a => a.subject === subj);
       const scoreSum = subjAssessments.reduce((sum, current) => sum + current.totalScore, 0);
       const avgScore = subjAssessments.length > 0 ? parseFloat((scoreSum / subjAssessments.length).toFixed(1)) : null;
@@ -2406,12 +2599,12 @@ export default function AssessmentTab({
         gradedCount,
       };
     });
-  }, [selectedClass, selectedYear, selectedTerm, students, activeWorksheet]);
+  }, [selectedClass, selectedYear, selectedTerm, students, activeWorksheet, allSubjectsList]);
 
   const teacherSubjectStats = useMemo(() => {
     const subjectsToTrack = userRole === 'Teacher' && assignedSubjects.length > 0 
       ? assignedSubjects 
-      : SUBJECTS;
+      : allSubjectsList;
 
     const allAssessments = DbController.getAssessments();
     const filtered = allAssessments.filter(
@@ -2601,15 +2794,45 @@ export default function AssessmentTab({
         {/* Academic Filters */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 pb-4 border-b border-slate-100">
           <div>
-            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Academic Year</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Academic Year</label>
+              {userRole !== 'Teacher' && (
+                <button
+                  type="button"
+                  onClick={() => setIsAddingAcademicYear(true)}
+                  className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5 cursor-pointer hover:underline transition"
+                  title="Add or configure Academic Year"
+                >
+                  <Plus size={11} />
+                  <span>+ Add Year</span>
+                </button>
+              )}
+            </div>
             <select
               value={selectedYear}
-              onChange={(e) => setSelectedYear(e.target.value as AcademicYearType)}
+              onChange={(e) => {
+                if (e.target.value === '__ADD_ACADEMIC_YEAR__' || e.target.value === '__MANAGE_ACADEMIC_YEARS__') {
+                  setIsAddingAcademicYear(true);
+                } else {
+                  setSelectedYear(e.target.value as AcademicYearType);
+                }
+              }}
               className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-slate-50 font-semibold"
             >
-              {ACADEMIC_YEARS.map(yr => (
+              {allAcademicYearsList.map(yr => (
                 <option key={yr} value={yr}>{yr}</option>
               ))}
+              {userRole !== 'Teacher' && (
+                <>
+                  <option disabled className="text-slate-300">──────────</option>
+                  <option value="__ADD_ACADEMIC_YEAR__" className="font-bold text-indigo-600 bg-indigo-50/50">
+                    ➕ Add Academic Year...
+                  </option>
+                  <option value="__MANAGE_ACADEMIC_YEARS__" className="font-bold text-slate-700 bg-slate-100/60">
+                    ⚙️ Manage Selections...
+                  </option>
+                </>
+              )}
             </select>
           </div>
 
@@ -2626,11 +2849,36 @@ export default function AssessmentTab({
             </select>
           </div>
 
-          <div>
-            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Active Class</label>
+          <div className="relative">
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Active Class</label>
+              {userRole !== 'Teacher' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsCreatingClass(prev => !prev);
+                    setIsCreatingSubject(false);
+                  }}
+                  className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5 cursor-pointer hover:underline transition"
+                  title="Add a new class category"
+                >
+                  <Plus size={11} />
+                  <span>+ Add Class</span>
+                </button>
+              )}
+            </div>
             <select
               value={selectedClass}
-              onChange={(e) => setSelectedClass(e.target.value as ClassType)}
+              onChange={(e) => {
+                if (e.target.value === '__CREATE_NEW_CATEGORY__') {
+                  setIsCreatingClass(true);
+                  setIsCreatingSubject(false);
+                } else if (e.target.value === '__MANAGE_SELECTIONS__') {
+                  setShowClassManagerModal(true);
+                } else {
+                  setSelectedClass(e.target.value as ClassType);
+                }
+              }}
               disabled={userRole === 'Teacher' && [...new Set([assignedClass, ...assignedClasses])].filter(c => c && c !== 'None').length <= 1}
               className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-slate-50 font-semibold disabled:opacity-75 disabled:cursor-not-allowed"
             >
@@ -2639,19 +2887,108 @@ export default function AssessmentTab({
                   <option key={cls} value={cls}>{cls}</option>
                 ))
               ) : (
-                CLASSES.map(cls => (
+                allClassesList.map(cls => (
                   <option key={cls} value={cls}>{cls}</option>
                 ))
               )}
+              {userRole !== 'Teacher' && (
+                <>
+                  <option disabled className="text-slate-300">──────────</option>
+                  <option value="__CREATE_NEW_CATEGORY__" className="font-bold text-indigo-600 bg-indigo-50/50">
+                    ➕ Add New Class...
+                  </option>
+                  <option value="__MANAGE_SELECTIONS__" className="font-bold text-slate-700 bg-slate-100/60">
+                    ⚙️ Manage Selections...
+                  </option>
+                </>
+              )}
             </select>
+
+            {/* Expandable New Class Category Creator */}
+            {isCreatingClass && (
+              <div className="mt-2.5 p-3 bg-gradient-to-br from-indigo-50/95 to-slate-50 border border-indigo-200/90 rounded-xl shadow-xs space-y-2 animate-fadeIn text-left">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-indigo-950 flex items-center gap-1.5">
+                    <GraduationCap size={13} className="text-indigo-600" />
+                    Add Class
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCreatingClass(false);
+                      setNewClassInput('');
+                    }}
+                    className="text-[10px] text-slate-400 hover:text-slate-600 cursor-pointer font-bold px-1.5 py-0.5 rounded hover:bg-slate-200/60 transition"
+                  >
+                    ✕ Cancel
+                  </button>
+                </div>
+
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    value={newClassInput}
+                    onChange={(e) => setNewClassInput(e.target.value)}
+                    placeholder="e.g. Nursery 3, Grade 7, Form 1..."
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleSaveNewClass();
+                      }
+                    }}
+                    className="flex-1 text-xs px-2.5 py-1.5 border border-indigo-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-800 placeholder:text-slate-400"
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSaveNewClass}
+                    className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white font-bold rounded-lg text-xs transition cursor-pointer shrink-0 shadow-2xs flex items-center gap-1"
+                  >
+                    <Plus size={12} />
+                    <span>Save & Select</span>
+                  </button>
+                </div>
+
+                <div className="text-[10px] text-slate-500 pt-0.5">
+                  <span className="text-slate-500 text-[9px]">
+                    Saves to school registry & selects it for assessment.
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
-          <div>
-            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Subject Curriculum</label>
+          <div className="relative">
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Subject Curriculum</label>
+              {userRole !== 'Teacher' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsCreatingSubject(prev => !prev);
+                    setIsCreatingClass(false);
+                  }}
+                  className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5 cursor-pointer hover:underline transition"
+                  title="Add a new subject course"
+                >
+                  <Plus size={11} />
+                  <span>+ Add Subjects</span>
+                </button>
+              )}
+            </div>
             <select
               value={selectedSubject}
               disabled={subMode === 'Broadsheet' || subMode === 'IndividualReport' || (userRole === 'Teacher' && assignedSubjects.length <= 1)}
-              onChange={(e) => setSelectedSubject(e.target.value as SubjectType)}
+              onChange={(e) => {
+                if (e.target.value === '__CREATE_NEW_CATEGORY__') {
+                  setIsCreatingSubject(true);
+                  setIsCreatingClass(false);
+                } else if (e.target.value === '__MANAGE_SELECTIONS__') {
+                  setShowSubjectManagerModal(true);
+                } else {
+                  setSelectedSubject(e.target.value as SubjectType);
+                }
+              }}
               className="w-full px-3 py-2 border border-slate-100 rounded-lg bg-slate-50 font-semibold disabled:opacity-40"
             >
               {userRole === 'Teacher' && assignedSubjects.length > 0 ? (
@@ -2659,11 +2996,75 @@ export default function AssessmentTab({
                   <option key={sb} value={sb}>{sb}</option>
                 ))
               ) : (
-                SUBJECTS.map(sb => (
+                allSubjectsList.map(sb => (
                   <option key={sb} value={sb}>{sb}</option>
                 ))
               )}
+              {userRole !== 'Teacher' && (
+                <>
+                  <option disabled className="text-slate-300">──────────</option>
+                  <option value="__CREATE_NEW_CATEGORY__" className="font-bold text-indigo-600 bg-indigo-50/50">
+                    ➕ Add New Subject...
+                  </option>
+                  <option value="__MANAGE_SELECTIONS__" className="font-bold text-slate-700 bg-slate-100/60">
+                    ⚙️ Manage Selections...
+                  </option>
+                </>
+              )}
             </select>
+
+            {/* Expandable New Subject Category Creator */}
+            {isCreatingSubject && (
+              <div className="mt-2.5 p-3 bg-gradient-to-br from-indigo-50/95 to-slate-50 border border-indigo-200/90 rounded-xl shadow-xs space-y-2 animate-fadeIn text-left">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-indigo-950 flex items-center gap-1.5">
+                    <BookOpen size={13} className="text-indigo-600" />
+                    Add Subjects
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCreatingSubject(false);
+                      setNewSubjectInput('');
+                    }}
+                    className="text-[10px] text-slate-400 hover:text-slate-600 cursor-pointer font-bold px-1.5 py-0.5 rounded hover:bg-slate-200/60 transition"
+                  >
+                    ✕ Cancel
+                  </button>
+                </div>
+
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    value={newSubjectInput}
+                    onChange={(e) => setNewSubjectInput(e.target.value)}
+                    placeholder="e.g. Physical Education, Arabic, Music, Twi, Robotics..."
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleSaveNewSubject();
+                      }
+                    }}
+                    className="flex-1 text-xs px-2.5 py-1.5 border border-indigo-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-800 placeholder:text-slate-400"
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSaveNewSubject}
+                    className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white font-bold rounded-lg text-xs transition cursor-pointer shrink-0 shadow-2xs flex items-center gap-1"
+                  >
+                    <Plus size={12} />
+                    <span>Save & Select</span>
+                  </button>
+                </div>
+
+                <div className="text-[10px] text-slate-500 pt-0.5">
+                  <span className="text-slate-500 text-[9px]">
+                    Saves to school registry & selects it for assessment.
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
           <div>
@@ -2711,7 +3112,7 @@ export default function AssessmentTab({
               onClick={() => setSubMode('StudentStrengthsWeaknesses')}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold transition text-[11px] cursor-pointer ${subMode === 'StudentStrengthsWeaknesses' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}
             >
-              <Sparkles size={14} className="text-amber-500 animate-pulse" /> Strengths & Weaknesses
+              <Award size={14} className="text-amber-500" /> Strengths & Weaknesses
             </button>
             <button
               onClick={() => {
@@ -2787,7 +3188,7 @@ export default function AssessmentTab({
 
         {saveFeedback && (
           <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] py-2 px-3 rounded-md flex items-center gap-1.5 animate-pulse">
-            <Sparkles size={14} className="text-emerald-500" />
+            <CheckSquare size={14} className="text-emerald-500" />
             <span>{saveFeedback}</span>
           </div>
         )}
@@ -3263,28 +3664,28 @@ export default function AssessmentTab({
                 </div>
 
                 {/* Student Personal Data metadata */}
-                <div className="grid grid-cols-2 lg:grid-cols-6 gap-4 bg-slate-50 p-4 rounded-lg text-xs leading-relaxed border border-slate-100 print:bg-white print:border-none">
-                  <div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 bg-slate-50 p-3.5 rounded-lg text-xs leading-relaxed border border-slate-100 print:bg-white print:border-none text-center">
+                  <div className="bg-white/80 p-2 rounded border border-slate-100 shadow-2xs">
                     <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Student ID</span>
-                    <strong className="text-slate-800 font-mono">{compiledReport.student.id}</strong>
+                    <strong className="text-slate-800 font-mono block mt-0.5">{compiledReport.student.id}</strong>
                   </div>
-                  <div>
+                  <div className="bg-white/80 p-2 rounded border border-slate-100 shadow-2xs">
                     <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Full Name</span>
-                    <strong className="text-slate-800">{compiledReport.student.firstName} {compiledReport.student.lastName}</strong>
+                    <strong className="text-slate-800 block mt-0.5">{compiledReport.student.firstName} {compiledReport.student.lastName}</strong>
                   </div>
-                  <div>
+                  <div className="bg-white/80 p-2 rounded border border-slate-100 shadow-2xs">
                     <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Academic Class</span>
-                    <strong className="text-slate-800">{compiledReport.student.class} ({compiledReport.student.section})</strong>
+                    <strong className="text-slate-800 block mt-0.5">{compiledReport.student.class} ({compiledReport.student.section})</strong>
                   </div>
-                  <div>
+                  <div className="bg-white/80 p-2 rounded border border-slate-100 shadow-2xs">
                     <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Report Term</span>
-                    <strong className="text-slate-800 font-mono">{selectedTerm} ({selectedYear})</strong>
+                    <strong className="text-slate-800 font-mono block mt-0.5">{selectedTerm} ({selectedYear})</strong>
                   </div>
-                  <div className="relative group cursor-help bg-indigo-50/30 p-1.5 rounded-lg border border-indigo-100/50 transition-all hover:bg-indigo-50/80">
-                    <span className="text-[10px] uppercase text-indigo-700 font-mono font-bold flex items-center gap-1 select-none">
+                  <div className="relative group cursor-help bg-indigo-50/50 p-2 rounded border border-indigo-100 transition-all hover:bg-indigo-50/80 shadow-2xs">
+                    <span className="text-[10px] uppercase text-indigo-700 font-mono font-bold flex items-center justify-center gap-1 select-none">
                       Class Rank Standings <HelpCircle size={10} className="text-indigo-400" />
                     </span>
-                    <strong className="text-indigo-900 font-mono font-extrabold text-sm">{compiledReport.classRank || 'N/A'}</strong>
+                    <strong className="text-indigo-900 font-mono font-extrabold text-sm block mt-0.5">{compiledReport.classRank || 'N/A'}</strong>
                     <RankBreakdownTooltip 
                       term={selectedTerm} 
                       year={selectedYear} 
@@ -3292,9 +3693,9 @@ export default function AssessmentTab({
                       gradedCount={compiledReport.gradedCount} 
                     />
                   </div>
-                  <div>
+                  <div className="bg-teal-50/50 p-2 rounded border border-teal-100 shadow-2xs">
                     <span className="text-[10px] uppercase text-teal-700 font-mono font-bold block">Reopening Date</span>
-                    <strong className="text-teal-900 bg-teal-50 px-1.5 py-0.5 rounded border border-teal-100">{formatReopeningDate(DbController.getSchoolInfo().reopeningDate)}</strong>
+                    <strong className="text-teal-900 block mt-0.5">{formatReopeningDate(DbController.getSchoolInfo().reopeningDate)}</strong>
                   </div>
                 </div>
 
@@ -3348,53 +3749,59 @@ export default function AssessmentTab({
                 </table>
 
                 {/* Report Card Aggregates Footer summary */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 border-t border-slate-200 pt-4 text-xs text-center font-mono leading-relaxed">
-                  <div>
-                    <span className="text-slate-400 font-sans block text-[10px] uppercase">Subjects Graded</span>
-                    <strong className="text-slate-800 text-sm">{compiledReport.totalSubjects} courses</strong>
-                  </div>
-                  <div>
-                    <span className="text-slate-400 font-sans block text-[10px] uppercase">Term Average Score</span>
-                    <strong className="text-slate-800 text-sm italic">{compiledReport.averageScore}%</strong>
-                  </div>
-                  <div>
-                    <span className="text-slate-400 font-sans block text-[10px] uppercase">Attendance / School Open</span>
-                    <strong className="text-slate-800 text-sm">{compiledReport.attendancePresent} / {compiledReport.schoolOpenDays} Days Present</strong>
-                  </div>
-                  <div>
-                    <span className="text-slate-400 font-sans block text-[10px] uppercase">Grade Rating</span>
-                    <strong className="text-slate-800 text-sm uppercase">GES Certified</strong>
-                  </div>
-                </div>
+                {(() => {
+                  const rawSum = sortedGrades.reduce((sum, g) => sum + (g.totalScore || 0), 0);
+                  const maxPossible = sortedGrades.length * 100;
+                  const rawAvg = sortedGrades.length > 0 ? parseFloat((rawSum / sortedGrades.length).toFixed(2)) : 0;
+                  return (
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 mt-3 border-t border-slate-200 pt-3 text-xs text-center font-mono leading-relaxed">
+                      <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
+                        <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Subjects Graded</span>
+                        <strong className="text-slate-800 text-sm">{compiledReport.totalSubjects} courses</strong>
+                      </div>
+                      <div className="bg-indigo-50/60 p-2 rounded-lg border border-indigo-100">
+                        <span className="text-indigo-600 font-sans block text-[10px] uppercase font-bold">Total Raw Score</span>
+                        <strong className="text-indigo-900 text-sm font-black">{rawSum} / {maxPossible}</strong>
+                      </div>
+                      <div className="bg-emerald-50/60 p-2 rounded-lg border border-emerald-100">
+                        <span className="text-emerald-700 font-sans block text-[10px] uppercase font-bold">Total Raw Score Avg</span>
+                        <strong className="text-emerald-900 text-sm font-black">{rawAvg}%</strong>
+                      </div>
+                      <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
+                        <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Attendance</span>
+                        <strong className="text-slate-800 text-sm font-sans">{compiledReport.attendancePresent} / {compiledReport.schoolOpenDays} Days</strong>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Financial Ledger Section */}
                 {studentFinancials && (
-                  <div className="mt-4 bg-slate-50 border border-slate-200/80 rounded-xl p-3 font-sans text-xs flex flex-col md:flex-row justify-between gap-4 leading-normal print:bg-white print:border-slate-300 report-card-financial-ledger">
-                    <div className="space-y-1">
-                      <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Current Balance Status</div>
-                      <div className="flex items-baseline gap-2">
-                        <span className={`text-base font-black ${studentFinancials.totalOutstanding > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
-                          GHS {studentFinancials.totalOutstanding.toFixed(2)}
-                        </span>
-                        {studentFinancials.totalOutstanding > 0 && studentFinancials.previousOutstanding > 0 && (
-                          <span className="text-[10px] text-slate-400">
-                            (Term: GHS {studentFinancials.currentOutstanding.toFixed(2)} | Arrears: GHS {studentFinancials.previousOutstanding.toFixed(2)})
+                  <div className="mt-3 bg-slate-50 border border-slate-200/80 rounded-xl p-2.5 font-sans text-xs flex flex-col sm:flex-row items-center justify-between gap-3 leading-normal print:bg-white print:border-slate-300 report-card-financial-ledger">
+                    <div className="flex items-center gap-4">
+                      <div className="space-y-0.5">
+                        <div className="text-slate-500 uppercase tracking-wider text-[8.5px] font-black">Current Balance</div>
+                        <div className="flex items-baseline gap-1.5">
+                          <span className={`text-sm font-black ${studentFinancials.totalOutstanding > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
+                            GHS {studentFinancials.totalOutstanding.toFixed(2)}
                           </span>
-                        )}
+                        </div>
                       </div>
-                      <div className="text-[10px] text-slate-400">Outstanding student balance of registered accounts ledger.</div>
+                      <div className="h-6 w-px bg-slate-200" />
+                      <div className="space-y-0.5">
+                        <div className="text-slate-500 uppercase tracking-wider text-[8.5px] font-black">Next Term Projected Bill ({studentFinancials.nextTerm})</div>
+                        <div className="flex items-baseline gap-1">
+                          <span className="text-sm font-bold text-slate-800">
+                            GHS {studentFinancials.nextTermBillSum.toFixed(2)}
+                          </span>
+                          {studentFinancials.isEstimated && (
+                            <span className="text-[8px] bg-slate-200 text-slate-600 px-1 py-0.2 rounded font-black font-mono">Est</span>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                    <div className="border-t md:border-t-0 md:border-l border-slate-250 md:pl-6 pt-3 md:pt-0 space-y-1">
-                      <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Next Term Projected Bill ({studentFinancials.nextTerm}, {studentFinancials.nextYear})</div>
-                      <div className="flex items-baseline gap-1.5">
-                        <span className="text-base font-bold text-slate-800">
-                          GHS {studentFinancials.nextTermBillSum.toFixed(2)}
-                        </span>
-                        {studentFinancials.isEstimated && (
-                          <span className="text-[9px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded font-black font-mono">Estimated Rate</span>
-                        )}
-                      </div>
-                      <div className="text-[10px] text-slate-400">Projected billing plan for the upcoming academic module term.</div>
+                    <div className="text-[9px] text-slate-400 font-medium text-right hidden sm:block">
+                      Accounts Ledger &amp; Upcoming Bill
                     </div>
                   </div>
                 )}
@@ -3645,7 +4052,7 @@ export default function AssessmentTab({
               </div>
 
                 {/* Batch compiled student report list */}
-                <div id="bulk-batch-scroll-container" className="w-full space-y-8 no-scrollbar">
+                <div id="bulk-batch-scroll-container" className="w-full space-y-8 no-scrollbar flex flex-col items-center">
                   {bulkClassReports.length === 0 ? (
                     <div className="bg-white p-12 text-center text-slate-400 rounded-xl space-y-2 max-w-4xl w-full">
                       <FileText size={36} className="text-slate-300 mx-auto animate-bounce" />
@@ -3676,12 +4083,12 @@ export default function AssessmentTab({
                         return (
                         <div 
                           key={student.id} 
-                          className={`w-full bg-white p-6 md:p-16 print:p-0 shadow-2xl rounded-2xl border border-slate-200 font-sans leading-relaxed text-black/90 text-left bulk-report-card-print-page relative ${subjectCountClass}`}
+                          className={`w-full max-w-[820px] mx-auto bg-white p-6 md:p-16 print:p-0 shadow-2xl rounded-2xl border border-slate-200 font-sans leading-relaxed text-black/90 text-center bulk-report-card-print-page relative ${subjectCountClass}`}
                         >
                           <div className="absolute inset-0 z-0 pointer-events-none hidden print:block" dangerouslySetInnerHTML={{ __html: getWatermarkHtml(DbController.getSchoolInfo().crestUrl) }} />
                           
                           {/* Professional Letterhead */}
-                          <div className={`flex flex-col sm:flex-row items-center justify-between border-b-2 border-slate-900 ${scaling.headerSpacing} gap-4 font-sans text-left relative z-10`}>
+                          <div className={`flex flex-col sm:flex-row items-center justify-between border-b-2 border-slate-900 ${scaling.headerSpacing} gap-4 font-sans text-center relative z-10`}>
                             {DbController.getSchoolInfo().logoUrl ? (
                               <img 
                                 src={DbController.getSchoolInfo().logoUrl} 
@@ -3734,7 +4141,7 @@ export default function AssessmentTab({
                           </div>
 
                           {/* Student Personal Data metadata */}
-                          <div className={`grid grid-cols-2 lg:grid-cols-6 ${scaling.metaPadding} bg-slate-50 rounded-xl text-xs leading-relaxed border border-slate-100`}>
+                          <div className={`grid grid-cols-2 lg:grid-cols-6 ${scaling.metaPadding} bg-slate-50 rounded-xl text-xs leading-relaxed border border-slate-100 text-center`}>
                             <div>
                               <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Student ID</span>
                               <strong className={`text-slate-800 font-mono ${scaling.metaValSize}`}>{student.id}</strong>
@@ -3805,53 +4212,59 @@ export default function AssessmentTab({
                           </table>
 
                           {/* Report Card Aggregates Footer summary */}
-                          <div className={`grid grid-cols-2 md:grid-cols-4 gap-4 ${scaling.footerSpacing} border-t border-slate-200 text-xs text-center font-mono leading-relaxed`}>
-                            <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
-                              <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Subjects Graded</span>
-                              <strong className="text-slate-800 text-sm">{report.totalSubjects} courses</strong>
-                            </div>
-                            <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
-                              <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Term Average Score</span>
-                              <strong className="text-slate-800 text-sm italic">{report.averageScore}%</strong>
-                            </div>
-                            <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
-                              <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Attendance / School Open</span>
-                              <strong className="text-slate-800 text-sm font-sans">{report.attendancePresent} / {report.schoolOpenDays} Days Present</strong>
-                            </div>
-                            <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
-                              <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Grade Rating</span>
-                              <strong className="text-slate-800 text-sm">GES Certified</strong>
-                            </div>
-                          </div>
+                          {(() => {
+                            const rawSum = report.grades.reduce((sum, g) => sum + (g.totalScore || 0), 0);
+                            const maxPossible = report.grades.length * 100;
+                            const rawAvg = report.grades.length > 0 ? parseFloat((rawSum / report.grades.length).toFixed(2)) : 0;
+                            return (
+                              <div className={`grid grid-cols-2 md:grid-cols-4 gap-2.5 ${scaling.footerSpacing} border-t border-slate-200 text-xs text-center font-mono leading-relaxed`}>
+                                <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
+                                  <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Subjects Graded</span>
+                                  <strong className="text-slate-800 text-sm">{report.totalSubjects} courses</strong>
+                                </div>
+                                <div className="bg-indigo-50/60 p-2 rounded-lg border border-indigo-100">
+                                  <span className="text-indigo-600 font-sans block text-[10px] uppercase font-bold">Total Raw Score</span>
+                                  <strong className="text-indigo-900 text-sm font-black">{rawSum} / {maxPossible}</strong>
+                                </div>
+                                <div className="bg-emerald-50/60 p-2 rounded-lg border border-emerald-100">
+                                  <span className="text-emerald-700 font-sans block text-[10px] uppercase font-bold">Total Raw Score Avg</span>
+                                  <strong className="text-emerald-900 text-sm font-black">{rawAvg}%</strong>
+                                </div>
+                                <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
+                                  <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Attendance</span>
+                                  <strong className="text-slate-800 text-sm font-sans">{report.attendancePresent} / {report.schoolOpenDays} Days</strong>
+                                </div>
+                              </div>
+                            );
+                          })()}
 
                           {/* Financial Ledger Section */}
                           {financials && (
-                            <div className={`${scaling.financialSpacing} bg-slate-50 border border-slate-200/80 rounded-xl font-sans text-xs flex flex-col md:flex-row justify-between leading-normal print:bg-white print:border-slate-300 report-card-financial-ledger`}>
-                              <div className="space-y-1">
-                                <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Current Balance Status</div>
-                                <div className="flex items-baseline gap-2">
-                                  <span className={`text-base font-black ${financials.totalOutstanding > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
-                                    GHS {financials.totalOutstanding.toFixed(2)}
-                                  </span>
-                                  {financials.totalOutstanding > 0 && financials.previousOutstanding > 0 && (
-                                    <span className="text-[10px] text-slate-400">
-                                      (Term: GHS {financials.currentOutstanding.toFixed(2)} | Arrears: GHS {financials.previousOutstanding.toFixed(2)})
+                            <div className={`${scaling.financialSpacing} bg-slate-50 border border-slate-200/80 rounded-xl p-2.5 font-sans text-xs flex flex-col sm:flex-row items-center justify-between gap-3 leading-normal print:bg-white print:border-slate-300 report-card-financial-ledger`}>
+                              <div className="flex items-center gap-4">
+                                <div className="space-y-0.5">
+                                  <div className="text-slate-500 uppercase tracking-wider text-[8.5px] font-black">Current Balance</div>
+                                  <div className="flex items-baseline gap-1.5">
+                                    <span className={`text-sm font-black ${financials.totalOutstanding > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
+                                      GHS {financials.totalOutstanding.toFixed(2)}
                                     </span>
-                                  )}
+                                  </div>
                                 </div>
-                                <div className="text-[10px] text-slate-400 font-sans">Outstanding student balance of registered accounts ledger.</div>
+                                <div className="h-6 w-px bg-slate-200" />
+                                <div className="space-y-0.5">
+                                  <div className="text-slate-500 uppercase tracking-wider text-[8.5px] font-black">Next Term Projected Bill ({financials.nextTerm})</div>
+                                  <div className="flex items-baseline gap-1">
+                                    <span className="text-sm font-bold text-slate-800">
+                                      GHS {financials.nextTermBillSum.toFixed(2)}
+                                    </span>
+                                    {financials.isEstimated && (
+                                      <span className="text-[8px] bg-slate-200 text-slate-600 px-1 py-0.2 rounded font-black font-mono">Est</span>
+                                    )}
+                                  </div>
+                                </div>
                               </div>
-                              <div className="border-t md:border-t-0 md:border-l border-slate-250 md:pl-6 pt-3 md:pt-0 space-y-1">
-                                <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Next Term Projected Bill ({financials.nextTerm}, {financials.nextYear})</div>
-                                <div className="flex items-baseline gap-1.5">
-                                  <span className="text-base font-bold text-slate-800">
-                                    GHS {financials.nextTermBillSum.toFixed(2)}
-                                  </span>
-                                  {financials.isEstimated && (
-                                    <span className="text-[9px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded font-black font-mono">Estimated Rate</span>
-                                  )}
-                                </div>
-                                <div className="text-[10px] text-slate-400 font-sans">Projected billing plan for the upcoming academic module term.</div>
+                              <div className="text-[9px] text-slate-400 font-medium text-right hidden sm:block">
+                                Accounts Ledger &amp; Upcoming Bill
                               </div>
                             </div>
                           )}
@@ -4084,7 +4497,7 @@ export default function AssessmentTab({
                 </div>
 
                 {/* Student Personal Data metadata */}
-                <div className={`grid grid-cols-2 lg:grid-cols-6 ${getReportCardScaling(sortedGrades.length).metaPadding} bg-slate-50 rounded-xl text-xs leading-relaxed border border-slate-100`}>
+                <div className={`grid grid-cols-2 lg:grid-cols-6 ${getReportCardScaling(sortedGrades.length).metaPadding} bg-slate-50 rounded-xl text-xs leading-relaxed border border-slate-100 text-center`}>
                   <div>
                     <span className="text-[10px] uppercase text-slate-400 font-mono font-medium block">Student ID</span>
                     <strong className={`text-slate-800 font-mono ${getReportCardScaling(sortedGrades.length).metaValSize}`}>{compiledReport.student.id}</strong>
@@ -4167,53 +4580,59 @@ export default function AssessmentTab({
                 </table>
 
                 {/* Report Card Aggregates Footer summary */}
-                <div className={`grid grid-cols-2 md:grid-cols-4 gap-4 ${getReportCardScaling(sortedGrades.length).footerSpacing} border-t border-slate-200 text-xs text-center font-mono leading-relaxed`}>
-                  <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
-                    <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Subjects Graded</span>
-                    <strong className="text-slate-800 text-sm">{compiledReport.totalSubjects} courses</strong>
-                  </div>
-                  <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
-                    <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Term Average Score</span>
-                    <strong className="text-slate-800 text-sm italic">{compiledReport.averageScore}%</strong>
-                  </div>
-                  <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
-                    <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Attendance / School Open</span>
-                    <strong className="text-slate-800 text-sm font-sans">{compiledReport.attendancePresent} / {compiledReport.schoolOpenDays} Days Present</strong>
-                  </div>
-                  <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
-                    <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Grade Rating</span>
-                    <strong className="text-slate-800 text-sm uppercase">GES Certified</strong>
-                  </div>
-                </div>
+                {(() => {
+                  const rawSum = sortedGrades.reduce((sum, g) => sum + (g.totalScore || 0), 0);
+                  const maxPossible = sortedGrades.length * 100;
+                  const rawAvg = sortedGrades.length > 0 ? parseFloat((rawSum / sortedGrades.length).toFixed(2)) : 0;
+                  return (
+                    <div className={`grid grid-cols-2 md:grid-cols-4 gap-2.5 ${getReportCardScaling(sortedGrades.length).footerSpacing} border-t border-slate-200 text-xs text-center font-mono leading-relaxed`}>
+                      <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
+                        <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Subjects Graded</span>
+                        <strong className="text-slate-800 text-sm">{compiledReport.totalSubjects} courses</strong>
+                      </div>
+                      <div className="bg-indigo-50/60 p-2 rounded-lg border border-indigo-100">
+                        <span className="text-indigo-600 font-sans block text-[10px] uppercase font-bold">Total Raw Score</span>
+                        <strong className="text-indigo-900 text-sm font-black">{rawSum} / {maxPossible}</strong>
+                      </div>
+                      <div className="bg-emerald-50/60 p-2 rounded-lg border border-emerald-100">
+                        <span className="text-emerald-700 font-sans block text-[10px] uppercase font-bold">Total Raw Score Avg</span>
+                        <strong className="text-emerald-900 text-sm font-black">{rawAvg}%</strong>
+                      </div>
+                      <div className="bg-slate-50/50 p-2 rounded-lg border border-slate-100">
+                        <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Attendance</span>
+                        <strong className="text-slate-800 text-sm font-sans">{compiledReport.attendancePresent} / {compiledReport.schoolOpenDays} Days</strong>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Financial Ledger Section */}
                 {studentFinancials && (
-                  <div className={`${getReportCardScaling(sortedGrades.length).financialSpacing} bg-slate-50 border border-slate-200/80 rounded-xl font-sans text-xs flex flex-col md:flex-row justify-between leading-normal print:bg-white print:border-slate-300 report-card-financial-ledger`}>
-                    <div className="space-y-1">
-                      <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Current Balance Status</div>
-                      <div className="flex items-baseline gap-2">
-                        <span className={`text-base font-black ${studentFinancials.totalOutstanding > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
-                          GHS {studentFinancials.totalOutstanding.toFixed(2)}
-                        </span>
-                        {studentFinancials.totalOutstanding > 0 && studentFinancials.previousOutstanding > 0 && (
-                          <span className="text-[10px] text-slate-400">
-                            (Term: GHS {studentFinancials.currentOutstanding.toFixed(2)} | Arrears: GHS {studentFinancials.previousOutstanding.toFixed(2)})
+                  <div className={`${getReportCardScaling(sortedGrades.length).financialSpacing} bg-slate-50 border border-slate-200/80 rounded-xl p-2.5 font-sans text-xs flex flex-col sm:flex-row items-center justify-between gap-3 leading-normal print:bg-white print:border-slate-300 report-card-financial-ledger`}>
+                    <div className="flex items-center gap-4">
+                      <div className="space-y-0.5">
+                        <div className="text-slate-500 uppercase tracking-wider text-[8.5px] font-black">Current Balance</div>
+                        <div className="flex items-baseline gap-1.5">
+                          <span className={`text-sm font-black ${studentFinancials.totalOutstanding > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
+                            GHS {studentFinancials.totalOutstanding.toFixed(2)}
                           </span>
-                        )}
+                        </div>
                       </div>
-                      <div className="text-[10px] text-slate-400">Outstanding student balance of registered accounts ledger.</div>
+                      <div className="h-6 w-px bg-slate-200" />
+                      <div className="space-y-0.5">
+                        <div className="text-slate-500 uppercase tracking-wider text-[8.5px] font-black">Next Term Projected Bill ({studentFinancials.nextTerm})</div>
+                        <div className="flex items-baseline gap-1">
+                          <span className="text-sm font-bold text-slate-800">
+                            GHS {studentFinancials.nextTermBillSum.toFixed(2)}
+                          </span>
+                          {studentFinancials.isEstimated && (
+                            <span className="text-[8px] bg-slate-200 text-slate-600 px-1 py-0.2 rounded font-black font-mono">Est</span>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                    <div className="border-t md:border-t-0 md:border-l border-slate-250 md:pl-6 pt-3 md:pt-0 space-y-1">
-                      <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Next Term Projected Bill ({studentFinancials.nextTerm}, {studentFinancials.nextYear})</div>
-                      <div className="flex items-baseline gap-1.5">
-                        <span className="text-base font-bold text-slate-800">
-                          GHS {studentFinancials.nextTermBillSum.toFixed(2)}
-                        </span>
-                        {studentFinancials.isEstimated && (
-                          <span className="text-[9px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded font-black font-mono">Estimated Rate</span>
-                        )}
-                      </div>
-                      <div className="text-[10px] text-slate-400">Projected billing plan for the upcoming academic module term.</div>
+                    <div className="text-[9px] text-slate-400 font-medium text-right hidden sm:block">
+                      Accounts Ledger &amp; Upcoming Bill
                     </div>
                   </div>
                 )}
@@ -4295,7 +4714,10 @@ export default function AssessmentTab({
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] bg-indigo-50 border border-indigo-100 text-indigo-700 px-2.5 py-1 rounded-full font-semibold">Class: {selectedClass}</span>
                   <span className="text-[10px] bg-teal-50 border border-teal-100 text-teal-700 px-2.5 py-1 rounded-full font-semibold">Subject: {selectedSubject}</span>
-                  {isAutoSave && <span className="text-[10px] bg-emerald-50 border border-emerald-100 text-emerald-700 px-2.5 py-1 rounded-full font-semibold">Auto-Save Active</span>}
+                  <span className="text-[10px] bg-emerald-50 border border-emerald-200 text-emerald-700 px-2.5 py-1 rounded-full font-bold flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    Cloud Firestore Linked
+                  </span>
                   <button
                     type="button"
                     onClick={() => handlePrintElement('marks-input-sheet-table-container', 'Marks Input Sheet', true)}
@@ -4495,19 +4917,7 @@ export default function AssessmentTab({
                 )}
               </div>
 
-              {!isAutoSave && (
-                <div className="w-full mt-5 flex justify-end">
-                  <button
-                    onClick={() => {
-                      handleManualSave();
-                      setWorksheetPreviewMode(false);
-                    }}
-                    className={`flex items-center gap-1.5 px-6 py-2.5 rounded-xl font-black shadow-md cursor-pointer active:translate-y-0.5 transition ${theme.btnColors}`}
-                  >
-                    <Save size={14} /> Save Academic Marks & Exit
-                  </button>
-                </div>
-              )}
+
             </div>
           </div>
         )}
@@ -4771,7 +5181,7 @@ export default function AssessmentTab({
                   {/* GES Guidelines Map */}
                   <div className="bg-slate-100 border border-slate-200 rounded-xl p-5 space-y-4">
                     <h4 className="font-bold text-slate-700 flex items-center gap-1 uppercase text-xs tracking-wide">
-                      <Sparkles className="text-amber-550" size={14} /> GES Framework Guidelines
+                      <BookOpen className="text-amber-550" size={14} /> GES Framework Guidelines
                     </h4>
                     <div className="space-y-2.5 text-[11px] leading-relaxed">
                       <div className="flex items-start gap-2">
@@ -5418,7 +5828,7 @@ export default function AssessmentTab({
             {/* GES Guidelines Map */}
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 space-y-4 shadow-2xs">
               <h4 className="font-bold text-slate-700 flex items-center gap-1">
-                <Sparkles className="text-amber-500" size={15} /> GES New Curriculum Guidelines
+                <BookOpen className="text-amber-500" size={15} /> GES New Curriculum Guidelines
               </h4>
               <div className="space-y-2.5 text-[11px] leading-relaxed">
                 <div className="flex items-start gap-2">
@@ -6162,7 +6572,7 @@ export default function AssessmentTab({
                 <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-2xs space-y-4">
                   <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                     <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
-                      <Sparkles className="text-emerald-500" size={15} /> Academic Strengths & Mastery Areas
+                      <Award className="text-emerald-500" size={15} /> Academic Strengths & Mastery Areas
                     </h4>
                     <span className="font-mono bg-emerald-55 rounded px-2 py-0.5 text-[10px] font-bold text-emerald-700">
                       Top Performance
@@ -7175,22 +7585,31 @@ export default function AssessmentTab({
               </table>
 
               {/* Summary blocks */}
-              {compiledReport && (
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="bg-slate-50 p-3 border border-slate-200 rounded-lg text-center">
-                    <span className="text-[10px] text-slate-400 uppercase font-semibold block">Total Courses</span>
-                    <strong className="text-sm text-slate-800">{compiledReport.totalSubjects} graded</strong>
+              {compiledReport && (() => {
+                const rawSum = sortedGrades.reduce((sum, g) => sum + (g.totalScore || 0), 0);
+                const maxPossible = sortedGrades.length * 100;
+                const rawAvg = sortedGrades.length > 0 ? parseFloat((rawSum / sortedGrades.length).toFixed(2)) : 0;
+                return (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+                    <div className="bg-slate-50 p-2.5 border border-slate-200 rounded-lg text-center">
+                      <span className="text-[10px] text-slate-400 uppercase font-semibold block">Total Courses</span>
+                      <strong className="text-sm text-slate-800">{compiledReport.totalSubjects} graded</strong>
+                    </div>
+                    <div className="bg-indigo-50/60 p-2.5 border border-indigo-100 rounded-lg text-center">
+                      <span className="text-[10px] text-indigo-600 uppercase font-bold block">Total Raw Score</span>
+                      <strong className="text-sm font-black text-indigo-900">{rawSum} / {maxPossible}</strong>
+                    </div>
+                    <div className="bg-emerald-50/60 p-2.5 border border-emerald-100 rounded-lg text-center">
+                      <span className="text-[10px] text-emerald-700 uppercase font-bold block">Total Raw Score Avg</span>
+                      <strong className="text-sm font-black text-emerald-900">{rawAvg}%</strong>
+                    </div>
+                    <div className="bg-slate-50 p-2.5 border border-slate-200 rounded-lg text-center">
+                      <span className="text-[10px] text-slate-400 uppercase font-semibold block">Average Score</span>
+                      <strong className="text-sm text-indigo-700">{compiledReport.averageScore.toFixed(1)}%</strong>
+                    </div>
                   </div>
-                  <div className="bg-slate-50 p-3 border border-slate-200 rounded-lg text-center">
-                    <span className="text-[10px] text-slate-400 uppercase font-semibold block">Average Score</span>
-                    <strong className="text-sm text-indigo-700">{compiledReport.averageScore.toFixed(1)}%</strong>
-                  </div>
-                  <div className="bg-slate-50 p-3 border border-slate-200 rounded-lg text-center">
-                    <span className="text-[10px] text-slate-400 uppercase font-semibold block">Grade Rating</span>
-                    <strong className="text-sm text-emerald-800 uppercase">GES Standard</strong>
-                  </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Financial Ledger Section */}
               {studentFinancials && (
@@ -8301,7 +8720,7 @@ export default function AssessmentTab({
                         }`}
                       >
                         <span className="flex items-center gap-1.5">
-                          <Sparkles size={11} className={isAutoFitA4 ? "text-emerald-400" : "text-slate-500"} />
+                          <CheckSquare size={11} className={isAutoFitA4 ? "text-emerald-400" : "text-slate-500"} />
                           <span>Scale rows & layout elements</span>
                         </span>
                         <span className={`text-[9px] px-1.5 py-0.5 rounded font-black ${
@@ -8353,7 +8772,7 @@ export default function AssessmentTab({
                   </div>
 
                   {/* High fidelity simulation contents */}
-                  <div className="h-full flex flex-col justify-between font-sans relative text-left">
+                  <div className="h-full flex flex-col justify-between font-sans relative text-center mx-auto">
                     
                     {/* Header Structure */}
                     <div>
@@ -8419,7 +8838,7 @@ export default function AssessmentTab({
                       </div>
 
                       {/* Metadata Cards */}
-                      <div className={`grid grid-cols-4 gap-2.5 bg-slate-50/50 rounded-lg border border-slate-100 ${
+                      <div className={`grid grid-cols-4 gap-2.5 bg-slate-50/50 rounded-lg border border-slate-100 text-center ${
                         isAutoFitA4 && maxSubjectsToPrint > 7 ? 'mt-2 p-1.5 text-[8.5px]' : 'mt-3 p-2.5 text-[10px]'
                       }`}>
                         <div>
@@ -8499,47 +8918,60 @@ export default function AssessmentTab({
                       isAutoFitA4 && maxSubjectsToPrint > 7 ? 'mt-2 pt-2 space-y-2' : 'mt-4 pt-3 space-y-3'
                     }`}>
                       {/* Course statistics card */}
-                      <div className={`grid grid-cols-4 gap-2 text-center ${
-                        isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8.5px]' : 'text-[9px]'
-                      }`}>
-                        <div className={`bg-slate-50 p-1 rounded border border-slate-100 text-slate-600 leading-normal ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5' : ''}`}>
-                          <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[7.5px]'} uppercase text-slate-400 block font-mono`}>Total Courses</span>
-                          <strong className={`text-slate-800 font-mono leading-tight ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8.5px]' : 'text-[10px]'}`}>{compiledReport.totalSubjects}</strong>
-                        </div>
-                        <div className={`bg-slate-50 p-1 rounded border border-slate-100 text-slate-600 leading-normal ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5' : ''}`}>
-                          <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[7.5px]'} uppercase text-slate-400 block font-mono`}>Weighted Average</span>
-                          <strong className={`text-slate-800 font-mono leading-tight ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8.5px]' : 'text-[10px]'}`}>{compiledReport.averageScore}%</strong>
-                        </div>
-                        <div className={`bg-slate-50 p-1 rounded border border-slate-100 text-slate-600 leading-normal ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5' : ''}`}>
-                          <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[7.5px]'} uppercase text-slate-400 block font-mono`}>Total Attendance</span>
-                          <strong className={`text-slate-800 leading-tight ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8px]' : 'text-[9px]'}`}>{compiledReport.attendancePresent} / {compiledReport.schoolOpenDays} days</strong>
-                        </div>
-                        <div className={`bg-slate-50 p-1 rounded border border-slate-100 text-indigo-750 leading-normal ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5' : ''}`}>
-                          <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[7.5px]'} uppercase text-indigo-400 block font-mono`}>Academic Status</span>
-                          <strong className={`text-indigo-805 uppercase leading-tight font-bold ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8px]' : 'text-[9px]'}`}>GES Certified</strong>
-                        </div>
-                      </div>
+                      {(() => {
+                        const rawSum = compiledReport.grades.reduce((sum, g) => sum + (g.totalScore || 0), 0);
+                        const maxPossible = compiledReport.grades.length * 100;
+                        const rawAvg = compiledReport.grades.length > 0 ? parseFloat((rawSum / compiledReport.grades.length).toFixed(2)) : 0;
+                        return (
+                          <div className={`grid grid-cols-2 md:grid-cols-4 gap-2 text-center ${
+                            isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8.5px]' : 'text-[9px]'
+                          }`}>
+                            <div className={`bg-slate-50 p-1 rounded border border-slate-100 text-slate-600 leading-normal ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5' : ''}`}>
+                              <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[7.5px]'} uppercase text-slate-400 block font-mono`}>Total Courses</span>
+                              <strong className={`text-slate-800 font-mono leading-tight ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8.5px]' : 'text-[10px]'}`}>{compiledReport.totalSubjects}</strong>
+                            </div>
+                            <div className={`bg-indigo-50/60 p-1 rounded border border-indigo-100 text-indigo-900 leading-normal ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5' : ''}`}>
+                              <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[7.5px]'} uppercase text-indigo-600 block font-mono font-bold`}>Total Raw Score</span>
+                              <strong className={`text-indigo-950 font-mono font-black leading-tight ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8.5px]' : 'text-[10px]'}`}>{rawSum} / {maxPossible}</strong>
+                            </div>
+                            <div className={`bg-emerald-50/60 p-1 rounded border border-emerald-100 text-emerald-900 leading-normal ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5' : ''}`}>
+                              <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[7.5px]'} uppercase text-emerald-700 block font-mono font-bold`}>Total Raw Avg</span>
+                              <strong className={`text-emerald-950 font-mono font-black leading-tight ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8.5px]' : 'text-[10px]'}`}>{rawAvg}%</strong>
+                            </div>
+                            <div className={`bg-slate-50 p-1 rounded border border-slate-100 text-slate-600 leading-normal ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'py-0.5' : ''}`}>
+                              <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[7.5px]'} uppercase text-slate-400 block font-mono`}>Attendance</span>
+                              <strong className={`text-slate-800 leading-tight ${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8px]' : 'text-[9px]'}`}>{compiledReport.attendancePresent} / {compiledReport.schoolOpenDays} d</strong>
+                            </div>
+                          </div>
+                        );
+                      })()}
 
                       {/* Direct Ledger Integration */}
                       {studentFinancials && (
-                        <div className={`grid grid-cols-2 gap-3.5 bg-slate-100/40 p-2 text-slate-650 leading-normal border border-slate-200 rounded-lg ${
-                          isAutoFitA4 && maxSubjectsToPrint > 7 ? 'p-1.5' : ''
+                        <div className={`flex items-center justify-between gap-3 bg-slate-100/40 p-1.5 text-slate-650 leading-normal border border-slate-200 rounded-lg ${
+                          isAutoFitA4 && maxSubjectsToPrint > 7 ? 'p-1' : ''
                         }`}>
-                          <div>
-                            <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[7.5px]'} uppercase text-slate-500 font-mono block`}>Current Balance status</span>
-                            <strong className={`${studentFinancials.totalOutstanding > 0 ? 'text-rose-700' : 'text-emerald-700'} font-bold ${
-                              isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8.5px]' : 'text-[9.5px]'
-                            }`}>
-                              GHS {studentFinancials.totalOutstanding.toFixed(2)}
-                            </strong>
-                            <div className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[6.5px]' : 'text-[7px]'} text-slate-400 leading-none mt-0.5`}>Includes outstanding system invoice history.</div>
+                          <div className="flex items-center gap-3">
+                            <div className="space-y-0.2">
+                              <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[6.5px]' : 'text-[7px]'} uppercase text-slate-500 font-mono block`}>Current Balance</span>
+                              <strong className={`${studentFinancials.totalOutstanding > 0 ? 'text-rose-700' : 'text-emerald-700'} font-bold ${
+                                isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8px]' : 'text-[9px]'
+                              }`}>
+                                GHS {studentFinancials.totalOutstanding.toFixed(2)}
+                              </strong>
+                            </div>
+                            <div className="h-4 w-px bg-slate-250" />
+                            <div className="space-y-0.2">
+                              <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[6.5px]' : 'text-[7px]'} uppercase text-slate-500 font-mono block`}>Next Term Projected Bill</span>
+                              <strong className={`text-slate-800 font-bold ${
+                                isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8px]' : 'text-[9px]'
+                              }`}>
+                                GHS {studentFinancials.nextTermBillSum.toFixed(2)}
+                              </strong>
+                            </div>
                           </div>
-                          <div>
-                            <span className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[7px]' : 'text-[7.5px]'} uppercase text-slate-500 font-mono block`}>Estimated Next Term Projected</span>
-                            <strong className={`text-slate-800 font-bold ${
-                              isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[8.5px]' : 'text-[9.5px]'
-                            }`}>GHS {studentFinancials.nextTermBillSum.toFixed(2)}</strong>
-                            <div className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[6.5px]' : 'text-[7px]'} text-slate-400 leading-none mt-0.5 font-sans`}>Next reopens: {formatReopeningDate(DbController.getSchoolInfo().reopeningDate)}</div>
+                          <div className={`${isAutoFitA4 && maxSubjectsToPrint > 7 ? 'text-[6px]' : 'text-[6.5px]'} text-slate-400 font-mono text-right hidden sm:block`}>
+                            Ledger Balance &amp; Projected Fees
                           </div>
                         </div>
                       )}
@@ -8890,7 +9322,7 @@ export default function AssessmentTab({
                   const nextLimits = { ...subjectLimits };
                   delete nextLimits[selectedSubject];
                   setSubjectLimits(nextLimits);
-                  localStorage.setItem('school_subject_mark_limits', JSON.stringify(nextLimits));
+                  DbController.saveSubjectMarkLimits(nextLimits);
                 }}
                 className="px-4 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50 rounded-lg transition"
               >
@@ -8951,6 +9383,407 @@ export default function AssessmentTab({
         </div>
       </div>
     )}
+
+    {/* MANAGE CLASS SELECTIONS MODAL */}
+    {showClassManagerModal && (
+      <div 
+        onClick={(e) => {
+          if (e.target === e.currentTarget) setShowClassManagerModal(false);
+        }}
+        className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[90] p-4 no-print animate-fade-in"
+      >
+        <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-slate-100 overflow-hidden text-left flex flex-col max-h-[85vh] animate-scale-up">
+          {/* Header */}
+          <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/70">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold">
+                <GraduationCap size={18} />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 font-sans">
+                  Manage Class Selections
+                </h3>
+                <p className="text-[11px] text-slate-500">
+                  View, create, select, and manage active class categories for your school
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowClassManagerModal(false)}
+              className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          {/* Content body */}
+          <div className="p-5 space-y-4 overflow-y-auto flex-1">
+            {/* Add New Class form */}
+            <div className="p-3.5 bg-indigo-50/70 border border-indigo-200/80 rounded-xl space-y-2">
+              <label className="block text-xs font-bold text-indigo-900">
+                Add New Class Category
+              </label>
+              <p className="text-[10.5px] text-indigo-700/80">
+                Add a custom class or grade level (e.g. Nursery 3, Grade 7, Form 1, JHS 1)
+              </p>
+              <form 
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleAddClassFromModal(e);
+                }}
+                className="flex gap-2 pt-1"
+              >
+                <input
+                  type="text"
+                  value={newManagerClassName}
+                  onChange={(e) => setNewManagerClassName(e.target.value)}
+                  placeholder="Enter new class name..."
+                  className="flex-1 px-3 py-2 text-xs border border-indigo-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-800 placeholder:text-slate-400"
+                />
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white font-bold rounded-lg text-xs transition cursor-pointer shrink-0 shadow-xs flex items-center gap-1.5"
+                >
+                  <Plus size={13} />
+                  <span>Add Class</span>
+                </button>
+              </form>
+            </div>
+
+            {/* Classes List */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs font-bold text-slate-600 px-1">
+                <span>Registered Classes ({allClassesList.length})</span>
+                <span className="text-[10px] text-slate-400 font-normal">Click select to switch assessment class</span>
+              </div>
+
+              <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                {allClassesList.map((cls) => {
+                  const isCore = CLASSES.includes(cls as any);
+                  const isCurrent = cls === selectedClass;
+                  const enrolledCount = students.filter(s => s.class === cls).length;
+                  return (
+                    <div
+                      key={cls}
+                      className={`flex items-center justify-between p-2.5 rounded-xl border transition ${
+                        isCurrent
+                          ? 'bg-indigo-50/60 border-indigo-300 shadow-2xs'
+                          : !isCore 
+                            ? 'bg-amber-50/40 border-amber-200/80 hover:border-amber-300 shadow-2xs' 
+                            : 'bg-white border-slate-200 hover:border-slate-300 shadow-2xs'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <span className={`px-2.5 py-1 rounded-lg text-xs font-bold ${
+                          isCurrent
+                            ? 'bg-indigo-600 text-white'
+                            : !isCore 
+                              ? 'bg-amber-100 text-amber-900 border border-amber-200' 
+                              : 'bg-indigo-100 text-indigo-800'
+                        }`}>
+                          {cls}
+                        </span>
+                        <div>
+                          <p className="text-[11px] font-semibold text-slate-700 flex items-center gap-1.5">
+                            <span>{!isCore ? `${cls} (Custom Category)` : `${cls} (GES Standard)`}</span>
+                            {isCurrent && (
+                              <span className="text-[9px] px-1.5 py-0.2 rounded bg-indigo-100 text-indigo-700 font-bold">
+                                Active
+                              </span>
+                            )}
+                          </p>
+                          <p className="text-[10px] text-slate-400">
+                            {enrolledCount} enrolled student{enrolledCount === 1 ? '' : 's'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        {!isCurrent ? (
+                          <button
+                            type="button"
+                            onClick={() => handleSelectClass(cls)}
+                            className="px-2.5 py-1 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 border border-indigo-200 rounded-lg text-xs font-bold transition cursor-pointer"
+                          >
+                            Select
+                          </button>
+                        ) : (
+                          <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                            ✓ Selected
+                          </span>
+                        )}
+
+                        {!isCore && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteClass(cls)}
+                            className="p-1.5 px-2 text-rose-600 hover:text-rose-800 hover:bg-rose-50 rounded-lg transition cursor-pointer border border-rose-200 flex items-center gap-1 text-[11px] font-bold"
+                            title={`Remove custom class "${cls}"`}
+                          >
+                            <Trash2 size={12} />
+                            <span>Remove</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Information Note */}
+            <div className="p-3 bg-indigo-50/70 border border-indigo-200/80 rounded-xl text-[10.5px] text-indigo-900 leading-relaxed">
+              <strong>Assessment Class Note:</strong> Classes created here appear across the entire school management system including student profiles, registers, assessment sheets, and terminal broadsheets.
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="p-4 border-t border-slate-100 bg-slate-50/50 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setShowClassManagerModal(false)}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition cursor-pointer"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* MANAGE SUBJECT SELECTIONS MODAL */}
+    {showSubjectManagerModal && (
+      <div 
+        onClick={(e) => {
+          if (e.target === e.currentTarget) setShowSubjectManagerModal(false);
+        }}
+        className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[90] p-4 no-print animate-fade-in"
+      >
+        <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-slate-100 overflow-hidden text-left flex flex-col max-h-[85vh] animate-scale-up">
+          {/* Header */}
+          <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/70">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold">
+                <BookOpen size={18} />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 font-sans">
+                  Manage Subject Selections
+                </h3>
+                <p className="text-[11px] text-slate-500">
+                  View, create, select, and manage curriculum subject courses for your school
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowSubjectManagerModal(false)}
+              className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          {/* Content body */}
+          <div className="p-5 space-y-4 overflow-y-auto flex-1">
+            {/* Add New Subject form */}
+            <div className="p-3.5 bg-indigo-50/70 border border-indigo-200/80 rounded-xl space-y-2">
+              <label className="block text-xs font-bold text-indigo-900">
+                Add New Subject Course
+              </label>
+              <p className="text-[10.5px] text-indigo-700/80">
+                Introduce a custom subject course (e.g. Physical Education, Arabic, Music, Twi, Ga, Robotics)
+              </p>
+              <form 
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleAddSubjectFromModal(e);
+                }}
+                className="flex gap-2 pt-1"
+              >
+                <input
+                  type="text"
+                  value={newManagerSubjectName}
+                  onChange={(e) => setNewManagerSubjectName(e.target.value)}
+                  placeholder="Enter new subject name..."
+                  className="flex-1 px-3 py-2 text-xs border border-indigo-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-800 placeholder:text-slate-400"
+                />
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white font-bold rounded-lg text-xs transition cursor-pointer shrink-0 shadow-xs flex items-center gap-1.5"
+                >
+                  <Plus size={13} />
+                  <span>Add Subject</span>
+                </button>
+              </form>
+            </div>
+
+            {/* CSV / Bulk-List Import Section */}
+            <div className="p-3.5 bg-emerald-50/70 border border-emerald-200/80 rounded-xl space-y-2.5">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold text-emerald-900 flex items-center gap-1.5">
+                  <FileSpreadsheet size={14} className="text-emerald-700" />
+                  <span>Import CSV or Bulk List (Active Term: {selectedTerm} - {selectedYear})</span>
+                </label>
+                <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[9px] font-bold">
+                  Auto-Mapped
+                </span>
+              </div>
+              <p className="text-[10.5px] text-emerald-700/80 leading-relaxed">
+                Upload a CSV file containing subject names or paste a bulk list separated by commas or newlines. All imported subjects are automatically mapped to the active academic term.
+              </p>
+
+              {/* CSV File Upload Button */}
+              <div className="flex items-center gap-2">
+                <input
+                  type="file"
+                  accept=".csv, .txt"
+                  ref={importSubjectFileInputRef}
+                  onChange={handleImportSubjectsCsv}
+                  className="hidden"
+                  id="csv-subject-assessment-input"
+                />
+                <label
+                  htmlFor="csv-subject-assessment-input"
+                  className="flex-1 px-3 py-2 bg-white hover:bg-emerald-100/50 text-emerald-800 border border-emerald-300 rounded-lg text-xs font-bold cursor-pointer transition flex items-center justify-center gap-1.5 shadow-2xs"
+                >
+                  <Upload size={13} />
+                  <span>Upload CSV Subject File</span>
+                </label>
+              </div>
+
+              {/* Bulk Textarea */}
+              <div className="space-y-1 pt-1">
+                <textarea
+                  rows={2}
+                  value={bulkSubjectText}
+                  onChange={(e) => setBulkSubjectText(e.target.value)}
+                  placeholder="Or paste bulk list (e.g. Agricultural Science, Government, Literature, Accounting)..."
+                  className="w-full px-3 py-2 text-xs border border-emerald-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 font-semibold text-slate-800 placeholder:text-slate-400"
+                />
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={handleBulkAddSubjectsText}
+                    className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold rounded-lg text-xs transition cursor-pointer shadow-xs flex items-center gap-1"
+                  >
+                    <Plus size={13} />
+                    <span>Import Bulk List</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Subjects List */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs font-bold text-slate-600 px-1">
+                <span>Registered Subjects ({allSubjectsList.length})</span>
+                <span className="text-[10px] text-slate-400 font-normal">Click select to switch assessment subject</span>
+              </div>
+
+              <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                {allSubjectsList.map((subj) => {
+                  const isCore = SUBJECTS.includes(subj as any);
+                  const isCurrent = subj === selectedSubject;
+                  return (
+                    <div
+                      key={subj}
+                      className={`flex items-center justify-between p-2.5 rounded-xl border transition ${
+                        isCurrent
+                          ? 'bg-indigo-50/60 border-indigo-300 shadow-2xs'
+                          : !isCore 
+                            ? 'bg-amber-50/40 border-amber-200/80 hover:border-amber-300 shadow-2xs' 
+                            : 'bg-white border-slate-200 hover:border-slate-300 shadow-2xs'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <span className={`px-2.5 py-1 rounded-lg text-xs font-bold ${
+                          isCurrent
+                            ? 'bg-indigo-600 text-white'
+                            : !isCore 
+                              ? 'bg-amber-100 text-amber-900 border border-amber-200' 
+                              : 'bg-indigo-100 text-indigo-800'
+                        }`}>
+                          {subj}
+                        </span>
+                        <div>
+                          <p className="text-[11px] font-semibold text-slate-700 flex items-center gap-1.5">
+                            <span>{subj}</span>
+                            {!isCore && (
+                              <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 font-bold border border-amber-200">
+                                Custom
+                              </span>
+                            )}
+                            {isCurrent && (
+                              <span className="text-[9px] px-1.5 py-0.2 rounded bg-indigo-100 text-indigo-700 font-bold">
+                                Active
+                              </span>
+                            )}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        {!isCurrent ? (
+                          <button
+                            type="button"
+                            onClick={() => handleSelectSubject(subj)}
+                            className="px-2.5 py-1 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 border border-indigo-200 rounded-lg text-xs font-bold transition cursor-pointer"
+                          >
+                            Select
+                          </button>
+                        ) : (
+                          <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                            ✓ Selected
+                          </span>
+                        )}
+
+                        {!isCore && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteSubject(subj)}
+                            className="p-1.5 px-2 text-rose-600 hover:text-rose-800 hover:bg-rose-50 rounded-lg transition cursor-pointer border border-rose-200 flex items-center gap-1 text-[11px] font-bold"
+                            title={`Remove subject "${subj}"`}
+                          >
+                            <Trash2 size={12} />
+                            <span>Remove</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Information Note */}
+            <div className="p-3 bg-indigo-50/70 border border-indigo-200/80 rounded-xl text-[10.5px] text-indigo-900 leading-relaxed">
+              <strong>Curriculum Note:</strong> New subjects added or imported here appear across the entire school management system including the Assessment worksheets, Terminal Report Cards, and Teacher subject allocations.
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="p-4 border-t border-slate-100 bg-slate-50/50 flex justify-end">
+            <button
+              type="button"
+              onClick={() => setShowSubjectManagerModal(false)}
+              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition cursor-pointer"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+      {/* Academic Year Selection & Calendar Creator Modal */}
+      <AcademicYearModal
+        isOpen={isAddingAcademicYear}
+        onClose={() => setIsAddingAcademicYear(false)}
+        onSelectYear={(yr) => setSelectedYear(yr)}
+        currentYear={selectedYear}
+      />
 
     </div>
   );

@@ -498,32 +498,32 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
         )}
 
         {/* HIGH-FIDELITY REPORT CARD CANVAS CONTAINER */}
-        <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-200 p-0 sm:p-2 bg-gradient-to-br from-white to-slate-50/20 print:border-none print:shadow-none print:p-0 print:bg-white">
+        <div className="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-200 p-0 sm:p-2 bg-gradient-to-br from-white to-slate-50/20 print:border-none print:shadow-none print:p-0 print:bg-white flex justify-center">
           <div 
             id="parent-portal-report-card-render" 
-            className="w-full bg-white p-6 sm:p-12 md:p-16 text-black border-[6px] md:border-[10px] border-double border-slate-900 space-y-6 font-sans text-left report-card-print-container print:p-12 print:border-double relative"
+            className="w-full max-w-[820px] mx-auto bg-white p-6 sm:p-10 md:p-14 text-black border-[6px] md:border-[10px] border-double border-slate-900 space-y-6 font-sans report-card-print-container print:p-10 print:border-double relative box-border"
           >
             <div className="absolute inset-0 z-0 pointer-events-none hidden print:block" dangerouslySetInnerHTML={{ __html: getWatermarkHtml(schoolInfo.crestUrl) }} />
             
             {/* Header / Watermark letterhead */}
-            <div className="flex flex-col sm:flex-row items-center justify-between border-b-2 border-slate-900 pb-5 mb-8 gap-4 font-sans text-left relative z-10">
+            <div className="flex flex-row items-center justify-between border-b-2 border-slate-900 pb-5 mb-6 gap-4 font-sans relative z-10 text-center">
               {schoolInfo.logoUrl ? (
                 <img 
                   src={schoolInfo.logoUrl} 
                   alt="School Logo" 
-                  className="w-20 h-20 object-contain flex-shrink-0" 
+                  className="w-18 h-18 sm:w-20 sm:h-20 object-contain flex-shrink-0" 
                   referrerPolicy="no-referrer"
                 />
               ) : (
-                <div className="w-18 h-18 rounded-full bg-slate-50 flex items-center justify-center border border-slate-300 p-1 flex-shrink-0">
+                <div className="w-16 h-16 sm:w-18 sm:h-18 rounded-full bg-slate-50 flex items-center justify-center border border-slate-300 p-1 flex-shrink-0">
                   <div className="w-full h-full rounded-full border border-dashed border-slate-400 bg-white flex flex-col items-center justify-center text-[7px] text-slate-500 font-mono font-bold leading-normal">
                     <Award size={20} className="text-indigo-600 mb-0.5" />
                     <span className="scale-75 origin-center uppercase">CREST</span>
                   </div>
                 </div>
               )}
-              <div className="flex-1 text-center space-y-0.5">
-                <h2 className="text-2xl font-black text-slate-950 tracking-tight leading-tight uppercase font-display">
+              <div className="flex-1 text-center space-y-0.5 px-2">
+                <h2 className="text-xl sm:text-2xl font-black text-slate-950 tracking-tight leading-tight uppercase font-display">
                   {schoolInfo.name}
                 </h2>
                 <p className="text-xs italic font-serif text-slate-600">
@@ -538,7 +538,7 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
                   {schoolInfo.emisCode && <span>EMIS: {schoolInfo.emisCode}</span>}
                   {schoolInfo.schoolNumber && <span>CODE: {schoolInfo.schoolNumber}</span>}
                 </div>
-                <p className="text-[10px] font-mono text-slate-800 font-bold uppercase tracking-wider bg-slate-100 px-3 py-0.5 rounded-full inline-block mt-2">
+                <p className="text-[10px] font-mono text-slate-800 font-bold uppercase tracking-wider bg-slate-100 px-3 py-0.5 rounded-full inline-block mt-1.5">
                   Official Student Progress Statement Card
                 </p>
               </div>
@@ -546,40 +546,40 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
                 <img 
                   src={compiledReport.student.photoUrl} 
                   alt={`${compiledReport.student.firstName} ${compiledReport.student.lastName}`} 
-                  className="w-16 h-16 rounded border border-slate-300 object-cover flex-shrink-0" 
+                  className="w-16 h-16 sm:w-18 sm:h-18 rounded border border-slate-300 object-cover flex-shrink-0" 
                   referrerPolicy="no-referrer"
                 />
               ) : (
-                <div className="w-16 h-16 rounded border border-dashed border-slate-300 flex flex-col items-center justify-center bg-slate-50 p-1 flex-shrink-0 text-[7px] text-slate-400 font-mono text-center leading-normal select-none">
+                <div className="w-16 h-16 sm:w-18 sm:h-18 rounded border border-dashed border-slate-300 flex flex-col items-center justify-center bg-slate-50 p-1 flex-shrink-0 text-[7px] text-slate-400 font-mono text-center leading-normal select-none">
                   <div className="font-bold scale-90">PASSPORT</div>
                   <div className="scale-75">STAMP</div>
                 </div>
               )}
             </div>
 
-            {/* Student metadata */}
-            <div className="grid grid-cols-2 md:grid-cols-6 gap-4 bg-slate-50 p-4 rounded-xl text-xs leading-relaxed border border-slate-100 print:bg-white print:border-none">
-              <div>
+            {/* Student metadata - Centered grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2.5 sm:gap-3 bg-slate-50 p-3.5 rounded-xl text-xs leading-relaxed border border-slate-100 print:bg-white print:border-none text-center">
+              <div className="bg-white/80 p-2 rounded-lg border border-slate-100 shadow-2xs">
                 <span className="text-[9px] uppercase text-slate-400 font-mono font-medium block">Student ID</span>
-                <strong className="text-slate-800 font-mono text-sm">{compiledReport.student.id}</strong>
+                <strong className="text-slate-800 font-mono text-xs sm:text-sm block mt-0.5">{compiledReport.student.id}</strong>
               </div>
-              <div>
+              <div className="bg-white/80 p-2 rounded-lg border border-slate-100 shadow-2xs">
                 <span className="text-[9px] uppercase text-slate-400 font-mono font-medium block">Full Name</span>
-                <strong className="text-slate-800 text-sm whitespace-nowrap">{compiledReport.student.firstName} {compiledReport.student.lastName}</strong>
+                <strong className="text-slate-800 text-xs sm:text-sm whitespace-nowrap block mt-0.5">{compiledReport.student.firstName} {compiledReport.student.lastName}</strong>
               </div>
-              <div>
+              <div className="bg-white/80 p-2 rounded-lg border border-slate-100 shadow-2xs">
                 <span className="text-[9px] uppercase text-slate-400 font-mono font-medium block">Class Enrollment</span>
-                <strong className="text-slate-800 text-sm">{compiledReport.student.class} ({compiledReport.student.section || 'N/A'})</strong>
+                <strong className="text-slate-800 text-xs sm:text-sm block mt-0.5">{compiledReport.student.class} ({compiledReport.student.section || 'N/A'})</strong>
               </div>
-              <div>
+              <div className="bg-white/80 p-2 rounded-lg border border-slate-100 shadow-2xs">
                 <span className="text-[9px] uppercase text-slate-400 font-mono font-medium block">Report Period</span>
-                <strong className="text-slate-800 text-sm font-mono">{term} ({year})</strong>
+                <strong className="text-slate-800 text-xs sm:text-sm font-mono block mt-0.5">{term} ({year})</strong>
               </div>
-              <div className="relative group cursor-help bg-indigo-50/30 p-1.5 rounded-lg border border-indigo-100/50 transition-all hover:bg-indigo-50/80">
-                <span className="text-[9px] uppercase text-indigo-700 font-mono font-bold flex items-center gap-1 select-none">
+              <div className="relative group cursor-help bg-indigo-50/50 p-2 rounded-lg border border-indigo-100 transition-all hover:bg-indigo-50/80 shadow-2xs">
+                <span className="text-[9px] uppercase text-indigo-700 font-mono font-bold flex items-center justify-center gap-1 select-none">
                   Class Rank Standing <HelpCircle size={10} className="text-indigo-400" />
                 </span>
-                <strong className="text-indigo-900 text-sm font-mono block mt-0.5">{compiledReport.classRank || 'N/A'}</strong>
+                <strong className="text-indigo-900 text-xs sm:text-sm font-mono block mt-0.5">{compiledReport.classRank || 'N/A'}</strong>
                 <RankBreakdownTooltip 
                   term={term} 
                   year={year} 
@@ -587,23 +587,23 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
                   gradedCount={compiledReport.gradedCount} 
                 />
               </div>
-              <div>
+              <div className="bg-teal-50/50 p-2 rounded-lg border border-teal-100 shadow-2xs">
                 <span className="text-[9px] uppercase text-teal-700 font-mono font-bold block">Reopening Date</span>
-                <strong className="text-teal-900 bg-teal-50 px-1.5 py-0.5 rounded border border-teal-100 text-sm block">{schoolInfo.reopeningDate || 'Not Configured'}</strong>
+                <strong className="text-teal-900 text-xs sm:text-sm block mt-0.5">{schoolInfo.reopeningDate || 'Not Configured'}</strong>
               </div>
             </div>
 
             {/* Main Scores Grades Table */}
-            <table className="w-full text-left border-collapse border border-slate-200 text-xs mt-6">
+            <table className="w-full text-center border-collapse border border-slate-200 text-xs mt-6">
               <thead>
                 <tr className="bg-slate-100 border-b-2 border-slate-800">
-                  <th className="py-2.5 px-3 border border-slate-200 font-bold uppercase tracking-wider">
+                  <th className="py-2.5 px-3 border border-slate-200 font-bold uppercase tracking-wider text-left">
                     <div className="flex items-center justify-between gap-2 normal-case">
                       <span>Subject Course</span>
                       <button
                         type="button"
                         onClick={() => setSubjectSortMode(prev => prev === 'alphabetical' ? 'score' : 'alphabetical')}
-                        className="px-2 py-1 bg-white border border-slate-300 hover:bg-slate-50 rounded text-[9px] font-bold text-slate-600 flex items-center gap-1 transition cursor-pointer"
+                        className="px-2 py-1 bg-white border border-slate-300 hover:bg-slate-50 rounded text-[9px] font-bold text-slate-600 flex items-center gap-1 transition cursor-pointer no-print"
                         title="Toggle between Alphabetical and Score-Based ranking"
                       >
                         <span>Sort: {subjectSortMode === 'alphabetical' ? 'A-Z' : 'Score 📊'}</span>
@@ -620,69 +620,75 @@ export default function ParentPortal({ studentId, year, term, token, onExit }: P
               <tbody className="divide-y divide-slate-100">
                 {sortedGrades.map(item => (
                   <tr key={item.id} className="hover:bg-slate-50/40">
-                    <td className="py-3 px-3 border border-slate-200 font-black text-slate-900 text-sm">{item.subject}</td>
-                    <td className="py-3 px-2 border border-slate-200 text-center font-mono font-bold text-slate-700 text-sm">{item.classScore50}</td>
-                    <td className="py-3 px-2 border border-slate-200 text-center font-mono font-bold text-slate-700 text-sm">{item.examScore50}</td>
-                    <td className="py-3 px-2 border border-slate-200 text-center font-mono font-black text-rose-700 bg-rose-50/10 text-sm">{item.totalScore}%</td>
-                    <td className="py-3 px-3 border border-slate-200 text-center">
+                    <td className="py-2.5 px-3 border border-slate-200 font-black text-slate-900 text-sm text-left">{item.subject}</td>
+                    <td className="py-2.5 px-2 border border-slate-200 text-center font-mono font-bold text-slate-700 text-sm">{item.classScore50}</td>
+                    <td className="py-2.5 px-2 border border-slate-200 text-center font-mono font-bold text-slate-700 text-sm">{item.examScore50}</td>
+                    <td className="py-2.5 px-2 border border-slate-200 text-center font-mono font-black text-rose-700 bg-rose-50/10 text-sm">{item.totalScore}%</td>
+                    <td className="py-2.5 px-3 border border-slate-200 text-center">
                       <span className={`text-[10px] font-black uppercase ${item.gradeLevel === 'L1' ? 'text-emerald-700' : item.gradeLevel === 'L2' ? 'text-blue-700' : item.gradeLevel === 'L3' ? 'text-amber-600' : 'text-rose-700'}`}>
                         {item.remarks} ({item.gradeLevel})
                       </span>
                     </td>
-                    <td className="py-3 px-2 border border-slate-200 text-center font-mono font-black text-indigo-700 text-sm">{item.position ? `${item.position}` : 'N/A'}</td>
+                    <td className="py-2.5 px-2 border border-slate-200 text-center font-mono font-black text-indigo-700 text-sm">{item.position ? `${item.position}` : 'N/A'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
 
-            {/* Aggegrates section */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6 border-t border-slate-200 pt-5 text-xs text-center font-mono leading-relaxed print:border-slate-300">
-              <div className="bg-slate-50/50 p-2.5 border border-slate-100 rounded-lg">
-                <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Subjects Graded</span>
-                <strong className="text-slate-800 text-sm">{compiledReport.totalSubjects} courses</strong>
-              </div>
-              <div className="bg-slate-50/50 p-2.5 border border-slate-100 rounded-lg">
-                <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Term Average Score</span>
-                <strong className="text-slate-800 text-sm italic">{compiledReport.averageScore}%</strong>
-              </div>
-              <div className="bg-slate-50/50 p-2.5 border border-slate-100 rounded-lg">
-                <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Attendance Ledger</span>
-                <strong className="text-slate-800 text-sm font-sans">{compiledReport.attendancePresent} / {compiledReport.schoolOpenDays} Days Present</strong>
-              </div>
-              <div className="bg-slate-50/50 p-2.5 border border-slate-100 rounded-lg">
-                <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">GES Code</span>
-                <strong className="text-slate-805 text-sm uppercase">Curriculum Compliant</strong>
-              </div>
-            </div>
+            {/* Aggregates section with Total Raw Score & Total Raw Score Average */}
+            {(() => {
+              const rawSum = sortedGrades.reduce((sum, g) => sum + (g.totalScore || 0), 0);
+              const maxPossible = sortedGrades.length * 100;
+              const rawAvg = sortedGrades.length > 0 ? parseFloat((rawSum / sortedGrades.length).toFixed(2)) : 0;
+              return (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5 border-t border-slate-200 pt-4 text-xs text-center font-mono leading-relaxed print:border-slate-300">
+                  <div className="bg-slate-50/70 p-2.5 border border-slate-200/80 rounded-lg">
+                    <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Subjects Graded</span>
+                    <strong className="text-slate-800 text-sm">{compiledReport.totalSubjects} courses</strong>
+                  </div>
+                  <div className="bg-indigo-50/60 p-2.5 border border-indigo-100 rounded-lg">
+                    <span className="text-indigo-600 font-sans block text-[10px] uppercase font-bold">Total Raw Score</span>
+                    <strong className="text-indigo-900 text-sm font-black">{rawSum} / {maxPossible}</strong>
+                  </div>
+                  <div className="bg-emerald-50/60 p-2.5 border border-emerald-100 rounded-lg">
+                    <span className="text-emerald-700 font-sans block text-[10px] uppercase font-bold">Total Raw Score Avg</span>
+                    <strong className="text-emerald-900 text-sm font-black">{rawAvg}%</strong>
+                  </div>
+                  <div className="bg-slate-50/70 p-2.5 border border-slate-200/80 rounded-lg">
+                    <span className="text-slate-400 font-sans block text-[10px] uppercase font-semibold">Attendance Ledger</span>
+                    <strong className="text-slate-800 text-sm font-sans">{compiledReport.attendancePresent} / {compiledReport.schoolOpenDays} Days</strong>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Optional Financial ledger row for official printout */}
             {studentFinancials && (
-              <div className="mt-6 bg-slate-50 border border-slate-200/80 rounded-xl p-4 font-sans text-xs flex flex-row justify-between gap-4 leading-normal print:bg-white print:border-slate-300 report-card-financial-ledger">
-                <div className="space-y-1">
-                  <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Current Balance Status</div>
-                  <div className="flex items-baseline gap-2">
-                    <span className={`text-base font-black ${studentFinancials.totalOutstanding > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
-                      GHS {studentFinancials.totalOutstanding.toFixed(2)}
-                    </span>
-                    {studentFinancials.totalOutstanding > 0 && studentFinancials.previousOutstanding > 0 && (
-                      <span className="text-[10px] text-slate-400">
-                        (Term: GHS {studentFinancials.currentOutstanding.toFixed(2)} | Arrears: GHS {studentFinancials.previousOutstanding.toFixed(2)})
+              <div className="mt-4 bg-slate-50 border border-slate-200/80 rounded-xl p-2.5 font-sans text-xs flex flex-col sm:flex-row items-center justify-between gap-3 leading-normal print:bg-white print:border-slate-300 report-card-financial-ledger">
+                <div className="flex items-center gap-4">
+                  <div className="space-y-0.5">
+                    <div className="text-slate-500 uppercase tracking-wider text-[8.5px] font-black">Current Balance</div>
+                    <div className="flex items-baseline gap-1.5">
+                      <span className={`text-sm font-black ${studentFinancials.totalOutstanding > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
+                        GHS {studentFinancials.totalOutstanding.toFixed(2)}
                       </span>
-                    )}
+                    </div>
                   </div>
-                  <div className="text-[10px] text-slate-400">Outstanding student balance of registered accounts ledger.</div>
+                  <div className="h-6 w-px bg-slate-200" />
+                  <div className="space-y-0.5">
+                    <div className="text-slate-500 uppercase tracking-wider text-[8.5px] font-black">Next Term Projected Bill ({studentFinancials.nextTerm})</div>
+                    <div className="flex items-baseline gap-1">
+                      <span className="text-sm font-bold text-slate-800">
+                        GHS {studentFinancials.nextTermBillSum.toFixed(2)}
+                      </span>
+                      {studentFinancials.isEstimated && (
+                        <span className="text-[8px] bg-slate-200 text-slate-600 px-1 py-0.2 rounded font-black font-mono">Est</span>
+                      )}
+                    </div>
+                  </div>
                 </div>
-                <div className="border-l border-slate-255 pl-6 space-y-1">
-                  <div className="text-slate-500 uppercase tracking-wider text-[9px] font-black">Next Term Projected Bill ({studentFinancials.nextTerm})</div>
-                  <div className="flex items-baseline gap-1.5">
-                    <span className="text-base font-bold text-slate-800">
-                      GHS {studentFinancials.nextTermBillSum.toFixed(2)}
-                    </span>
-                    {studentFinancials.isEstimated && (
-                      <span className="text-[9px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded font-black font-mono">Estimated Rate</span>
-                    )}
-                  </div>
-                  <div className="text-[10px] text-slate-400">Projected billing plan for the upcoming academic module term.</div>
+                <div className="text-[9px] text-slate-400 font-medium text-right hidden sm:block">
+                  Accounts Ledger &amp; Upcoming Bill
                 </div>
               </div>
             )}

@@ -4,10 +4,11 @@ import { AttendanceRecord, ClassType, CLASSES, AttendanceStatus, StaffAttendance
 import { DbController, getStorageItem, setStorageItem } from '../db';
 import { ThemeStyles } from './ThemeWrapper';
 import { CalendarCheck, Users, ToggleLeft, ToggleRight, CheckSquare, Coffee, ClipboardList, CalendarDays, Printer, FileDown, ShieldAlert, Trash2, RotateCcw, Eraser, Eye, Clock, LogIn, LogOut, MessageSquare, Briefcase, ChevronLeft, ChevronRight, Activity, QrCode } from 'lucide-react';
-import { DefaultCrest } from './SchoolProfileTab';
+
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 import { generatePdfFromHtml, downloadBlobLocally } from '../pdfHelper';
 import { getWatermarkHtml, formatIdentifiableFilename } from '../utils';
+import { DefaultCrest } from './DefaultCrest';
 import AttendanceSummaryView from './AttendanceSummaryView';
 import StudentQRScanner from './StudentQRScanner';
 import { evaluateSubscription } from '../subscription';
@@ -331,14 +332,9 @@ export default function AttendanceTab({
       return item;
     });
     setAttendanceSheet(updated);
-
-    if (isAutoSave || autoCloudSync) {
-      DbController.saveAttendanceBatch(updated);
-      setSaveStatus(autoCloudSync ? 'Cloud Syncing...' : 'Auto-saved successfully!');
-      setTimeout(() => setSaveStatus(''), 2000);
-    } else {
-      setSaveStatus('Modified - Click Save Session');
-    }
+    DbController.saveAttendanceBatch(updated);
+    setSaveStatus('Synced to Cloud Firestore');
+    setTimeout(() => setSaveStatus(''), 2000);
   };
 
   const handleQRScanSuccess = (studentId: string) => {
@@ -361,14 +357,9 @@ export default function AttendanceTab({
         return item;
       });
       setAttendanceSheet(updated);
-
-      if (isAutoSave || autoCloudSync) {
-        DbController.saveAttendanceBatch(updated);
-        setSaveStatus(autoCloudSync ? 'Cloud Syncing...' : 'Auto-saved successfully!');
-        setTimeout(() => setSaveStatus(''), 2000);
-      } else {
-        setSaveStatus('Modified - Click Save Session');
-      }
+      DbController.saveAttendanceBatch(updated);
+      setSaveStatus('Synced to Cloud Firestore');
+      setTimeout(() => setSaveStatus(''), 2000);
 
       window.dispatchEvent(new CustomEvent('app-toast', {
         detail: {
@@ -420,14 +411,9 @@ export default function AttendanceTab({
     });
 
     setAttendanceSheet(updated);
-
-    if (isAutoSave || autoCloudSync) {
-      DbController.saveAttendanceBatch(updated);
-      setSaveStatus(autoCloudSync ? 'Cloud Syncing...' : 'Auto-saved successfully!');
-      setTimeout(() => setSaveStatus(''), 2000);
-    } else {
-      setSaveStatus('Modified - Click Save Session');
-    }
+    DbController.saveAttendanceBatch(updated);
+    setSaveStatus('Synced to Cloud Firestore');
+    setTimeout(() => setSaveStatus(''), 2000);
 
     window.dispatchEvent(new CustomEvent('app-toast', {
       detail: {
@@ -444,7 +430,7 @@ export default function AttendanceTab({
     }
     DbController.saveAttendanceBatch(attendanceSheet);
     onManualSave();
-    setSaveStatus('Session saved successfully!');
+    setSaveStatus('Session synced to Cloud Firestore!');
     setTimeout(() => setSaveStatus(''), 3000);
   };
 
@@ -455,14 +441,9 @@ export default function AttendanceTab({
     }
     const updated = attendanceSheet.map(item => ({ ...item, status }));
     setAttendanceSheet(updated);
-
-    if (isAutoSave || autoCloudSync) {
-      DbController.saveAttendanceBatch(updated);
-      setSaveStatus(autoCloudSync ? 'Cloud Syncing...' : 'Auto-saved all as ' + status);
-      setTimeout(() => setSaveStatus(''), 2000);
-    } else {
-      setSaveStatus('All status set - Click Save');
-    }
+    DbController.saveAttendanceBatch(updated);
+    setSaveStatus('Synced all as ' + status + ' to Cloud Firestore');
+    setTimeout(() => setSaveStatus(''), 2000);
   };
 
   // STAFF ATTENDANCE HANDLERS
@@ -483,14 +464,9 @@ export default function AttendanceTab({
       return item;
     });
     setStaffAttendanceSheet(updated);
-
-    if (isAutoSave || autoCloudSync) {
-      DbController.saveStaffAttendanceBatch(updated);
-      setSaveStatus(autoCloudSync ? 'Cloud Syncing...' : 'Auto-saved successfully!');
-      setTimeout(() => setSaveStatus(''), 2000);
-    } else {
-      setSaveStatus('Modified - Click Save Session');
-    }
+    DbController.saveStaffAttendanceBatch(updated);
+    setSaveStatus('Synced to Cloud Firestore');
+    setTimeout(() => setSaveStatus(''), 2000);
   };
 
   const handleStaffTimeChange = (teacherId: string, field: 'arrivalTime' | 'departureTime', timeVal: string) => {
@@ -501,14 +477,9 @@ export default function AttendanceTab({
       return item;
     });
     setStaffAttendanceSheet(updated);
-
-    if (isAutoSave || autoCloudSync) {
-      DbController.saveStaffAttendanceBatch(updated);
-      setSaveStatus(autoCloudSync ? 'Cloud Syncing...' : 'Auto-saved successfully!');
-      setTimeout(() => setSaveStatus(''), 2000);
-    } else {
-      setSaveStatus('Modified - Click Save Session');
-    }
+    DbController.saveStaffAttendanceBatch(updated);
+    setSaveStatus('Synced to Cloud Firestore');
+    setTimeout(() => setSaveStatus(''), 2000);
   };
 
   const handleStaffRemarksChange = (teacherId: string, remarksVal: string) => {
@@ -519,20 +490,15 @@ export default function AttendanceTab({
       return item;
     });
     setStaffAttendanceSheet(updated);
-
-    if (isAutoSave) {
-      DbController.saveStaffAttendanceBatch(updated);
-      setSaveStatus('Auto-saved successfully!');
-      setTimeout(() => setSaveStatus(''), 2000);
-    } else {
-      setSaveStatus('Modified - Click Save Session');
-    }
+    DbController.saveStaffAttendanceBatch(updated);
+    setSaveStatus('Synced to Cloud Firestore');
+    setTimeout(() => setSaveStatus(''), 2000);
   };
 
   const handleSaveAllStaff = () => {
     DbController.saveStaffAttendanceBatch(staffAttendanceSheet);
     onManualSave();
-    setSaveStatus('Staff session saved successfully!');
+    setSaveStatus('Staff session synced to Cloud Firestore!');
     setTimeout(() => setSaveStatus(''), 3000);
   };
 
@@ -550,14 +516,9 @@ export default function AttendanceTab({
       return { ...item, status, arrivalTime: arrival, departureTime: departure };
     });
     setStaffAttendanceSheet(updated);
-
-    if (isAutoSave || autoCloudSync) {
-      DbController.saveStaffAttendanceBatch(updated);
-      setSaveStatus(autoCloudSync ? 'Cloud Syncing...' : 'Auto-saved all as ' + status);
-      setTimeout(() => setSaveStatus(''), 2000);
-    } else {
-      setSaveStatus('All status set - Click Save');
-    }
+    DbController.saveStaffAttendanceBatch(updated);
+    setSaveStatus('Synced all as ' + status + ' to Cloud Firestore');
+    setTimeout(() => setSaveStatus(''), 2000);
   };
 
   // Perform calculations for "Present", "Holiday", and "Absent" with high-performance memoization
@@ -598,16 +559,12 @@ export default function AttendanceTab({
     if (attendanceView === 'staff') {
       const cleared = staffAttendanceSheet.map(item => ({ ...item, status: 'Unmarked' as StaffAttendanceStatus, arrivalTime: '', departureTime: '', remarks: '' }));
       setStaffAttendanceSheet(cleared);
-      if (isAutoSave) {
-        DbController.saveStaffAttendanceBatch(cleared);
-      }
+      DbController.saveStaffAttendanceBatch(cleared);
       alert("Reset all current staff attendance records to Unmarked.");
     } else {
       const cleared = attendanceSheet.map(item => ({ ...item, status: 'Unmarked' as AttendanceStatus }));
       setAttendanceSheet(cleared);
-      if (isAutoSave) {
-        DbController.saveAttendanceBatch(cleared);
-      }
+      DbController.saveAttendanceBatch(cleared);
       alert("Reset all current student attendance records to Unmarked.");
     }
   };
@@ -1124,15 +1081,11 @@ export default function AttendanceTab({
               </div>
             )}
 
-            {/* Manual preservation notice */}
-            {!isAutoSave && (
-              <button
-                onClick={attendanceView === 'student' ? handleSaveAll : handleSaveAllStaff}
-                className={`w-full py-2.5 rounded-lg text-xs font-bold shadow-xs active:translate-y-0.5 transition cursor-pointer text-center ${theme.btnColors}`}
-              >
-                Save Attendance Session
-              </button>
-            )}
+            {/* Direct Cloud Firestore sync indicator */}
+            <div className="w-full py-2 px-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 shadow-2xs">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span>Direct Cloud Firestore Sync Active</span>
+            </div>
 
             {saveStatus && (
               <div className={`text-center font-semibold text-[11px] py-1.5 px-3 rounded text-slate-700 ${saveStatus.includes('success') ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-50 border border-slate-200 animate-pulse'}`}>

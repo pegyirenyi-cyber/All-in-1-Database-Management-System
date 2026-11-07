@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { Camera, X, RefreshCw, AlertCircle, Sparkles, UserCheck, QrCode, Users, Trash2, ShieldAlert } from 'lucide-react';
+import { Camera, X, RefreshCw, AlertCircle, UserCheck, QrCode, Users, Trash2, ShieldAlert } from 'lucide-react';
 import jsQR from 'jsqr';
 import { DbController } from '../db';
 import { Student, ClassType, AttendanceStatus } from '../types';
@@ -417,11 +417,11 @@ export default function StudentQRScanner({
           </div>
         )}
 
-        {/* Simulated Roster Deck for Interactive Testing */}
+        {/* Live Roster Deck for Quick Attendance Scanning */}
         <div className="shrink-0 space-y-2 border-t border-slate-100 pt-3">
           <div className="flex items-center gap-1.5 text-slate-800">
-            <Sparkles size={13} className="text-amber-500" />
-            <span className="text-[10px] font-black uppercase tracking-wider">Simulated Roster (Interactive Click-to-Scan)</span>
+            <Users size={13} className="text-indigo-600" />
+            <span className="text-[10px] font-black uppercase tracking-wider">Live Class Roster (Click-to-Scan Attendance)</span>
           </div>
           
           {studentsInClass.length === 0 ? (

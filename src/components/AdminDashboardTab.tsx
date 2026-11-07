@@ -1,20 +1,234 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   UserPlus, Users, Trash2, Key, ShieldAlert, Check, Search, 
-  Lock, Shield, RefreshCw, UserCheck, Smartphone, Info, CalendarClock, Sparkles, UserX 
+  Lock, Shield, RefreshCw, UserCheck, Smartphone, Info, CalendarClock, UserX, Activity,
+  CreditCard, Settings, GraduationCap, Coins, LayoutDashboard, ChevronRight, Building2,
+  BarChart3, TrendingUp, Scale, ArrowUpRight, FileSliders, Save, CheckCircle2, Award
 } from 'lucide-react';
+import { 
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, 
+  Tooltip, Legend, ReferenceLine, Cell 
+} from 'recharts';
 import { DbController, setStorageItem } from '../db';
 import { UserAccount, UserRole, WebAuthnCredential } from '../types';
 import { evaluateSubscription, generateActivationCode } from '../subscription';
+import { collection, query, getDocs } from 'firebase/firestore';
+import { db } from '../db'; // Assuming db is exported from your db setup
 
 interface Props {
   theme: any;
+  onNavigateTab?: (tabId: string) => void;
 }
 
-export default function AdminDashboardTab({ theme }: Props) {
+export default function AdminDashboardTab({ theme, onNavigateTab }: Props) {
   const [users, setUsers] = useState<UserAccount[]>(() => DbController.getRegisteredUsers());
   const [credentials, setCredentials] = useState<WebAuthnCredential[]>(() => DbController.getWebAuthnCredentials());
+  const [loggedInUsers, setLoggedInUsers] = useState<any[]>(() => {
+    const reg = DbController.getRegisteredUsers();
+    return reg.filter(u => !u.isSuspended).map(u => ({ id: u.uid || u.email, ...u }));
+  });
+  const [managedSchools, setManagedSchools] = useState<any[]>(() => {
+    const currentSchool = DbController.getSchoolInfo();
+    const allStudents = DbController.getStudents();
+    const allTeachers = DbController.getTeachers();
+    return [{
+      id: currentSchool.schoolId || currentSchool.id || 'default_school',
+      schoolName: currentSchool.name || 'Primary Campus',
+      adminEmail: DbController.getCurrentUser()?.email || 'admin@school.com',
+      studentCount: allStudents.length,
+      teacherCount: allTeachers.length,
+      subscriptionTier: 'Licensed'
+    }];
+  });
   const currentUser = DbController.getCurrentUser();
+
+  // Platform Subscription & License Pricing Adjustment State
+  const initialPricing = useMemo(() => DbController.getPlatformPricing(), []);
+  const [adminPrice1Y, setAdminPrice1Y] = useState(initialPricing.licensePrice1Year);
+  const [adminPrice2Y, setAdminPrice2Y] = useState(initialPricing.licensePrice2Year);
+  const [adminPrice3Y, setAdminPrice3Y] = useState(initialPricing.licensePrice3Year);
+  const [adminPrice5Y, setAdminPrice5Y] = useState(initialPricing.licensePrice5Year);
+  const [adminSmsRate, setAdminSmsRate] = useState(initialPricing.smsRate);
+  const [isSavingPricing, setIsSavingPricing] = useState(false);
+  const [pricingFeedback, setPricingFeedback] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handlePlatformPricingUpdated = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const newPricing = customEvent.detail || DbController.getPlatformPricing();
+      setAdminPrice1Y(newPricing.licensePrice1Year);
+      setAdminPrice2Y(newPricing.licensePrice2Year);
+      setAdminPrice3Y(newPricing.licensePrice3Year);
+      setAdminPrice5Y(newPricing.licensePrice5Year);
+      setAdminSmsRate(newPricing.smsRate);
+    };
+    window.addEventListener('platform-pricing-updated', handlePlatformPricingUpdated);
+    return () => window.removeEventListener('platform-pricing-updated', handlePlatformPricingUpdated);
+  }, []);
+
+  const handleSavePlatformPricing = async () => {
+    setIsSavingPricing(true);
+    try {
+      const updated = {
+        licensePrice1Year: adminPrice1Y,
+        licensePrice2Year: adminPrice2Y,
+        licensePrice3Year: adminPrice3Y,
+        licensePrice5Year: adminPrice5Y,
+        smsRate: adminSmsRate,
+      };
+      const saved = await DbController.savePlatformPricing(updated);
+      setAdminPrice1Y(saved.licensePrice1Year);
+      setAdminPrice2Y(saved.licensePrice2Year);
+      setAdminPrice3Y(saved.licensePrice3Year);
+      setAdminPrice5Y(saved.licensePrice5Year);
+      setAdminSmsRate(saved.smsRate);
+      setPricingFeedback("Platform renewal pricing saved to Cloud Firestore and strictly enforced for all user accounts and schools in real time!");
+      triggerToast("Subscription renewal pricing updated and enforced for all users!", "success");
+      setTimeout(() => setPricingFeedback(null), 5000);
+    } catch (err: any) {
+      console.error(err);
+      triggerToast(err.message || "Failed to update platform pricing.", "error");
+    } finally {
+      setIsSavingPricing(false);
+    }
+  };
+  useEffect(() => {
+    let isMounted = true;
+    const fetchAdminData = async () => {
+      if (!db) return;
+      try {
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('timeout')), 3500)
+        );
+
+        const fetchSessions = async () => {
+          try {
+            const sessionsSnapshot = await getDocs(query(collection(db, 'sessions')));
+            if (isMounted && sessionsSnapshot && !sessionsSnapshot.empty) {
+              setLoggedInUsers(sessionsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+            }
+          } catch {
+            // Keep instant fallback
+          }
+        };
+
+        const fetchSchools = async () => {
+          try {
+            const schoolsSnapshot = await getDocs(query(collection(db, 'schools')));
+            if (isMounted && schoolsSnapshot && !schoolsSnapshot.empty) {
+              setManagedSchools(schoolsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+            }
+          } catch {
+            // Keep instant fallback
+          }
+        };
+
+        await Promise.race([
+          Promise.allSettled([fetchSessions(), fetchSchools()]),
+          timeoutPromise
+        ]);
+      } catch {
+        // Timeout gracefully handled
+      }
+    };
+    fetchAdminData();
+    return () => { isMounted = false; };
+  }, []);
+
+  // Analytics Display Mode
+  const [analyticsMetric, setAnalyticsMetric] = useState<'distribution' | 'ratio'>('distribution');
+
+  // Compute school-by-school metrics and overall averages
+  const analyticsData = useMemo(() => {
+    const currentSchool = DbController.getSchoolInfo();
+    const allStudents = DbController.getStudents();
+    const allTeachers = DbController.getTeachers();
+
+    let list: Array<{
+      id: string;
+      name: string;
+      students: number;
+      teachers: number;
+      adminEmail: string;
+      subscription: string;
+      ratio: number;
+    }> = [];
+
+    if (managedSchools && managedSchools.length > 0) {
+      list = managedSchools.map(s => {
+        const isCurrent = s.id === currentSchool.id || s.id === currentSchool.schoolId;
+        const studentCount = Number(s.studentCount ?? (isCurrent ? allStudents.length : 0));
+        const teacherCount = Number(s.teacherCount ?? (isCurrent ? allTeachers.length : 0));
+        const ratio = teacherCount > 0 ? parseFloat((studentCount / teacherCount).toFixed(1)) : 0;
+        return {
+          id: s.id,
+          name: s.schoolName || s.name || `School ${s.id?.slice(0, 8)}`,
+          students: studentCount,
+          teachers: teacherCount,
+          adminEmail: s.adminEmail || 'N/A',
+          subscription: s.subscriptionTier || 'Active',
+          ratio
+        };
+      });
+    }
+
+    // Ensure current active school is represented
+    const currentId = currentSchool.schoolId || currentSchool.id || 'default_school';
+    const hasCurrent = list.some(s => s.id === currentId || s.name === (currentSchool.name || 'Primary Campus'));
+    if (!hasCurrent) {
+      const studentCount = allStudents.length;
+      const teacherCount = allTeachers.length;
+      const ratio = teacherCount > 0 ? parseFloat((studentCount / teacherCount).toFixed(1)) : 0;
+      list.unshift({
+        id: currentId,
+        name: currentSchool.name || 'Current School Campus',
+        students: studentCount,
+        teachers: teacherCount,
+        adminEmail: currentUser?.email || 'admin@school.com',
+        subscription: 'Licensed',
+        ratio
+      });
+    }
+
+    const totalSchools = list.length;
+    const totalStudentsCount = list.reduce((acc, curr) => acc + curr.students, 0);
+    const totalTeachersCount = list.reduce((acc, curr) => acc + curr.teachers, 0);
+
+    const avgStudents = totalSchools > 0 ? Math.round(totalStudentsCount / totalSchools) : 0;
+    const avgTeachers = totalSchools > 0 ? parseFloat((totalTeachersCount / totalSchools).toFixed(1)) : 0;
+    const avgRatio = avgTeachers > 0 ? parseFloat((avgStudents / avgTeachers).toFixed(1)) : 0;
+
+    // Data for BarChart: each school + System Average bar
+    const chartData = [
+      ...list.map(s => ({
+        name: s.name.length > 16 ? s.name.slice(0, 14) + '...' : s.name,
+        fullName: s.name,
+        students: s.students,
+        teachers: s.teachers,
+        ratio: s.ratio,
+        isAverage: false
+      })),
+      {
+        name: '★ SYSTEM AVG',
+        fullName: 'Overall Monitored System Average',
+        students: avgStudents,
+        teachers: avgTeachers,
+        ratio: avgRatio,
+        isAverage: true
+      }
+    ];
+
+    return {
+      list,
+      chartData,
+      totalSchools,
+      totalStudentsCount,
+      totalTeachersCount,
+      avgStudents,
+      avgTeachers,
+      avgRatio
+    };
+  }, [managedSchools, currentUser]);
   
   // Custom Confirmation Dialog State
   const [confirmModal, setConfirmModal] = useState<{
@@ -31,7 +245,7 @@ export default function AdminDashboardTab({ theme }: Props) {
   const [licenseEditModal, setLicenseEditModal] = useState<{
     isOpen: boolean;
     user: UserAccount;
-    licenseType: 'trial' | 'activated' | 'unlimited';
+    licenseType: 'unlicensed' | 'activated' | 'unlimited';
     licensePeriod: number;
     lastActivatedOn: string;
   } | null>(null);
@@ -453,11 +667,11 @@ export default function AdminDashboardTab({ theme }: Props) {
     const newSuspended = !targetUser.isSuspended;
     DbController.updateUserAccount(targetUser.uid, {
       isSuspended: newSuspended,
-      licenseType: newSuspended ? 'trial' : targetUser.licenseType
+      licenseType: newSuspended ? 'unlicensed' : targetUser.licenseType
     });
     setUsers(DbController.getRegisteredUsers());
     triggerToast(
-      newSuspended ? `Suspended and expired ${targetUser.name}` : `Unsuspended ${targetUser.name}`,
+      newSuspended ? `Suspended and locked ${targetUser.name}` : `Unsuspended ${targetUser.name}`,
       newSuspended ? 'info' : 'success'
     );
   };
@@ -482,7 +696,7 @@ export default function AdminDashboardTab({ theme }: Props) {
           return {
             ...u,
             isSuspended: true,
-            licenseType: 'trial' as const,
+            licenseType: 'unlicensed' as const,
             registeredOn: expiredDate,
             createdAt: expiredDate
           };
@@ -528,22 +742,33 @@ export default function AdminDashboardTab({ theme }: Props) {
     });
   };
 
-  // Filter list
-  const filteredUsers = users.filter(user => {
-    const query = searchQuery.toLowerCase();
-    const matchesSearch = 
-      user.name.toLowerCase().includes(query) || 
-      user.email.toLowerCase().includes(query) ||
-      (user.requestCode && user.requestCode.toLowerCase().includes(query));
-    
-    const matchesRole = roleFilter === 'All' || user.role === roleFilter;
+  // Optimized Memoized Filter list
+  const filteredUsers = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query && roleFilter === 'All') return users;
+    return users.filter(user => {
+      const matchesSearch = !query ||
+        user.name.toLowerCase().includes(query) || 
+        user.email.toLowerCase().includes(query) ||
+        (user.requestCode && user.requestCode.toLowerCase().includes(query));
+      
+      const matchesRole = roleFilter === 'All' || user.role === roleFilter;
+      return matchesSearch && matchesRole;
+    });
+  }, [users, searchQuery, roleFilter]);
 
-    return matchesSearch && matchesRole;
-  });
-
-  const totalAdmins = users.filter(u => u.role === 'Admin').length;
-  const totalHeadteachers = users.filter(u => u.role === 'Headteacher').length;
-  const totalTeachers = users.filter(u => u.role === 'Teacher').length;
+  const { totalAdmins, totalHeadteachers, totalTeachers } = useMemo(() => {
+    let admins = 0;
+    let headteachers = 0;
+    let teachers = 0;
+    for (let i = 0; i < users.length; i++) {
+      const r = users[i].role;
+      if (r === 'Admin') admins++;
+      else if (r === 'Headteacher') headteachers++;
+      else if (r === 'Teacher') teachers++;
+    }
+    return { totalAdmins: admins, totalHeadteachers: headteachers, totalTeachers: teachers };
+  }, [users]);
 
   return (
     <div className="space-y-6">
@@ -609,6 +834,16 @@ export default function AdminDashboardTab({ theme }: Props) {
 
         <div className="bg-white border border-slate-200/60 p-4.5 rounded-2xl flex items-center gap-4">
           <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center border border-emerald-100 text-emerald-600">
+            <Activity size={18} />
+          </div>
+          <div>
+            <span className="text-[10px] uppercase font-mono font-black text-slate-400 block tracking-wider">Logged In Users</span>
+            <span className="text-lg font-black text-emerald-700">{loggedInUsers.length}</span>
+          </div>
+        </div>
+
+        <div className="bg-white border border-slate-200/60 p-4.5 rounded-2xl flex items-center gap-4">
+          <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center border border-emerald-100 text-emerald-600">
             <UserCheck size={18} />
           </div>
           <div>
@@ -627,6 +862,239 @@ export default function AdminDashboardTab({ theme }: Props) {
           </div>
         </div>
       </div>
+
+      {/* PLATFORM SUBSCRIPTION PRICING ADJUSTMENT DECK */}
+      <div className="bg-white p-6 rounded-3xl border border-indigo-100 shadow-md space-y-6">
+        <div className="flex items-center justify-between border-b border-slate-150 pb-4 flex-wrap gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-indigo-50 border border-indigo-150 text-indigo-700 rounded-2xl shadow-xs">
+              <FileSliders size={20} />
+            </div>
+            <div>
+              <h3 className="text-base font-black text-slate-800 tracking-tight font-sans flex items-center gap-2">
+                Platform Subscription Pricing & Renewal Deck
+                <span className="text-[10px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
+                  Cloud Firestore Real-Time
+                </span>
+              </h3>
+              <p className="text-xs text-slate-400 font-sans mt-0.5 leading-relaxed">
+                Adjust system-wide subscription pricing tiers. Changes are stored in Firebase Cloud Firestore and immediately reflect on all Headteachers' and users' accounts in real time.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleSavePlatformPricing}
+            disabled={isSavingPricing}
+            className="px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-indigo-750 hover:from-indigo-650 hover:to-indigo-800 text-white font-bold rounded-xl text-[11px] uppercase tracking-wider flex items-center gap-1.5 shadow-md hover:shadow-lg transition active:translate-y-0.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none"
+          >
+            <Save size={14} />
+            {isSavingPricing ? 'Syncing to Firestore...' : 'Save & Sync to All Headteachers'}
+          </button>
+        </div>
+
+        {pricingFeedback && (
+          <div className="p-3.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-2xl text-xs font-bold flex items-center gap-2.5 animate-fadeIn shadow-xs">
+            <CheckCircle2 size={18} className="text-emerald-600 shrink-0" />
+            <span>{pricingFeedback}</span>
+          </div>
+        )}
+
+        {/* 5-Card Grid for Pricing Parameters */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+          
+          {/* 1-Year Tier */}
+          <div className="bg-slate-50/70 p-4.5 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col justify-between space-y-3 hover:border-indigo-300 transition-all">
+            <div>
+              <div className="flex justify-between items-center mb-1">
+                <span className="text-[9px] bg-slate-200/70 text-slate-700 font-black px-2 py-0.5 rounded-md uppercase font-mono tracking-wider">
+                  1 Year
+                </span>
+                <Shield size={13} className="text-slate-400" />
+              </div>
+              <h4 className="font-bold text-slate-800 text-xs">Standard License</h4>
+              <p className="text-[10px] text-slate-400 mt-0.5">Benchmark annual renewal price</p>
+            </div>
+
+            <div className="space-y-2">
+              <div className="relative">
+                <span className="absolute left-3 top-2 text-xs font-black text-slate-400 font-mono">GHS</span>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={adminPrice1Y}
+                  onChange={(e) => setAdminPrice1Y(Math.max(1, parseInt(e.target.value) || 0))}
+                  className="w-full text-xs pl-12 pr-3 py-2 border border-slate-200 rounded-xl bg-white font-black font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-2xs"
+                />
+              </div>
+              <div className="flex gap-1 justify-center">
+                <button type="button" onClick={() => setAdminPrice1Y(Math.max(1, adminPrice1Y - 50))} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">-50</button>
+                <button type="button" onClick={() => setAdminPrice1Y(Math.max(1, adminPrice1Y - 10))} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">-10</button>
+                <button type="button" onClick={() => setAdminPrice1Y(adminPrice1Y + 10)} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">+10</button>
+                <button type="button" onClick={() => setAdminPrice1Y(adminPrice1Y + 50)} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">+50</button>
+              </div>
+              <div className="border-t border-slate-200/60 pt-2 text-[10px] flex justify-between text-slate-500">
+                <span>Annual:</span>
+                <strong className="text-slate-800 font-mono">GHS {adminPrice1Y.toFixed(2)}</strong>
+              </div>
+            </div>
+          </div>
+
+          {/* 2-Year Tier */}
+          <div className="bg-slate-50/70 p-4.5 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col justify-between space-y-3 hover:border-indigo-300 transition-all">
+            <div>
+              <div className="flex justify-between items-center mb-1">
+                <span className="text-[9px] bg-indigo-100 text-indigo-700 font-black px-2 py-0.5 rounded-md uppercase font-mono tracking-wider">
+                  2 Years
+                </span>
+                <Coins size={13} className="text-indigo-500" />
+              </div>
+              <h4 className="font-bold text-slate-800 text-xs">Multi-Year Pack</h4>
+              <p className="text-[10px] text-slate-400 mt-0.5">2-Year upfront license</p>
+            </div>
+
+            <div className="space-y-2">
+              <div className="relative">
+                <span className="absolute left-3 top-2 text-xs font-black text-slate-400 font-mono">GHS</span>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={adminPrice2Y}
+                  onChange={(e) => setAdminPrice2Y(Math.max(1, parseInt(e.target.value) || 0))}
+                  className="w-full text-xs pl-12 pr-3 py-2 border border-slate-200 rounded-xl bg-white font-black font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-2xs"
+                />
+              </div>
+              <div className="flex gap-1 justify-center">
+                <button type="button" onClick={() => setAdminPrice2Y(Math.max(1, adminPrice2Y - 50))} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">-50</button>
+                <button type="button" onClick={() => setAdminPrice2Y(Math.max(1, adminPrice2Y - 10))} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">-10</button>
+                <button type="button" onClick={() => setAdminPrice2Y(adminPrice2Y + 10)} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">+10</button>
+                <button type="button" onClick={() => setAdminPrice2Y(adminPrice2Y + 50)} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">+50</button>
+              </div>
+              <div className="border-t border-slate-200/60 pt-2 text-[10px] flex justify-between text-slate-500">
+                <span>Annual Rate:</span>
+                <strong className="text-slate-800 font-mono">GHS {(adminPrice2Y / 2).toFixed(2)}/yr</strong>
+              </div>
+            </div>
+          </div>
+
+          {/* 3-Year Tier */}
+          <div className="bg-slate-50/70 p-4.5 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col justify-between space-y-3 hover:border-indigo-300 transition-all">
+            <div>
+              <div className="flex justify-between items-center mb-1">
+                <span className="text-[9px] bg-blue-100 text-blue-700 font-black px-2 py-0.5 rounded-md uppercase font-mono tracking-wider">
+                  3 Years
+                </span>
+                <Award size={13} className="text-blue-500" />
+              </div>
+              <h4 className="font-bold text-slate-800 text-xs">Strategic Tier</h4>
+              <p className="text-[10px] text-slate-400 mt-0.5">Recommended 3-Year license</p>
+            </div>
+
+            <div className="space-y-2">
+              <div className="relative">
+                <span className="absolute left-3 top-2 text-xs font-black text-slate-400 font-mono">GHS</span>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={adminPrice3Y}
+                  onChange={(e) => setAdminPrice3Y(Math.max(1, parseInt(e.target.value) || 0))}
+                  className="w-full text-xs pl-12 pr-3 py-2 border border-slate-200 rounded-xl bg-white font-black font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-2xs"
+                />
+              </div>
+              <div className="flex gap-1 justify-center">
+                <button type="button" onClick={() => setAdminPrice3Y(Math.max(1, adminPrice3Y - 50))} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">-50</button>
+                <button type="button" onClick={() => setAdminPrice3Y(Math.max(1, adminPrice3Y - 10))} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">-10</button>
+                <button type="button" onClick={() => setAdminPrice3Y(adminPrice3Y + 10)} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">+10</button>
+                <button type="button" onClick={() => setAdminPrice3Y(adminPrice3Y + 50)} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">+50</button>
+              </div>
+              <div className="border-t border-slate-200/60 pt-2 text-[10px] flex justify-between text-slate-500">
+                <span>Annual Rate:</span>
+                <strong className="text-slate-800 font-mono">GHS {(adminPrice3Y / 3).toFixed(2)}/yr</strong>
+              </div>
+            </div>
+          </div>
+
+          {/* 5-Year Tier */}
+          <div className="bg-slate-50/70 p-4.5 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col justify-between space-y-3 hover:border-indigo-300 transition-all">
+            <div>
+              <div className="flex justify-between items-center mb-1">
+                <span className="text-[9px] bg-purple-100 text-purple-700 font-black px-2 py-0.5 rounded-md uppercase font-mono tracking-wider">
+                  5 Years
+                </span>
+                <Award size={13} className="text-purple-500" />
+              </div>
+              <h4 className="font-bold text-slate-800 text-xs">Enterprise Key</h4>
+              <p className="text-[10px] text-slate-400 mt-0.5">Maximum savings long-term</p>
+            </div>
+
+            <div className="space-y-2">
+              <div className="relative">
+                <span className="absolute left-3 top-2 text-xs font-black text-slate-400 font-mono">GHS</span>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={adminPrice5Y}
+                  onChange={(e) => setAdminPrice5Y(Math.max(1, parseInt(e.target.value) || 0))}
+                  className="w-full text-xs pl-12 pr-3 py-2 border border-slate-200 rounded-xl bg-white font-black font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-2xs"
+                />
+              </div>
+              <div className="flex gap-1 justify-center">
+                <button type="button" onClick={() => setAdminPrice5Y(Math.max(1, adminPrice5Y - 100))} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">-100</button>
+                <button type="button" onClick={() => setAdminPrice5Y(Math.max(1, adminPrice5Y - 50))} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">-50</button>
+                <button type="button" onClick={() => setAdminPrice5Y(adminPrice5Y + 50)} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">+50</button>
+                <button type="button" onClick={() => setAdminPrice5Y(adminPrice5Y + 100)} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">+100</button>
+              </div>
+              <div className="border-t border-slate-200/60 pt-2 text-[10px] flex justify-between text-slate-500">
+                <span>Annual Rate:</span>
+                <strong className="text-slate-800 font-mono">GHS {(adminPrice5Y / 5).toFixed(2)}/yr</strong>
+              </div>
+            </div>
+          </div>
+
+          {/* SMS Carrier Rate */}
+          <div className="bg-slate-50/70 p-4.5 rounded-2xl border border-slate-200/80 shadow-xs flex flex-col justify-between space-y-3 hover:border-indigo-300 transition-all">
+            <div>
+              <div className="flex justify-between items-center mb-1">
+                <span className="text-[9px] bg-emerald-100 text-emerald-700 font-black px-2 py-0.5 rounded-md uppercase font-mono tracking-wider">
+                  SMS Carrier
+                </span>
+                <Smartphone size={13} className="text-emerald-500" />
+              </div>
+              <h4 className="font-bold text-slate-800 text-xs">SMS Credits / GHS</h4>
+              <p className="text-[10px] text-slate-400 mt-0.5">Carrier exchange multiplier</p>
+            </div>
+
+            <div className="space-y-2">
+              <div className="relative">
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={adminSmsRate}
+                  onChange={(e) => setAdminSmsRate(Math.max(1, parseInt(e.target.value) || 0))}
+                  className="w-full text-xs px-3 py-2 border border-slate-200 rounded-xl bg-white font-black font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-2xs"
+                />
+              </div>
+              <div className="flex gap-1 justify-center">
+                <button type="button" onClick={() => setAdminSmsRate(Math.max(1, adminSmsRate - 5))} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">-5</button>
+                <button type="button" onClick={() => setAdminSmsRate(Math.max(1, adminSmsRate - 1))} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">-1</button>
+                <button type="button" onClick={() => setAdminSmsRate(adminSmsRate + 1)} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">+1</button>
+                <button type="button" onClick={() => setAdminSmsRate(adminSmsRate + 5)} className="px-1.5 py-0.5 bg-white hover:bg-slate-100 text-[9px] font-mono font-bold text-slate-500 border border-slate-200 rounded transition">+5</button>
+              </div>
+              <div className="border-t border-slate-200/60 pt-2 text-[10px] flex justify-between text-slate-500">
+                <span>Exchange:</span>
+                <strong className="text-slate-800 font-mono">1 GHS = {adminSmsRate} SMS</strong>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
@@ -653,7 +1121,7 @@ export default function AdminDashboardTab({ theme }: Props) {
                 ✕
               </button>
               <div className="font-extrabold text-indigo-950 flex items-center gap-1.5">
-                <Sparkles size={13} className="text-indigo-500" />
+                <CheckCircle2 size={13} className="text-emerald-500" />
                 Operator Authorized!
               </div>
               <div className="space-y-1 text-slate-700">
@@ -840,7 +1308,7 @@ export default function AdminDashboardTab({ theme }: Props) {
                               <div className="flex items-center gap-1.5">
                                 <span className={`w-2 h-2 rounded-full ${subStatus.isLocked ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'}`} />
                                 <span className={`text-[10px] font-black uppercase tracking-wider ${subStatus.isLocked ? 'text-rose-600' : 'text-slate-800'}`}>
-                                  {subStatus.licenseType === 'trial' ? 'Free Trial' : subStatus.licenseType === 'unlimited' ? 'Unlimited' : `${user.licensePeriod || 1}-Yr Subscription`}
+                                  {subStatus.licenseType === 'unlimited' ? 'Unlimited' : subStatus.licenseType === 'activated' ? `${user.licensePeriod || 1}-Yr Subscription` : 'Unlicensed / Expired'}
                                 </span>
                               </div>
                               <div className="text-[10px] font-mono">
@@ -881,7 +1349,7 @@ export default function AdminDashboardTab({ theme }: Props) {
                                 setLicenseEditModal({
                                   isOpen: true,
                                   user,
-                                  licenseType: sub?.licenseType || 'trial',
+                                  licenseType: (sub?.licenseType as any) || 'unlicensed',
                                   licensePeriod: user.licensePeriod || 1,
                                   lastActivatedOn: user.lastActivatedOn || new Date().toISOString()
                                 });
@@ -1225,9 +1693,10 @@ export default function AdminDashboardTab({ theme }: Props) {
                   })}
                   className="w-full text-xs py-2.5 px-3 bg-white border border-slate-200 rounded-xl focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition uppercase font-bold text-slate-700"
                 >
-                  <option value="trial">Free Trial (14 Days)</option>
+                  <option value="trial">7-Day Free Trial</option>
                   <option value="activated">Activated Paid License</option>
                   <option value="unlimited">Unlimited Lifetime License</option>
+                  <option value="unlicensed">Unlicensed / Locked</option>
                 </select>
               </div>
 
@@ -1285,6 +1754,76 @@ export default function AdminDashboardTab({ theme }: Props) {
         </div>
       )}
 
+
+      {/* MANAGEMENT LOGIN SCHOOLS */}
+      <div className="bg-white border border-slate-200/60 rounded-2xl overflow-hidden mt-6 shadow-xs">
+        <div className="p-4 sm:p-6 border-b border-slate-100 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Building2 size={16} className="text-slate-700" />
+            <h3 className="font-black text-slate-800 text-sm">Management Login Schools ({managedSchools.length})</h3>
+          </div>
+          <span className="text-[10px] font-mono text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full font-bold">
+            Live Registry
+          </span>
+        </div>
+        <div className="overflow-x-auto overscroll-x-contain">
+          <table className="w-full min-w-[700px] text-xs text-left">
+            <thead className="bg-slate-50 text-slate-500 font-bold uppercase tracking-wider text-[11px]">
+              <tr>
+                <th className="px-5 py-3.5">School Name</th>
+                <th className="px-5 py-3.5">Admin Email</th>
+                <th className="px-5 py-3.5 text-center">Teachers</th>
+                <th className="px-5 py-3.5 text-center">Students</th>
+                <th className="px-5 py-3.5">Subscription</th>
+                <th className="px-5 py-3.5 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {managedSchools.map((school) => (
+                <tr key={school.id} className="hover:bg-slate-50/80 transition-colors">
+                  <td className="px-5 py-3.5 font-bold text-slate-800">{school.schoolName || school.id}</td>
+                  <td className="px-5 py-3.5 text-slate-600 font-mono text-[11px]">{school.adminEmail || 'N/A'}</td>
+                  <td className="px-5 py-3.5 text-center font-semibold text-slate-700">{school.teacherCount || 0}</td>
+                  <td className="px-5 py-3.5 text-center font-semibold text-slate-700">{school.studentCount || 0}</td>
+                  <td className="px-5 py-3.5">
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase bg-indigo-50 text-indigo-700 border border-indigo-100">
+                      {school.subscriptionTier || 'Free'}
+                    </span>
+                  </td>
+                  <td className="px-5 py-3.5 text-right space-x-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (onNavigateTab) {
+                          onNavigateTab('school_profile');
+                        } else {
+                          triggerToast(`Navigating to profile for ${school.schoolName || school.id}`, 'info');
+                        }
+                      }}
+                      className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold rounded-lg text-[10px] transition cursor-pointer border border-indigo-200"
+                    >
+                      View Profile
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (onNavigateTab) {
+                          onNavigateTab('settings');
+                        } else {
+                          triggerToast(`Opening billing/license settings for ${school.schoolName || school.id}`, 'info');
+                        }
+                      }}
+                      className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-bold rounded-lg text-[10px] transition cursor-pointer border border-emerald-200"
+                    >
+                      Extend License
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }

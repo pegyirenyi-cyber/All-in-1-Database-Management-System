@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { apiRouter } from './src/api-router';
+import { apiRouter } from './src/api-router.ts';
 
 // Dynamically load Firebase config if exists for server-side persistence sync
 let firebaseConfig = {
@@ -26,11 +26,10 @@ if (!firebaseConfig.projectId || !firebaseConfig.apiKey) {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
   // Secure HTTP Headers Middleware
   app.use((_req, res, next) => {
-    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('X-XSS-Protection', '1; mode=block');
@@ -60,12 +59,14 @@ async function startServer() {
     app.use(vite.middlewares);
     console.log("[Node Server] Running in Development Mode. Mounted Vite live refresh middleware.");
   } else {
-    const distPath = path.join(process.cwd(), 'build');
+    const distPath = fs.existsSync(path.join(process.cwd(), 'dist', 'index.html'))
+      ? path.join(process.cwd(), 'dist')
+      : path.join(process.cwd(), 'build');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
-    console.log("[Node Server] Running in Production Mode. Serving static compiled resources from /build.");
+    console.log(`[Node Server] Running in Production Mode. Serving static compiled resources from ${distPath}.`);
   }
 
   app.listen(PORT, '0.0.0.0', () => {

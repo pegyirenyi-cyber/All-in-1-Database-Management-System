@@ -1,0 +1,153 @@
+# MASTER SPECIFICATION PROMPT: ALL-IN-ONE GHANA BASIC SCHOOL MANAGEMENT SYSTEM (GTM SCHOOL PORTAL / SCHOOLSHIELD)
+
+You are an expert full-stack engineer and UI/UX designer. Build a production-grade, enterprise, multi-tenant School Management System tailored for Ghana Basic Schools (KG 1 to JHS 3 / Basic 1 to Basic 9), following Ghana Education Service (GES) and National Council for Curriculum and Assessment (NaCCA) guidelines.
+
+---
+
+## 1. CORE ARCHITECTURE & SYSTEM OVERVIEW
+
+- **Framework**: React 18+ Single Page Application with TypeScript and Vite.
+- **Styling**: Tailwind CSS with rich color palettes (Sophisticated Dark, Midnight, Classic, Emerald, Ruby, Cosmic, Gold, Sunset, Ocean, Crystal Glass).
+- **Icons**: Lucide React.
+- **Motion & Animations**: Framer Motion.
+- **Backend & Database**: Full-stack Firebase Firestore & Firebase Authentication, with durable local offline persistence (IndexedDB + LocalStorage fallback + Service Worker).
+- **Data Security**: End-to-end multi-tenant isolation, cryptographic key partitioning per school/user, secure school secrets isolation, and AES encryption for sensitive local records.
+
+---
+
+## 2. SYSTEM RULES & CORE CONSTRAINTS
+
+### Rule 1: Multi-Role Authorization & Access Control (RBAC)
+Support distinct roles with strictly isolated views and capabilities:
+1. **Admin / Super Admin (`pegyirenyi@gmail.com`)**:
+   - Master system oversight, unrestricted multi-school switching, dynamic license code generator, Paystack payment gateway override, Carrier SMS configuration, system audit logs, and catastrophic database wipe / format tools.
+2. **Headteacher / School Administrator**:
+   - Institutional profile management, teacher account approvals and permissions matrix, global student rosters, academic calendar config, term promotion engines, terminal scoresheet lock/unlock, financial ledger and school fees billing, staff payroll, and EMIS census reports.
+3. **Teacher**:
+   - Scoped access only to assigned classes and assigned subjects.
+   - Mark daily student attendance with one-click bulk status and WhatsApp notification dispatches.
+   - Enter SBA (Class Score /50) and Terminal Exam (/50) marks with instant automated GES grading (1-9), positions, and automated remarks.
+   - Submit staff leave requests, daily teaching reflections, and access digital staff handbook.
+   - Suspended grading/attendance privileges if revoked by the Headteacher.
+4. **Parent / Student Portal**:
+   - Access via secure cryptographic token or direct WhatsApp link to view real-time printable terminal report cards, fee balances, and attendance history without requiring system login.
+
+### Rule 2: Multi-Tenancy & School Code Linkage
+- Each registered school has a unique School ID (e.g. `SMS-P8U4F22L` or `school_<uid>`).
+- When a Headteacher registers, their School Code is automatically embedded in all generated Teacher QR badges.
+- Teachers logging in with QR Badges or linked accounts automatically bind to the shared institution and can never see or modify records belonging to other schools.
+
+### Rule 3: Ghana GES/NaCCA Curriculum & Class Hierarchy
+- Standard classes: `KG 1`, `KG 2`, `Basic 1`, `Basic 2`, `Basic 3`, `Basic 4`, `Basic 5`, `Basic 6`, `Basic 7 (JHS 1)`, `Basic 8 (JHS 2)`, `Basic 9 (JHS 3)`.
+- Automatic grade calculation per GES 9-Point Grading Scale:
+  - 80% - 100% -> Grade 1 (Highest / Advanced)
+  - 70% - 79%  -> Grade 2 (Higher)
+  - 65% - 69%  -> Grade 3 (High)
+  - 60% - 64%  -> Grade 4 (High Average)
+  - 55% - 59%  -> Grade 5 (Average)
+  - 50% - 54%  -> Grade 6 (Low Average)
+  - 45% - 49%  -> Grade 7 (Low)
+  - 40% - 44%  -> Grade 8 (Lower)
+  - 0% - 39%   -> Grade 9 (Lowest / Fail)
+
+### Rule 4: Permanent Data Format & Privacy Lifecycle (Wipe Engine)
+- When "Clear Data (Deep Format)" is executed under System Controls:
+  - Deeply delete all user documents (`users/{uid}`), backups, and sync tokens from Cloud Firestore.
+  - Delete all school profile documents and subcollections (`students`, `teachers`, `attendance`, `assessments`, `fees`, `expenses`, `reflections`, etc.) across Cloud Firestore.
+  - Perform deep format of browser `IndexedDB`, `CacheStorage`, `LocalStorage`, and `SessionStorage`.
+  - Reset state cleanly across all open tabs via BroadcastChannel.
+  - Prevent data redundancy so subsequent user logins always start on a clean, isolated slate.
+
+---
+
+## 3. CORE MODULES & FEATURES
+
+### Module 1: Authentication & Biometric Gate
+- **Single Sign-On (SSO)**: One-click Continue with Google via Firebase Auth.
+- **WebAuthn Biometrics**: Hardware Touch ID / Face ID sensor authentication with credential storage challenge verification.
+- **Teacher QR Badge Scanner**: Built-in camera scanner and PDF/image QR upload to authenticate faculty instantly with embedded security tokens.
+- **Session Timeout**: Configurable auto-logout on idle inactivity.
+
+### Module 2: Dashboard & Executive Analytics
+- Real-time KPI summaries: Total Pupils, Male/Female ratios, Active Faculty, Attendance Rates, Term Fees Collection %, Total Revenue vs Expenses.
+- Quick action launchers, overdue backup safeguards, student enrollment analytics, and dynamic school noticeboard.
+
+### Module 3: School Profile & Institutional Setup
+- Configure: School Name, Motto, Official Logo Emblem, Watermark Crest, Registration Number, EMIS Code, GPS Digital Address, School Type (Public/Private), Headteacher Name, Signature upload, Official Stamp seal, District, Circuit, and Next Term Reopening Date.
+- Real-time Print Engine for Official Institutional Profile Sheet.
+- Protected input editing state to guarantee zero cursor jumps or keystroke cancellation during active user input.
+
+### Module 4: Students Management & Enrollment Roster
+- Full pupil directory with filtering by Class, Gender, Status, and Search.
+- Pupil Profile modal: Photo capture/upload, Date of Birth, Age auto-calc, Guardian Contact, Medical Notes, Residential Address, Enrollment Date.
+- Actions: Bulk Pupil Admission (Excel/CSV import), ID Card Generator with QR Code, Student Clearance Certification, Class Transfer & Promotion, and Cascade Deletion protection.
+
+### Module 5: Teachers & Faculty Administration
+- Teacher Registry: Staff ID, Full Name, Contact Number, Email, Academic & Professional Qualifications (NTC License, PGDE, DBE, Cert 'A', etc.), Assigned Classes & Subjects.
+- Granular Permission Matrix: Toggle Edit Grades, Mark Attendance, Export & Print Reports per teacher.
+- Printable Teacher ID Badges with encrypted QR credentials.
+
+### Module 6: Daily Attendance Register & SMS/WhatsApp Notification
+- Daily Class Roll: Present, Absent, Late, Excused.
+- One-Click Bulk Mark ("Mark All Present").
+- Automated WhatsApp & SMS Absentee Alerts sent directly to parents' phone numbers.
+- Terminal Attendance aggregation automatically reflected on student report cards.
+- Staff Attendance check-in and biometric verification ledger.
+
+### Module 7: Academic Assessment & Terminal Report Cards
+- Continuous Assessment (SBA / Class Score 50%) + Terminal Exam Score (50%) = Total 100%.
+- Automated Student Positioning (1st, 2nd, 3rd with tie-breaker rank logic).
+- Automated Headteacher & Class Teacher Conduct and Academic Remarks generator.
+- **A4 Terminal Report Card Print Engine**:
+  - Official school logo & watermark crest.
+  - Pupil photo, bio data, attendance record, and promotion status.
+  - Complete subject scoresheet table with class averages and grade distributions.
+  - Signature and Stamp superimposed at the bottom.
+  - Bulk Print All Class Reports in a single continuous printable document.
+
+### Module 8: School Fees Billing, Cashier & Paystack Gateway
+- Custom bill components: Tuition, PTA Levy, Uniform, Books, Canteen, Examination Fees.
+- Individual & Bulk Class Fee Invoicing.
+- Cashier desk with instant receipt generation, balance tracking, and ledger history.
+- Online automated card & Mobile Money (MTN MoMo, Telecel Cash, AT Money) payment processing via Paystack inline gateway.
+- Automated WhatsApp Payment Receipts & Fee Clearance Reminders.
+
+### Module 9: Comprehensive School Finances & Daily Ledger
+- Income & Expenditure categories, voucher recording, receipts attachment.
+- Staff Payslip generator with SSNIT and tax calculations.
+- Daily Financial Summary with opening balances, cash vs bank breakdown, and audit trails.
+
+### Module 10: Special Programs (Canteen, Transport, Excursions, Textbooks)
+- **Canteen & Feeding**: Termly feeding plans, daily meal attendance tracking, and vendor disbursements.
+- **Transport Services**: Route management, bus stops, assigned drivers, and transport fee collections.
+- **Excursions & Field Trips**: Trip itineraries, consent tracking, emergency contacts, and participant billing.
+- **Textbook Inventory**: Library inventory tracking, lending register, and return condition logs.
+
+### Module 11: Communications & Instant Messaging
+- SMS broadcast engine with Twilio / GSM gateway integration.
+- Dynamic WhatsApp message templating with merge tags (`{STUDENT_NAME}`, `{CLASS}`, `{FEES_OWED}`, `{TERM}`).
+- Automated Parent Portal share link dispatch with single-click WhatsApp Web / App intent.
+
+### Module 12: EMIS Census & Ministry Statistical Returns
+- Annual EMIS School Census generator complying with Ministry of Education standards.
+- Class-by-class age and gender breakdown, faculty qualification indices, and infrastructure audit.
+- Exportable CSV and printable PDF official census returns.
+
+### Module 13: System Controls, Backups & Licensing
+- Instant offline backup download (JSON snapshot) and full restore mechanism.
+- Automated Cloud Sync to Google Drive / Firebase Storage.
+- Software Licensing Engine: 14-day trial evaluation, offline activation codes, and instant Paystack yearly license purchase.
+- Administrative Security Logs & WebAuthn Emergency Wipe Console.
+
+---
+
+## 4. UI/UX DESIGN STANDARDS
+
+- **Zero "AI Slop"**: Crisp, high-contrast typography using Inter / DM Sans and JetBrains Mono for codes.
+- **Responsive Layout**: Desktop sidebar navigation with compact collapsible rail, mobile drawer, and tablet-optimized data grids.
+- **High-Fidelity Printing**: Dedicated CSS `@media print` rules ensuring exact A4 pagination, pure black text contrast (`#000000`), zero background clipping, and page-break isolation for multi-page batch reports.
+- **Instant Visual Feedback**: Toast notification engine, subtle audio feedback for biometric scans and payments, and optimistic UI updates.
+
+---
+
+Use this specification to build, extend, or maintain the complete GEETECH School Management System.

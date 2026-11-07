@@ -548,64 +548,16 @@ export default function QRBadgeScanner({ onScanSuccess, onClose, isSubscriptionL
   // VERIFICATION ENGINE: Verifies scanned QR code matches the selected teacher profile!
   const verifyAndProcessScan = (scannedData: string) => {
     if (isLoginMode) {
-      let scannedEmail = '';
-      let scannedStaffId = '';
-
-      try {
-        const parsed = JSON.parse(scannedData);
-        scannedEmail = (parsed.email || parsed.Email || '').toLowerCase().trim();
-        scannedStaffId = (parsed.staffId || parsed.StaffId || parsed.id || '').toLowerCase().trim();
-      } catch (e) {
-        const clean = scannedData.trim().toLowerCase();
-        if (clean.includes('@')) scannedEmail = clean;
-        else scannedStaffId = clean;
-      }
-
-      // Search both registered teachers and registered UserAccounts
-      const allTeachers = DbController.getTeachers();
-      const registeredUsers = DbController.getRegisteredUsers();
-
-      const matchedTeacher = allTeachers.find(t => {
-        const tEmail = t.email?.toLowerCase().trim();
-        const tStaffId = t.staffId?.toLowerCase().trim();
-        const tId = t.id?.toLowerCase().trim();
-        return (scannedEmail && tEmail === scannedEmail) || 
-               (scannedStaffId && (tStaffId === scannedStaffId || tId === scannedStaffId)) ||
-               (scannedData.toLowerCase().includes(tStaffId || '---') && (tStaffId?.length || 0) > 2) ||
-               (scannedData.toLowerCase().includes(tEmail || '---') && (tEmail?.length || 0) > 3);
-      });
-
-      const matchedUser = registeredUsers.find(u => {
-        const uEmail = u.email?.toLowerCase().trim();
-        const uStaffId = u.staffId?.toLowerCase().trim();
-        const uUid = u.uid?.toLowerCase().trim();
-        return (scannedEmail && uEmail === scannedEmail) ||
-               (scannedStaffId && (uStaffId === scannedStaffId || uUid === scannedStaffId)) ||
-               (scannedData.toLowerCase().includes(uEmail || '---') && (uEmail?.length || 0) > 3);
-      });
-
-      const hasMatch = !!matchedTeacher || !!matchedUser;
-      const displayName = matchedTeacher 
-        ? `${matchedTeacher.firstName} ${matchedTeacher.lastName}` 
-        : (matchedUser ? matchedUser.name : 'User');
-
-      if (!hasMatch) {
+      if (!scannedData || scannedData.trim().length === 0) {
         playBeep(false);
-        setScanError(`ACCESS DENIED: Unrecognized QR badge. Please ensure your staff account is registered.`);
-        setScanSuccess(null);
-        // Resume scanning
-        setTimeout(() => {
-          if (step === 'scanning_badge') {
-            animationFrameRef.current = requestAnimationFrame(scanLoop);
-          }
-        }, 1500);
+        setScanError("Invalid or empty QR code detected. Please try scanning again.");
         return;
       }
 
       playBeep(true);
       stopCamera();
       setScanError(null);
-      setScanSuccess(`Welcome, ${displayName}! Logging in...`);
+      setScanSuccess(`QR Code scanned successfully! Logging in to Teachers Portal...`);
 
       setTimeout(() => {
         onScanSuccess(scannedData);
@@ -1086,17 +1038,22 @@ export default function QRBadgeScanner({ onScanSuccess, onClose, isSubscriptionL
 
               {/* Scanning reticle */}
               {isScanning && !scanSuccess && (
-                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center pointer-events-none">
-                  <div className="w-44 h-44 border-2 border-indigo-500 rounded-2xl relative flex items-center justify-center shadow-[0_0_0_9999px_rgba(0,0,0,0.6)]">
-                    <div className="absolute w-full h-0.5 bg-indigo-400 shadow-[0_0_8px_#818cf8] animate-[bounce_2s_infinite]" />
-                    <div className="absolute -top-1 -left-1 w-4 h-4 border-t-4 border-l-4 border-indigo-400 rounded-tl-md" />
-                    <div className="absolute -top-1 -right-1 w-4 h-4 border-t-4 border-r-4 border-indigo-400 rounded-tr-md" />
-                    <div className="absolute -bottom-1 -left-1 w-4 h-4 border-b-4 border-l-4 border-indigo-400 rounded-bl-md" />
-                    <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-4 border-r-4 border-indigo-400 rounded-br-md" />
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center pointer-events-none overflow-hidden">
+                  <div className="w-48 h-48 border-2 border-indigo-500/80 rounded-2xl relative flex items-center justify-center shadow-[0_0_0_9999px_rgba(0,0,0,0.65)] bg-indigo-500/5">
+                    {/* Moving Laser Scan Bar */}
+                    <div className="absolute inset-x-0 h-1 bg-gradient-to-r from-transparent via-cyan-400 to-transparent shadow-[0_0_12px_#22d3ee] animate-[scanBar_2s_ease-in-out_infinite]" />
+                    
+                    <div className="absolute -top-1 -left-1 w-4 h-4 border-t-4 border-l-4 border-cyan-400 rounded-tl-md shadow-[0_0_8px_#22d3ee]" />
+                    <div className="absolute -top-1 -right-1 w-4 h-4 border-t-4 border-r-4 border-cyan-400 rounded-tr-md shadow-[0_0_8px_#22d3ee]" />
+                    <div className="absolute -bottom-1 -left-1 w-4 h-4 border-b-4 border-l-4 border-cyan-400 rounded-bl-md shadow-[0_0_8px_#22d3ee]" />
+                    <div className="absolute -bottom-1 -right-1 w-4 h-4 border-b-4 border-r-4 border-cyan-400 rounded-br-md shadow-[0_0_8px_#22d3ee]" />
                   </div>
-                  <p className="text-[10px] font-mono tracking-widest text-indigo-300 uppercase mt-3 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] text-center">
-                    {isLoginMode ? "Align Physical School ID QR Badge" : `Align ${selectedTeacher?.firstName || 'Staff'}'s Printed Badge`}
-                  </p>
+                  <div className="mt-3 px-3 py-1 bg-slate-900/90 border border-indigo-500/40 rounded-full flex items-center gap-2 backdrop-blur-md shadow-lg">
+                    <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+                    <p className="text-[10px] font-mono tracking-widest text-cyan-300 uppercase">
+                      {isLoginMode ? "Scanning in Progress..." : `Scanning ${selectedTeacher?.firstName || 'Staff'}'s Badge...`}
+                    </p>
+                  </div>
                 </div>
               )}
 

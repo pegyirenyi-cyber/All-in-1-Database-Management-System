@@ -107,67 +107,92 @@ export default function LeaveTracker({ theme, teachers, onRefresh, isAdminOrHead
       </div>
 
       {showForm && (
-        <form onSubmit={handleSaveRequest} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
-          <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2 mb-2">
-            <CalendarRange size={16} className={theme.textColors} />
-            Submit Absence Request
-          </h4>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {isAdminOrHead && (
-              <div className="sm:col-span-2 lg:col-span-1">
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Teacher</label>
-                <select
-                  required
-                  value={selectedTeacherId}
-                  onChange={e => setSelectedTeacherId(e.target.value)}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-slate-900 outline-none transition"
-                >
-                  <option value="">Select Staff Member...</option>
-                  {teachers.map(t => (
-                    <option key={t.id} value={t.id}>{t.firstName} {t.lastName}</option>
-                  ))}
-                </select>
+        <form onSubmit={handleSaveRequest} className="bg-white rounded-2xl border border-slate-200/90 shadow-md overflow-hidden transition-all">
+          <div className="bg-gradient-to-r from-slate-900 to-slate-800 text-white px-6 py-4 flex items-center justify-between border-b border-slate-700/50">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-indigo-500/20 border border-indigo-400/30 flex items-center justify-center text-indigo-300 shrink-0">
+                <CalendarRange size={20} />
               </div>
-            )}
-            <div className={isAdminOrHead ? "lg:col-span-1" : "sm:col-span-1"}>
-              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Start Date</label>
-              <input
-                type="date"
-                required
-                value={formState.startDate}
-                onChange={e => setFormState({ ...formState, startDate: e.target.value })}
-                className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-slate-900 outline-none transition"
-              />
-            </div>
-            <div className={isAdminOrHead ? "lg:col-span-1" : "sm:col-span-1"}>
-              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">End Date</label>
-              <input
-                type="date"
-                required
-                value={formState.endDate}
-                onChange={e => setFormState({ ...formState, endDate: e.target.value })}
-                className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-slate-900 outline-none transition"
-              />
-            </div>
-            <div className={isAdminOrHead ? "sm:col-span-2 lg:col-span-4" : "sm:col-span-2"}>
-              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Reason / Remarks</label>
-              <input
-                type="text"
-                required
-                placeholder="e.g. Medical appointment, family emergency..."
-                value={formState.reason}
-                onChange={e => setFormState({ ...formState, reason: e.target.value })}
-                className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-slate-900 outline-none transition"
-              />
+              <div>
+                <div className="flex items-center gap-2">
+                  <h4 className="text-xs font-bold font-display uppercase tracking-wider text-white">
+                    Submit Staff Absence & Leave Application
+                  </h4>
+                  <span className="bg-indigo-500/30 text-indigo-200 text-[9px] font-mono font-bold px-2 py-0.5 rounded-full border border-indigo-400/30">
+                    Time-Off
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-300/80">Staff selection, date range duration, and justification reason</p>
+              </div>
             </div>
           </div>
-          <div className="pt-2 flex justify-end">
-            <button
-              type="submit"
-              className={`flex items-center gap-1.5 px-6 py-2.5 rounded-lg text-xs font-bold transition shadow-xs ${theme.btnColors}`}
-            >
-              <Check size={14} /> Submit Request
-            </button>
+
+          <div className="p-6 space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {isAdminOrHead && (
+                <div className="sm:col-span-2 lg:col-span-1">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Staff Member <span className="text-rose-500">*</span>
+                  </label>
+                  <select
+                    required
+                    value={selectedTeacherId}
+                    onChange={e => setSelectedTeacherId(e.target.value)}
+                    className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl bg-slate-50/50 hover:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-slate-800 font-medium"
+                  >
+                    <option value="">Select Staff Member...</option>
+                    {teachers.map(t => (
+                      <option key={t.id} value={t.id}>{t.firstName} {t.lastName}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div className={isAdminOrHead ? "lg:col-span-1" : "sm:col-span-1"}>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Start Date <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={formState.startDate}
+                  onChange={e => setFormState({ ...formState, startDate: e.target.value })}
+                  className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl bg-slate-50/50 hover:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 font-mono text-slate-800"
+                />
+              </div>
+              <div className={isAdminOrHead ? "lg:col-span-1" : "sm:col-span-1"}>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  End Date <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={formState.endDate}
+                  onChange={e => setFormState({ ...formState, endDate: e.target.value })}
+                  className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl bg-slate-50/50 hover:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 font-mono text-slate-800"
+                />
+              </div>
+              <div className={isAdminOrHead ? "sm:col-span-2 lg:col-span-4" : "sm:col-span-2"}>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Reason / Justification Remarks <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Medical appointment, family emergency, bereavement leave..."
+                  value={formState.reason}
+                  onChange={e => setFormState({ ...formState, reason: e.target.value })}
+                  className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl bg-slate-50/50 hover:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-slate-800"
+                />
+              </div>
+            </div>
+            <div className="pt-2 flex justify-end">
+              <button
+                type="submit"
+                className={`flex items-center gap-1.5 px-6 py-2.5 rounded-xl text-xs font-bold transition shadow-xs cursor-pointer ${theme.btnColors}`}
+              >
+                <Check size={14} /> Submit Request
+              </button>
+            </div>
           </div>
         </form>
       )}

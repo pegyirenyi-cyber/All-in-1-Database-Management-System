@@ -99,7 +99,7 @@ import {
   ArrowUpDown, 
   AlertTriangle, 
   CheckCircle2, 
-  Sparkles,
+  Calendar,
   CalendarDays,
   Activity,
   FileDown
@@ -541,7 +541,7 @@ export default function AttendanceSummaryView({ selectedClass, selectedDate, the
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
           <div className="space-y-1">
             <span className="text-[10px] uppercase font-mono font-bold text-indigo-600 tracking-wider flex items-center gap-1">
-              <Sparkles size={11} className="text-indigo-500 animate-pulse" /> Term Calendar View
+              <Calendar size={11} className="text-indigo-500" /> Term Calendar View
             </span>
             <h4 className="text-sm font-black text-slate-900 tracking-tight flex items-center gap-2">
               Class Attendance Heatmap (Current Term)
@@ -853,7 +853,7 @@ export default function AttendanceSummaryView({ selectedClass, selectedDate, the
 
         {/* Footer insight */}
         <div className="px-5 py-3 border-t border-slate-100 bg-slate-50 text-[10px] font-mono text-slate-400 text-center flex items-center justify-center gap-1">
-          <Sparkles size={11} className="text-indigo-500" />
+          <CheckCircle2 size={11} className="text-indigo-500" />
           <span>Attendance rate targets should stay above <strong>90%</strong>. Instantly issue advisories to flagged students.</span>
         </div>
 

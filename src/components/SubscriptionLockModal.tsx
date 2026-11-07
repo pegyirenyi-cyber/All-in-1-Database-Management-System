@@ -1,14 +1,14 @@
-import { useState, FormEvent } from 'react';
+import { useState, useEffect, FormEvent } from 'react';
 import { motion } from 'framer-motion';
 import { DbController } from '../db';
-import { UserAccount } from '../types';
+import { UserAccount, PlatformPricing } from '../types';
 import { 
   evaluateSubscription, 
   getContactAdminLinks, 
   generateActivationCode 
 } from '../subscription';
 import { 
-  Lock, Mail, Phone, KeyRound, ArrowRightLeft, ShieldAlert, Sparkles, CheckCircle2, LogOut, CreditCard 
+  Lock, Mail, Phone, KeyRound, ArrowRightLeft, ShieldAlert, CheckCircle2, LogOut, CreditCard 
 } from 'lucide-react';
 
 interface SubscriptionLockModalProps {
@@ -23,6 +23,21 @@ export default function SubscriptionLockModal({ user, onUnlocked, onLogout, onSh
   const [isVerifying, setIsVerifying] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [platformPricing, setPlatformPricing] = useState<PlatformPricing>(() => DbController.getPlatformPricing());
+
+  useEffect(() => {
+    const handlePlatformPricingUpdated = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const newPricing = customEvent.detail || DbController.getPlatformPricing();
+      setPlatformPricing(newPricing);
+    };
+    window.addEventListener('platform-pricing-updated', handlePlatformPricingUpdated);
+    window.addEventListener('school-updated', handlePlatformPricingUpdated);
+    return () => {
+      window.removeEventListener('platform-pricing-updated', handlePlatformPricingUpdated);
+      window.removeEventListener('school-updated', handlePlatformPricingUpdated);
+    };
+  }, []);
 
   const status = evaluateSubscription(user);
   if (!status) return null;
@@ -102,14 +117,16 @@ export default function SubscriptionLockModal({ user, onUnlocked, onLogout, onSh
           )}
           
           <h2 className="text-xl font-black tracking-tight text-amber-400 uppercase font-sans">
-            {success ? "License Unlocked!" : isTrial ? "App Trial Expired" : "License Renewal Required"}
+            {success ? "License Unlocked!" : isTrial ? "7-Day Free Trial Ended" : user.licenseType === 'activated' ? "License Renewal Required" : "License Activation Required"}
           </h2>
           <p className="text-xs text-slate-400 leading-relaxed font-sans">
             {success 
               ? "Your license has been verified. Welcome back to GEETECH Multimedia!"
-              : isTrial 
-                ? "Your 14-day system trial has expired. To preserve your school databases and continue using the software, it is highly recommended to subscribe for 1 year, 2 years, 3 years, or 5 years."
-                : "Your school database license has completed its academic term. Please contact the administrator to renew or subscribe for 1 year, 2 years, 3 years, or 5 years."
+              : isTrial
+                ? "Your 7-day free trial period has concluded. Please activate your school database license (1, 2, 3, or 5 years) to continue using the system."
+                : user.licenseType === 'activated'
+                  ? "Your school database license has completed its academic period. Please purchase a renewal license (1, 2, 3, or 5 years) to continue."
+                  : "An active school database license (1, 2, 3, or 5 years) is required to access the system. Please activate your license to proceed."
             }
           </p>
         </div>
@@ -133,13 +150,36 @@ export default function SubscriptionLockModal({ user, onUnlocked, onLogout, onSh
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-500">Current Status</span>
-                <span className="text-rose-400 font-bold uppercase tracking-wider text-[10px]">Expired / Locked</span>
+                <span className="text-rose-400 font-bold uppercase tracking-wider text-[10px]">{isTrial ? "Trial Ended / License Required" : "Expired / Locked"}</span>
               </div>
             </div>
 
             {/* Quick-action support links */}
             <div className="space-y-3">
-              <span className="block text-[10px] text-slate-500 font-mono uppercase tracking-wider text-center">Renewal & Activation Options</span>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-slate-500 font-mono uppercase tracking-wider">Renewal Pricing Tiers</span>
+                <span className="text-[9px] text-emerald-400 font-bold bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-800/40 font-mono">Live Rates</span>
+              </div>
+
+              {/* Official Admin Renewal Rates Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-2">
+                  <span className="block text-[9px] font-mono font-bold text-slate-400 uppercase">1 Year</span>
+                  <strong className="block text-xs font-black font-mono text-slate-100">GHS {platformPricing.licensePrice1Year}</strong>
+                </div>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-2">
+                  <span className="block text-[9px] font-mono font-bold text-slate-400 uppercase">2 Years</span>
+                  <strong className="block text-xs font-black font-mono text-emerald-400">GHS {platformPricing.licensePrice2Year}</strong>
+                </div>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-2">
+                  <span className="block text-[9px] font-mono font-bold text-slate-400 uppercase">3 Years</span>
+                  <strong className="block text-xs font-black font-mono text-indigo-400">GHS {platformPricing.licensePrice3Year}</strong>
+                </div>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-2">
+                  <span className="block text-[9px] font-mono font-bold text-slate-400 uppercase">5 Years</span>
+                  <strong className="block text-xs font-black font-mono text-amber-400">GHS {platformPricing.licensePrice5Year}</strong>
+                </div>
+              </div>
               
               <button 
                 onClick={onShowBilling}

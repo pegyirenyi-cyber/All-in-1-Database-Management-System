@@ -14,7 +14,7 @@ import {
   AlertTriangle, DollarSign, TrendingDown, Layers, FileSpreadsheet,
   Printer, ArrowRight, Eye, ShieldCheck, Clock, Check, X,
   Banknote, Wrench, BookOpen, Zap, Bus, Utensils, Trophy,
-  Compass, Receipt, Cpu, MoreHorizontal, Sparkles, Building2
+  Compass, Receipt, Cpu, MoreHorizontal, Building2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 

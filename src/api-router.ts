@@ -9,7 +9,8 @@ export const apiRouter = express.Router();
 // Dynamically load Firebase config if exists for server-side persistence sync
 let firebaseConfig = {
   projectId: process.env.FIREBASE_PROJECT_ID || '',
-  apiKey: process.env.FIREBASE_API_KEY || ''
+  apiKey: process.env.FIREBASE_API_KEY || '',
+  firestoreDatabaseId: process.env.FIREBASE_DATABASE_ID || ''
 };
 
 if (!firebaseConfig.projectId || !firebaseConfig.apiKey) {
@@ -19,7 +20,8 @@ if (!firebaseConfig.projectId || !firebaseConfig.apiKey) {
       const fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       firebaseConfig.projectId = fileConfig.projectId || '';
       firebaseConfig.apiKey = fileConfig.apiKey || '';
-      console.log(`[API Router Setup] Loaded Firebase credentials from file fallback. Project: ${firebaseConfig.projectId}`);
+      firebaseConfig.firestoreDatabaseId = fileConfig.firestoreDatabaseId || '';
+      console.log(`[API Router Setup] Loaded Firebase credentials from file fallback. Project: ${firebaseConfig.projectId}, Database: ${firebaseConfig.firestoreDatabaseId || '(default)'}`);
     }
   } catch (err) {
     console.warn("[API Router Setup] Could not read firebase-applet-config.json fallback. Using environment variables.", err);
@@ -54,7 +56,7 @@ async function fetchFirestoreDocument(collection: string, docId: string): Promis
   try {
     const token = await getGcpAccessToken();
     const headers: Record<string, string> = {};
-    let url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/${collection}/${docId}`;
+    let url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${firebaseConfig.firestoreDatabaseId || '(default)'}/documents/${collection}/${docId}`;
     
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
@@ -91,7 +93,7 @@ async function logWebhookPaymentToFirestore(paymentData: {
   try {
     const token = await getGcpAccessToken();
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    let url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/paystack_payments/${paymentData.reference}`;
+    let url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${firebaseConfig.firestoreDatabaseId || '(default)'}/documents/paystack_payments/${paymentData.reference}`;
     
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
@@ -153,7 +155,7 @@ async function logWebhookPaymentToFirestore(paymentData: {
           const newBalance = existingBalance + purchasedCredits;
           console.log(`[Paystack Wallet Top-Up] Crediting school default profile. Old balance: ${existingBalance} + New credits: ${purchasedCredits} = Total SMS balance: ${newBalance}`);
 
-          let patchUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/schools/school_default?updateMask.fieldPaths=smsBalance`;
+          let patchUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${firebaseConfig.firestoreDatabaseId || '(default)'}/documents/schools/school_default?updateMask.fieldPaths=smsBalance`;
           const patchHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
           
           if (token) {
@@ -408,7 +410,7 @@ apiRouter.post('/communications/send-sms', async (req, res) => {
 
       if (projectId && apiKey) {
         try {
-          const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/schools/school_default?key=${apiKey}`;
+          const docUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${firebaseConfig.firestoreDatabaseId || '(default)'}/documents/schools/school_default?key=${apiKey}`;
           const response = await fetch(docUrl);
           if (response.ok) {
             const docData = await response.json();
@@ -436,7 +438,7 @@ apiRouter.post('/communications/send-sms', async (req, res) => {
       // Decrement the balance in the DB
       if (projectId && apiKey) {
         try {
-          const schoolUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/schools/school_default?key=${apiKey}&updateMask.fieldPaths=smsBalance`;
+          const schoolUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${firebaseConfig.firestoreDatabaseId || '(default)'}/documents/schools/school_default?key=${apiKey}&updateMask.fieldPaths=smsBalance`;
           await fetch(schoolUrl, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
@@ -548,7 +550,7 @@ apiRouter.post('/communications/send-email', async (req, res) => {
     if (projectId && apiKey) {
       try {
         const mailLogId = `MAIL_${receiptNo}_${Date.now()}`;
-        const mailUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/outbox_emails/${mailLogId}?key=${apiKey}`;
+        const mailUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${firebaseConfig.firestoreDatabaseId || '(default)'}/documents/outbox_emails/${mailLogId}?key=${apiKey}`;
         
         await fetch(mailUrl, {
           method: 'PATCH',
@@ -1152,4 +1154,320 @@ apiRouter.post('/finances/bill-categories/validate', async (req, res) => {
     });
   }
 });
+
+// ==================== SETUP WIZARD SERVER-SIDE VALIDATION ====================
+/**
+ * Server-side validation for all Setup Wizard stages.
+ * Validates critical institutional data including:
+ * - EMIS code formatting
+ * - School contact info (phone, email, address)
+ * - Headteacher credentials
+ * - Branding & Base64 image payloads
+ * - Academic term & calendar bounds
+ * - Paystack configuration keys
+ */
+apiRouter.post('/setup-wizard/validate', async (req, res) => {
+  try {
+    const { stage, data } = req.body || {};
+    const input = data || req.body || {};
+
+    const errors: Record<string, string> = {};
+    const sanitized: Record<string, any> = {};
+
+    const validateStage1 = !stage || stage === 1 || stage === 'all';
+    const validateStage2 = !stage || stage === 2 || stage === 'all';
+    const validateStage3 = !stage || stage === 3 || stage === 'all';
+    const validateStage4 = !stage || stage === 4 || stage === 'all';
+    const validateStage5 = !stage || stage === 5 || stage === 'all';
+
+    // Helper functions
+    const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    const cleanPhoneDigits = (phone: string) => phone.replace(/[^0-9]/g, '');
+
+    // -------------------------------------------------------------
+    // STAGE 1: School Identity, EMIS Code & Contact Information
+    // -------------------------------------------------------------
+    if (validateStage1) {
+      const rawSchoolName = input.schoolName || input.name;
+      if (!rawSchoolName || typeof rawSchoolName !== 'string' || !rawSchoolName.trim()) {
+        errors.schoolName = 'Official School Name is required and cannot be blank.';
+      } else {
+        const trimmedName = rawSchoolName.trim();
+        if (trimmedName.length < 3) {
+          errors.schoolName = 'School name must be at least 3 characters.';
+        } else if (trimmedName.length > 120) {
+          errors.schoolName = 'School name must not exceed 120 characters.';
+        } else if (/<[^>]*>/g.test(trimmedName)) {
+          errors.schoolName = 'School name cannot contain HTML or script characters.';
+        } else {
+          sanitized.schoolName = trimmedName;
+          sanitized.name = trimmedName;
+        }
+      }
+
+      // EMIS Code validation (Optional - only check if user provided a value)
+      const rawEmis = input.emisCode;
+      if (rawEmis !== undefined && rawEmis !== null) {
+        const trimmedEmis = String(rawEmis).trim().toUpperCase();
+        if (trimmedEmis) {
+          if (!/^[A-Z0-9\/-]{3,30}$/i.test(trimmedEmis)) {
+            errors.emisCode = 'EMIS Code must be alphanumeric (e.g. EMIS-09182736 or 2024EMIS01).';
+          } else {
+            sanitized.emisCode = trimmedEmis;
+          }
+        }
+      }
+
+      // GES Registration Number validation (Optional)
+      if (input.gesRegNumber) {
+        const trimmedGes = String(input.gesRegNumber).trim();
+        if (trimmedGes.length < 3 || trimmedGes.length > 35) {
+          errors.gesRegNumber = 'GES Registration Number should be between 3 and 35 characters.';
+        } else {
+          sanitized.gesRegNumber = trimmedGes;
+        }
+      }
+
+      // Email validation (Optional)
+      const rawEmail = input.email;
+      if (rawEmail !== undefined && rawEmail !== null) {
+        const trimmedEmail = String(rawEmail).trim().toLowerCase();
+        if (trimmedEmail && !isValidEmail(trimmedEmail)) {
+          errors.email = 'Please provide a valid official school email address (e.g. info@academy.edu.gh).';
+        } else {
+          sanitized.email = trimmedEmail;
+        }
+      }
+
+      // Phone / Telephone validation (Optional)
+      const rawPhone = input.phone || input.telephone;
+      if (rawPhone !== undefined && rawPhone !== null) {
+        const trimmedPhone = String(rawPhone).trim();
+        const digits = cleanPhoneDigits(trimmedPhone);
+        if (trimmedPhone && (digits.length < 9 || digits.length > 15)) {
+          errors.phone = 'School phone number must contain between 9 and 15 digits (e.g. +233 24 123 4567).';
+        } else {
+          sanitized.phone = trimmedPhone;
+          sanitized.telephone = trimmedPhone;
+        }
+      }
+
+      // Geographical / District / Address Sanitization
+      if (input.motto) sanitized.motto = String(input.motto).trim();
+      if (input.country) sanitized.country = String(input.country).trim();
+      if (input.region) sanitized.region = String(input.region).trim();
+      if (input.district) sanitized.district = String(input.district).trim();
+      if (input.circuit) sanitized.circuit = String(input.circuit).trim();
+      if (input.currency) sanitized.currency = String(input.currency).trim().toUpperCase();
+      if (input.address || input.officialAddress) {
+        const addr = String(input.address || input.officialAddress).trim();
+        sanitized.address = addr;
+        sanitized.officialAddress = addr;
+      }
+    }
+
+    // -------------------------------------------------------------
+    // STAGE 2: Academic Calendar & Schedule
+    // -------------------------------------------------------------
+    if (validateStage2) {
+      if (input.academicYear) {
+        const year = String(input.academicYear).trim();
+        if (!/^\d{4}\/\d{4}$/.test(year) && year.length < 4) {
+          errors.academicYear = 'Academic Year should follow the format YYYY/YYYY (e.g. 2026/2027).';
+        } else {
+          sanitized.academicYear = year;
+        }
+      }
+
+      if (input.currentTerm) {
+        sanitized.currentTerm = String(input.currentTerm).trim();
+      }
+
+      if (input.termStartDate && input.termEndDate) {
+        const start = new Date(input.termStartDate).getTime();
+        const end = new Date(input.termEndDate).getTime();
+        if (!isNaN(start) && !isNaN(end) && end < start) {
+          errors.termEndDate = 'Term closing date cannot be earlier than term opening date.';
+        } else {
+          sanitized.termStartDate = input.termStartDate;
+          sanitized.termEndDate = input.termEndDate;
+        }
+      } else {
+        if (input.termStartDate) sanitized.termStartDate = input.termStartDate;
+        if (input.termEndDate) sanitized.termEndDate = input.termEndDate;
+      }
+    }
+
+    // -------------------------------------------------------------
+    // STAGE 3: Active Classes & Curriculum / Grading Structure
+    // -------------------------------------------------------------
+    if (validateStage3) {
+      if (Array.isArray(input.selectedClasses)) {
+        if (input.selectedClasses.length === 0) {
+          errors.selectedClasses = 'At least one active class stream must be selected.';
+        } else {
+          sanitized.selectedClasses = input.selectedClasses.map(String);
+        }
+      }
+      if (input.gradingSystem) {
+        sanitized.gradingSystem = String(input.gradingSystem).trim();
+      }
+    }
+
+    // -------------------------------------------------------------
+    // STAGE 4: School Crest, Headteacher Signature & Branding
+    // -------------------------------------------------------------
+    if (validateStage4) {
+      const isValidImageOrBase64 = (val: string) => {
+        if (!val) return true;
+        if (val.startsWith('data:image/')) {
+          return val.includes(';base64,') && val.length > 50;
+        }
+        return val.startsWith('http://') || val.startsWith('https://') || val.startsWith('/');
+      };
+
+      const crest = input.logoUrl || input.crestUrl;
+      if (crest && !isValidImageOrBase64(crest)) {
+        errors.logoUrl = 'School crest must be a valid Base64 image data URL or valid image link.';
+      } else if (crest) {
+        sanitized.logoUrl = crest;
+        sanitized.crestUrl = crest;
+      }
+
+      const sig = input.signatureUrl || input.headteacherSignatureUrl;
+      if (sig && !isValidImageOrBase64(sig)) {
+        errors.signatureUrl = 'Signature must be a valid Base64 image data URL or valid image link.';
+      } else if (sig) {
+        sanitized.signatureUrl = sig;
+        sanitized.headteacherSignatureUrl = sig;
+      }
+
+      if (input.primaryColor) {
+        const col = String(input.primaryColor).trim();
+        if (!/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/.test(col)) {
+          errors.primaryColor = 'Primary theme color must be a valid hex color code (e.g. #1e3a8a).';
+        } else {
+          sanitized.primaryColor = col;
+        }
+      }
+
+      const rawHead = input.headteacherName || input.headName;
+      if (rawHead && String(rawHead).trim().length < 2) {
+        errors.headteacherName = 'Headteacher name must be at least 2 characters.';
+      } else if (rawHead) {
+        sanitized.headteacherName = String(rawHead).trim();
+      }
+
+      const rawHeadEmail = input.headteacherEmail || input.headEmail;
+      if (rawHeadEmail) {
+        const trimmed = String(rawHeadEmail).trim().toLowerCase();
+        if (!isValidEmail(trimmed)) {
+          errors.headteacherEmail = 'Please provide a valid email format for the Headteacher.';
+        } else {
+          sanitized.headteacherEmail = trimmed;
+        }
+      }
+
+      const rawHeadPhone = input.headteacherPhone || input.headPhone;
+      if (rawHeadPhone) {
+        const digits = cleanPhoneDigits(String(rawHeadPhone));
+        if (digits.length < 9 || digits.length > 15) {
+          errors.headteacherPhone = 'Headteacher phone must contain 9 to 15 digits.';
+        } else {
+          sanitized.headteacherPhone = String(rawHeadPhone).trim();
+        }
+      }
+
+      if (input.staffId) sanitized.staffId = String(input.staffId).trim();
+    }
+
+    // -------------------------------------------------------------
+    // STAGE 5: Tuition Fees, Banking Details & Paystack Gateway
+    // -------------------------------------------------------------
+    if (validateStage5) {
+      if (input.defaultTermFee !== undefined) {
+        const fee = Number(input.defaultTermFee);
+        if (isNaN(fee) || fee < 0) {
+          errors.defaultTermFee = 'Default term tuition fee must be a non-negative number.';
+        } else {
+          sanitized.defaultTermFee = fee;
+        }
+      }
+      if (input.bankName) sanitized.bankName = String(input.bankName).trim();
+      if (input.bankAccountNum) {
+        const num = String(input.bankAccountNum).trim();
+        if (num && num.length < 4) {
+          errors.bankAccountNum = 'Bank account number should be at least 4 digits.';
+        } else {
+          sanitized.bankAccountNum = num;
+        }
+      }
+      if (input.momoMerchantNumber) {
+        sanitized.momoMerchantNumber = String(input.momoMerchantNumber).trim();
+      }
+
+      const mode = (input.paystackMode === 'live' ? 'live' : 'test');
+      sanitized.paystackMode = mode;
+
+      const pubKey = input.paystackPublicKey ? String(input.paystackPublicKey).trim() : '';
+      if (pubKey) {
+        if (mode === 'test' && !pubKey.startsWith('pk_test_')) {
+          errors.paystackPublicKey = 'Test mode Paystack public key must start with "pk_test_".';
+        } else if (mode === 'live' && !pubKey.startsWith('pk_live_')) {
+          errors.paystackPublicKey = 'Live mode Paystack public key must start with "pk_live_".';
+        } else if (pubKey.length < 15) {
+          errors.paystackPublicKey = 'Paystack public key format is too short.';
+        } else {
+          sanitized.paystackPublicKey = pubKey;
+        }
+      }
+
+      const secKey = input.paystackSecretKey ? String(input.paystackSecretKey).trim() : '';
+      if (secKey) {
+        if (mode === 'test' && !secKey.startsWith('sk_test_')) {
+          errors.paystackSecretKey = 'Test mode Paystack secret key must start with "sk_test_".';
+        } else if (mode === 'live' && !secKey.startsWith('sk_live_')) {
+          errors.paystackSecretKey = 'Live mode Paystack secret key must start with "sk_live_".';
+        } else if (secKey.length < 15) {
+          errors.paystackSecretKey = 'Paystack secret key format is too short.';
+        } else {
+          sanitized.paystackSecretKey = secKey;
+        }
+      }
+    }
+
+    const hasErrors = Object.keys(errors).length > 0;
+    if (hasErrors) {
+      const firstField = Object.keys(errors)[0];
+      let failedStage = 1;
+      if (['academicYear', 'currentTerm', 'termStartDate', 'termEndDate'].includes(firstField)) failedStage = 2;
+      else if (['selectedClasses', 'gradingSystem'].includes(firstField)) failedStage = 3;
+      else if (['logoUrl', 'signatureUrl', 'primaryColor', 'headteacherName', 'headteacherEmail', 'headteacherPhone', 'staffId'].includes(firstField)) failedStage = 4;
+      else if (['defaultTermFee', 'bankName', 'bankAccountNum', 'momoMerchantNumber', 'paystackMode', 'paystackPublicKey', 'paystackSecretKey'].includes(firstField)) failedStage = 5;
+
+      return res.status(422).json({
+        valid: false,
+        error: 'VALIDATION_FAILED',
+        stage: failedStage,
+        field: firstField,
+        message: errors[firstField],
+        errors
+      });
+    }
+
+    return res.json({
+      valid: true,
+      stage: stage || 'all',
+      sanitized
+    });
+  } catch (err: any) {
+    console.error('[Setup Wizard Validation Error]', err);
+    return res.status(500).json({
+      valid: false,
+      error: 'SERVER_ERROR',
+      message: 'Server failed to validate setup wizard data: ' + (err.message || String(err))
+    });
+  }
+});
+
 

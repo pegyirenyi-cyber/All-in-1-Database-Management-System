@@ -41,24 +41,12 @@ export default function DeveloperStatus({ isAutoSaveActive = true, hasUnsavedCha
 
         {/* Real-time Status Engines */}
         <div className="flex items-center flex-wrap gap-4 text-[11px] text-slate-300">
-          <div className="flex items-center gap-1.5 bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700/60">
-            <span className={`w-2 h-2 rounded-full ${isAutoSaveActive ? 'bg-emerald-500' : 'bg-slate-500'}`} />
-            <span>Auto Save: <strong className="text-emerald-400">{isAutoSaveActive ? 'ACTIVE' : 'OFF'}</strong></span>
-          </div>
+
 
           <div className="flex items-center gap-2">
-            {hasUnsavedChanges ? (
-              <button 
-                onClick={onSave}
-                className="bg-amber-500 hover:bg-amber-600 active:translate-y-0.5 transition text-slate-950 font-bold px-2 py-0.5 rounded cursor-pointer flex items-center gap-1"
-              >
-                <Award size={11} className="animate-spin" /> Unsaved Changes - Save Now
-              </button>
-            ) : (
-              <span className="flex items-center gap-1 text-emerald-400 font-sans text-[10px] uppercase tracking-wide bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-900/40">
-                <CheckCircle2 size={11} /> Saved
-              </span>
-            )}
+            <span className="flex items-center gap-1 text-emerald-400 font-sans text-[10px] uppercase tracking-wide bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-900/40">
+              <CheckCircle2 size={11} className="text-emerald-400" /> All Data Synced Live
+            </span>
           </div>
 
           <div id="status-copyright" className="text-slate-500 text-[10px]">

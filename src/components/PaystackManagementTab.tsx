@@ -6,7 +6,7 @@ import {
 import { 
   CreditCard, Search, RefreshCw, CheckCircle2, AlertTriangle, Trash2, 
   Settings, ArrowLeftRight, Download, Filter, FileText, Plus, HelpCircle, AlertCircle,
-  Percent, Sparkles
+  Percent, Check
 } from 'lucide-react';
 import { DbController } from '../db';
 import { PaystackPayment, StudentFeeBill, Student, UserAccount } from '../types';
@@ -56,6 +56,27 @@ export default function PaystackManagementTab({ themeStyles }: PaystackManagemen
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [componentFilter, setComponentFilter] = useState<string>('all');
+  const [selectedPayments, setSelectedPayments] = useState<Set<string>>(new Set());
+
+  const handleBulkAction = async (newStatus: string) => {
+    if (selectedPayments.size === 0) return;
+    
+    try {
+      for (const id of selectedPayments) {
+        const payment = payments.find(p => p.id === id);
+        if (payment) {
+          const updatedPayment = { ...payment, status: newStatus };
+          await DbController.savePaystackPayment(updatedPayment);
+        }
+      }
+      setSelectedPayments(new Set());
+      await loadData(true);
+      alert(`Bulk action successful: ${newStatus}`);
+    } catch (e) {
+      console.error(e);
+      alert("Bulk action failed.");
+    }
+  };
 
   // Manual payment creation override state for Admin reconciled transactions
   const [showManualModal, setShowManualModal] = useState(false);
@@ -506,15 +527,12 @@ export default function PaystackManagementTab({ themeStyles }: PaystackManagemen
     return sortedData;
   }, [successPayments]);
 
-  // Process monthly subscription renewals data for Recharts (combining live with realistic baseline for trend tracking)
+  // Process monthly subscription renewals data for Recharts
   const subscriptionRevenueData = useMemo(() => {
     const defaultData: Record<string, { monthKey: string; monthLabel: string; renewalRevenue: number; renewalsCount: number; timestamp: number }> = {};
     const current = new Date();
     
-    // Monthly baseline to showcase a realistic 6-month historical trend
-    const mockAmounts = [1400, 2100, 1750, 3150, 2450, 3850];
-    const mockCounts = [4, 6, 5, 9, 7, 11];
-    
+    // Initialize past 6 months timeline with zero revenue baseline
     for (let i = 5; i >= 0; i--) {
       const d = new Date(current.getFullYear(), current.getMonth() - i, 1);
       const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
@@ -523,8 +541,8 @@ export default function PaystackManagementTab({ themeStyles }: PaystackManagemen
       defaultData[monthKey] = {
         monthKey,
         monthLabel,
-        renewalRevenue: mockAmounts[5 - i],
-        renewalsCount: mockCounts[5 - i],
+        renewalRevenue: 0,
+        renewalsCount: 0,
         timestamp: d.getTime()
       };
     }
@@ -972,7 +990,7 @@ export default function PaystackManagementTab({ themeStyles }: PaystackManagemen
                     </>
                   ) : (
                     <>
-                      <Sparkles size={13} />
+                      <Check size={13} />
                       Apply Discount
                     </>
                   )}
@@ -1071,9 +1089,52 @@ export default function PaystackManagementTab({ themeStyles }: PaystackManagemen
           </div>
         ) : (
           <div className="overflow-x-auto">
+            <div className="mb-4 flex items-center gap-3">
+              <button
+                onClick={() => {
+                  const selectedIds = new Set<string>();
+                  filteredPayments.forEach(p => selectedIds.add(p.id));
+                  setSelectedPayments(selectedIds);
+                }}
+                className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800"
+              >
+                Select All
+              </button>
+              {selectedPayments.size > 0 && (
+                <>
+                  <span className="text-[10px] text-slate-400">|</span>
+                  <button
+                    onClick={() => handleBulkAction('success_reconciled')}
+                    className="px-3 py-1.5 bg-emerald-600 text-white text-[10px] font-bold rounded-lg hover:bg-emerald-700"
+                  >
+                    Bulk Approve ({selectedPayments.size})
+                  </button>
+                  <button
+                    onClick={() => handleBulkAction('failed')}
+                    className="px-3 py-1.5 bg-rose-600 text-white text-[10px] font-bold rounded-lg hover:bg-rose-700"
+                  >
+                    Bulk Reject ({selectedPayments.size})
+                  </button>
+                </>
+              )}
+            </div>
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-slate-100/60 uppercase text-[9px] font-mono font-bold text-slate-500 tracking-wider border-b border-slate-200">
+                  <th className="px-6 py-3 w-8">
+                    <input
+                      type="checkbox"
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          const allIds = new Set(filteredPayments.map(p => p.id));
+                          setSelectedPayments(allIds);
+                        } else {
+                          setSelectedPayments(new Set());
+                        }
+                      }}
+                      checked={selectedPayments.size === filteredPayments.length && filteredPayments.length > 0}
+                    />
+                  </th>
                   <th className="px-6 py-3">Reference / ID</th>
                   <th className="px-6 py-3">Student Name (ID)</th>
                   <th className="px-6 py-3">Target Fee Component</th>
@@ -1095,6 +1156,18 @@ export default function PaystackManagementTab({ themeStyles }: PaystackManagemen
 
                   return (
                     <tr key={p.id} className="hover:bg-slate-50/50 transition">
+                      <td className="px-6 py-3.5">
+                        <input
+                          type="checkbox"
+                          checked={selectedPayments.has(p.id)}
+                          onChange={(e) => {
+                            const newSelected = new Set(selectedPayments);
+                            if (e.target.checked) newSelected.add(p.id);
+                            else newSelected.delete(p.id);
+                            setSelectedPayments(newSelected);
+                          }}
+                        />
+                      </td>
                       {/* Reference */}
                       <td className="px-6 py-3.5">
                         <div className="space-y-0.5">

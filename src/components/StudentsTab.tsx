@@ -2,7 +2,7 @@ import React, { useState, useRef, ChangeEvent, FormEvent, useMemo, useEffect } f
 import { 
   Student, ClassType, CLASSES, SectionType, SECTIONS, 
   AcademicYearType, ACADEMIC_YEARS, TermType, TERMS, UserRole,
-  BehavioralRemark, SubjectType, COMMON_MEDICAL_CONDITIONS
+  BehavioralRemark, SubjectType, SUBJECTS, COMMON_MEDICAL_CONDITIONS
 } from '../types';
 import { DbController } from '../db';
 import { compressImage } from '../utils';
@@ -10,7 +10,7 @@ import { ThemeStyles } from './ThemeWrapper';
 import { 
   Plus, Search, Edit2, Trash2, Printer, Upload, X, Check, Save, User, MapPin, PhoneCall, ShieldAlert, BadgeCheck, FileDown, RotateCcw, Eraser, Eye, FileSpreadsheet,
   ChevronLeft, ChevronRight, IdCard, MessageSquare, AlertTriangle, Heart, Award, BookOpen, QrCode, Mail, Camera, Share2, TrendingUp, Calendar, UserCheck, Users, History, Mic, UserPlus,
-  RefreshCw, CircleDollarSign, FileText, Languages, Sparkles
+  RefreshCw, CircleDollarSign, FileText, Languages, Layers
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -24,6 +24,7 @@ import { PrintPreviewModal } from './PrintPreviewModal';
 import { QRCodeSVG } from 'qrcode.react';
 import { generateSecureToken, getWatermarkHtml, triggerToast, shareParentPortalWhatsApp, getWhatsAppShareData, WhatsAppTemplate, calculateAgeFromDob } from '../utils';
 import SmartTextarea from './SmartTextarea';
+import { AcademicYearModal } from './common/AcademicYearModal';
 
 const GHANA_CREST_SVG_SIMPLE = `
 <svg viewBox="0 0 100 100" width="100%" height="100%" style="width: 250px; height: 250px; color: #000;">
@@ -132,7 +133,8 @@ const INITIAL_FORM: Partial<Student> = {
   formerSchool: '',
   medicalCondition: 'None',
   medicalConditionOther: '',
-  medicalNotes: ''
+  medicalNotes: '',
+  enrolledSubjects: [] as SubjectType[]
 };
 
 export default function StudentsTab({ 
@@ -153,6 +155,19 @@ export default function StudentsTab({
   const [searchTerm, setSearchTerm] = useState('');
   const [isListening, setIsListening] = useState(false);
   const recognitionRef = useRef<any>(null);
+  const [schoolInfo, setSchoolInfo] = useState(() => DbController.getSchoolInfo());
+
+  useEffect(() => {
+    const handleSchoolSync = () => {
+      setSchoolInfo(DbController.getSchoolInfo());
+    };
+    window.addEventListener('school-system-sync', handleSchoolSync);
+    window.addEventListener('school-updated', handleSchoolSync);
+    return () => {
+      window.removeEventListener('school-system-sync', handleSchoolSync);
+      window.removeEventListener('school-updated', handleSchoolSync);
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -244,10 +259,10 @@ export default function StudentsTab({
   });
   const [selectedSection, setSelectedSection] = useState<string>('All');
   const [sectionsList, setSectionsList] = useState<string[]>(() => DbController.getSections());
-  const [showAddSectionInput, setShowAddSectionInput] = useState(false);
-  const [newSectionName, setNewSectionName] = useState('');
   const [showSectionManagerModal, setShowSectionManagerModal] = useState(false);
   const [newManagerSectionName, setNewManagerSectionName] = useState('');
+  const [isCreatingSection, setIsCreatingSection] = useState(false);
+  const [newSectionInput, setNewSectionInput] = useState('');
 
   useEffect(() => {
     const handleSyncSections = () => {
@@ -257,10 +272,17 @@ export default function StudentsTab({
     return () => window.removeEventListener('sections-updated', handleSyncSections);
   }, []);
 
-  const handleCreateSection = (e?: React.FormEvent, nameOverride?: string) => {
-    if (e) e.preventDefault();
-    const raw = nameOverride !== undefined ? nameOverride : newSectionName;
-    const trimmed = (raw || '').trim();
+  const [academicYearsList, setAcademicYearsList] = useState<AcademicYearType[]>(() => DbController.getAcademicYears());
+  const [showAcademicYearModal, setShowAcademicYearModal] = useState(false);
+
+  useEffect(() => {
+    const handleSyncYears = () => setAcademicYearsList(DbController.getAcademicYears());
+    window.addEventListener('academic-years-updated', handleSyncYears);
+    return () => window.removeEventListener('academic-years-updated', handleSyncYears);
+  }, []);
+
+  const handleCreateSection = (sectionName: string) => {
+    const trimmed = (sectionName || '').trim();
     if (!trimmed) {
       triggerToast('Please provide a valid section name.', 'info');
       return;
@@ -268,9 +290,27 @@ export default function StudentsTab({
     const updated = DbController.saveCustomSection(trimmed);
     setSectionsList(updated);
     setFormState(prev => ({ ...prev, section: trimmed as SectionType }));
-    setNewSectionName('');
-    setShowAddSectionInput(false);
     triggerToast(`Section category "${trimmed}" saved and selected!`, 'success');
+  };
+
+  const handleSaveNewSection = () => {
+    const trimmed = (newSectionInput || '').trim();
+    if (!trimmed) {
+      triggerToast('Please enter a section name.', 'info');
+      return;
+    }
+    if (trimmed.toLowerCase() === 'none') {
+      setFormState(prev => ({ ...prev, section: 'None' as SectionType }));
+      setIsCreatingSection(false);
+      setNewSectionInput('');
+      return;
+    }
+    const updated = DbController.saveCustomSection(trimmed);
+    setSectionsList(updated);
+    setFormState(prev => ({ ...prev, section: trimmed as SectionType }));
+    setIsCreatingSection(false);
+    setNewSectionInput('');
+    triggerToast(`New section category "${trimmed}" created and selected!`, 'success');
   };
 
   const handleAddSectionFromModal = (e?: React.FormEvent) => {
@@ -326,6 +366,153 @@ export default function StudentsTab({
         }
 
         showToast(`Section "${trimmed}" successfully removed from registry.`, "success");
+      }
+    });
+  };
+
+  // Subject Curriculum Assignment & Management
+  const [subjectsList, setSubjectsList] = useState<string[]>(() => DbController.getSubjects());
+  const [showSubjectManagerModal, setShowSubjectManagerModal] = useState(false);
+  const [newManagerSubjectName, setNewManagerSubjectName] = useState('');
+  const [isCreatingSubject, setIsCreatingSubject] = useState(false);
+  const [newSubjectInput, setNewSubjectInput] = useState('');
+  const [bulkSubjectText, setBulkSubjectText] = useState('');
+  const importSubjectFileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImportSubjectsCsv = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      if (!text) return;
+      const lines = text.split(/\r?\n/);
+      let count = 0;
+      const activeTerm = schoolInfo.currentTerm || 'Term 1';
+      const activeYear = schoolInfo.academicYear || '2026/2027';
+      lines.forEach(line => {
+        const parts = line.split(',');
+        const subjName = parts[0]?.trim().replace(/^["']|["']$/g, '');
+        if (subjName && subjName.toLowerCase() !== 'subject' && subjName.toLowerCase() !== 'name') {
+          DbController.saveCustomSubject(subjName);
+          count++;
+        }
+      });
+      setSubjectsList(DbController.getSubjects());
+      triggerToast(`Successfully imported ${count} subjects from CSV, mapped to active term: ${activeTerm} (${activeYear})`, 'success');
+      if (importSubjectFileInputRef.current) {
+        importSubjectFileInputRef.current.value = '';
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleBulkAddSubjectsText = () => {
+    const trimmedText = bulkSubjectText.trim();
+    if (!trimmedText) {
+      triggerToast('Please enter a comma or newline-separated list of subjects.', 'info');
+      return;
+    }
+    const items = trimmedText.split(/[\n,]/);
+    let count = 0;
+    const activeTerm = schoolInfo.currentTerm || 'Term 1';
+    const activeYear = schoolInfo.academicYear || '2026/2027';
+    items.forEach(item => {
+      const subjName = item.trim().replace(/^["']|["']$/g, '');
+      if (subjName) {
+        DbController.saveCustomSubject(subjName);
+        count++;
+      }
+    });
+    setSubjectsList(DbController.getSubjects());
+    setBulkSubjectText('');
+    triggerToast(`Successfully added ${count} subjects mapped to active term: ${activeTerm} (${activeYear})`, 'success');
+  };
+
+  useEffect(() => {
+    const handleSyncSubjects = () => {
+      setSubjectsList(DbController.getSubjects());
+    };
+    window.addEventListener('subjects-updated', handleSyncSubjects);
+    return () => window.removeEventListener('subjects-updated', handleSyncSubjects);
+  }, []);
+
+  const handleCreateSubject = (subjectName: string) => {
+    const trimmed = (subjectName || '').trim();
+    if (!trimmed) {
+      triggerToast('Please provide a valid subject course name.', 'info');
+      return;
+    }
+    const updated = DbController.saveCustomSubject(trimmed);
+    setSubjectsList(updated);
+    setFormState(prev => {
+      const current = prev.enrolledSubjects && prev.enrolledSubjects.length > 0
+        ? prev.enrolledSubjects
+        : subjectsList;
+      return {
+        ...prev,
+        enrolledSubjects: current.includes(trimmed) ? current : [...current, trimmed]
+      };
+    });
+    triggerToast(`Subject course "${trimmed}" added and enrolled for student!`, 'success');
+  };
+
+  const handleSaveNewSubject = () => {
+    const trimmed = (newSubjectInput || '').trim();
+    if (!trimmed) {
+      triggerToast('Please enter a subject course name.', 'info');
+      return;
+    }
+    const updated = DbController.saveCustomSubject(trimmed);
+    setSubjectsList(updated);
+    setFormState(prev => {
+      const current = prev.enrolledSubjects && prev.enrolledSubjects.length > 0
+        ? prev.enrolledSubjects
+        : subjectsList;
+      return {
+        ...prev,
+        enrolledSubjects: current.includes(trimmed) ? current : [...current, trimmed]
+      };
+    });
+    setIsCreatingSubject(false);
+    setNewSubjectInput('');
+    triggerToast(`New subject course "${trimmed}" created and enrolled!`, 'success');
+  };
+
+  const handleAddSubjectFromModal = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmed = (newManagerSubjectName || '').trim();
+    if (!trimmed) {
+      triggerToast('Please type a subject name.', 'info');
+      return;
+    }
+    const updated = DbController.saveCustomSubject(trimmed);
+    setSubjectsList(updated);
+    setNewManagerSubjectName('');
+    triggerToast(`Subject "${trimmed}" added to school curriculum registry!`, 'success');
+  };
+
+  const handleDeleteSubject = (subjectName: string) => {
+    const trimmed = (subjectName || '').trim();
+    if (!trimmed) return;
+
+    setConfirmModal({
+      isOpen: true,
+      title: `Remove Subject "${trimmed}"?`,
+      message: `Are you sure you want to remove subject "${trimmed}" from your school curriculum? Existing assessment logs will be preserved.`,
+      confirmText: `Remove "${trimmed}"`,
+      danger: true,
+      onConfirm: () => {
+        const updated = DbController.deleteCustomSubject(trimmed);
+        setSubjectsList(updated);
+
+        // Remove from form if enrolled
+        setFormState(prev => ({
+          ...prev,
+          enrolledSubjects: (prev.enrolledSubjects || []).filter(s => s !== trimmed)
+        }));
+
+        showToast(`Subject "${trimmed}" removed from curriculum.`, "success");
       }
     });
   };
@@ -476,11 +663,7 @@ export default function StudentsTab({
     onRefresh();
     setSelectedStudentIds([]);
     setShowBulkUpdateModal(false);
-    triggerToast(`Successfully bulk-updated ${count} student records.`, 'success');
-
-    if (!isAutoSave) {
-      onManualSave();
-    }
+    triggerToast(`Successfully bulk-updated ${count} student records to Cloud Firestore.`, 'success');
   };
 
   const [isCameraOpen, setIsCameraOpen] = useState(false);
@@ -1160,13 +1343,7 @@ export default function StudentsTab({
     setShowImportModal(false);
     setImportFile(null);
     setParsedStudents([]);
-    alert(`Successfully populated ${validRows.length} new student records to roster database.`);
-
-    if (isAutoSave) {
-      // Auto save triggered
-    } else {
-      onManualSave();
-    }
+    alert(`Successfully populated ${validRows.length} new student records to Cloud Firestore.`);
   };
 
   // Filter & auto-sort students dynamically with academicYear, term support, and default alphabetical sorting
@@ -1420,20 +1597,36 @@ export default function StudentsTab({
   };
 
   const handleOpenAdd = () => {
+    const defaultSubs = DbController.getSubjects();
     setFormState({ 
       ...INITIAL_FORM, 
       id: 'ST' + Math.floor(100000 + Math.random() * 90000),
       class: userRole === 'Teacher' && assignedClass && assignedClass !== 'None' ? assignedClass : 'Basic 1',
       academicYear: selectedYear || '2026/2027',
-      term: selectedTerm || 'Term 1'
+      term: selectedTerm || 'Term 1',
+      enrolledSubjects: [...defaultSubs]
     });
     setIsEditing(false);
+    setIsCreatingSection(false);
+    setNewSectionInput('');
+    setIsCreatingSubject(false);
+    setNewSubjectInput('');
     setShowFormModal(true);
   };
 
   const handleOpenEdit = (student: Student) => {
-    setFormState({ ...student });
+    const defaultSubs = DbController.getSubjects();
+    setFormState({ 
+      ...student,
+      enrolledSubjects: student.enrolledSubjects && student.enrolledSubjects.length > 0 
+        ? student.enrolledSubjects 
+        : [...defaultSubs]
+    });
     setIsEditing(true);
+    setIsCreatingSection(false);
+    setNewSectionInput('');
+    setIsCreatingSubject(false);
+    setNewSubjectInput('');
     setShowFormModal(true);
   };
 
@@ -1728,17 +1921,8 @@ export default function StudentsTab({
       return;
     }
 
-    // If user typed a new section name into the input, auto-save and apply it
     let activeSection = (formState.section || 'None') as SectionType;
-    if (newSectionName.trim()) {
-      const trimmed = newSectionName.trim();
-      const updated = DbController.saveCustomSection(trimmed);
-      setSectionsList(updated);
-      activeSection = trimmed as SectionType;
-      setNewSectionName('');
-      setShowAddSectionInput(false);
-    }
-    if (activeSection === '__CREATE_NEW__' || activeSection === '__MANAGE_SECTIONS__') {
+    if (activeSection === '__CREATE_NEW__' || activeSection === '__MANAGE_SECTIONS__' || (activeSection as string) === '__CREATE_NEW_CATEGORY__') {
       activeSection = 'None';
     }
 
@@ -1782,14 +1966,7 @@ export default function StudentsTab({
     // Save immediately as requested
     DbController.saveStudent(payload);
     onRefresh();
-    
-    if (isAutoSave) {
-      // Auto save feedback
-    } else {
-      onManualSave();
-    }
-
-    triggerToast(isEditing ? `Successfully updated student record for ${payload.firstName} ${payload.lastName}.` : `Successfully enrolled student ${payload.firstName} ${payload.lastName} and secured record with client-side AES encryption.`, "success");
+    triggerToast(isEditing ? `Successfully updated student record for ${payload.firstName} ${payload.lastName} in Cloud Firestore.` : `Successfully enrolled student ${payload.firstName} ${payload.lastName} in Cloud Firestore.`, "success");
     setPendingStudent(null);
     setShowFormModal(false);
   };
@@ -1800,14 +1977,7 @@ export default function StudentsTab({
     DbController.saveStudent(pendingStudent);
     onRefresh();
     setShowFormModal(false);
-    
-    if (isAutoSave) {
-      // Auto save triggered
-    } else {
-      onManualSave();
-    }
-
-    showToast(isEditing ? `Successfully updated student record for ${pendingStudent.firstName} ${pendingStudent.lastName}.` : `Successfully enrolled student ${pendingStudent.firstName} ${pendingStudent.lastName} and secured record with client-side AES encryption.`, "success");
+    showToast(isEditing ? `Successfully updated student record for ${pendingStudent.firstName} ${pendingStudent.lastName} in Cloud Firestore.` : `Successfully enrolled student ${pendingStudent.firstName} ${pendingStudent.lastName} in Cloud Firestore.`, "success");
     setPendingStudent(null);
   };
 
@@ -2015,15 +2185,38 @@ export default function StudentsTab({
           </select>
 
           {selectedYear && setSelectedYear && (
-            <select
-              value={selectedYear}
-              onChange={(e) => setSelectedYear(e.target.value as AcademicYearType)}
-              className="text-xs px-2.5 py-2 border border-slate-200 rounded-lg bg-white font-medium"
-            >
-              {ACADEMIC_YEARS.map(yr => (
-                <option key={yr} value={yr}>{yr}</option>
-              ))}
-            </select>
+            <div className="flex items-center gap-1">
+              <select
+                value={selectedYear}
+                onChange={(e) => {
+                  if (e.target.value === '__ADD_ACADEMIC_YEAR__' || e.target.value === '__MANAGE_ACADEMIC_YEARS__') {
+                    setShowAcademicYearModal(true);
+                  } else {
+                    setSelectedYear(e.target.value as AcademicYearType);
+                  }
+                }}
+                className="text-xs px-2.5 py-2 border border-slate-200 rounded-lg bg-white font-medium"
+              >
+                {academicYearsList.map(yr => (
+                  <option key={yr} value={yr}>{yr}</option>
+                ))}
+                {isAdminOrHead && (
+                  <option value="__ADD_ACADEMIC_YEAR__" className="font-bold text-indigo-600 bg-indigo-50/50">
+                    ➕ Add Academic Year...
+                  </option>
+                )}
+              </select>
+              {isAdminOrHead && (
+                <button
+                  type="button"
+                  onClick={() => setShowAcademicYearModal(true)}
+                  className="p-2 border border-slate-200 rounded-lg bg-white hover:bg-slate-50 text-indigo-600 hover:text-indigo-800 transition cursor-pointer"
+                  title="Add or configure Academic Year"
+                >
+                  <Plus size={13} />
+                </button>
+              )}
+            </div>
           )}
 
           {selectedTerm && setSelectedTerm && (
@@ -2861,300 +3054,432 @@ export default function StudentsTab({
               exit={{ opacity: 0, scale: 0.95, y: 15 }}
               transition={{ ease: "easeOut", duration: 0.15 }}
               onClick={(e) => e.stopPropagation()} 
-              className="bg-white rounded-[24px] border border-slate-100 max-w-2xl w-full shadow-2xl max-h-[90vh] overflow-hidden flex flex-col cursor-default md:my-8"
+              className="bg-slate-50/50 rounded-[24px] border border-slate-200/90 max-w-4xl w-full shadow-2xl max-h-[90vh] overflow-hidden flex flex-col cursor-default md:my-8"
             >
             
-            <div className="p-6 pb-4 bg-white border-b border-slate-100/85 flex justify-between items-center">
+            <div className="p-6 pb-4 bg-white border-b border-slate-200/80 flex justify-between items-center shrink-0">
               <div>
-                <h3 className="text-[13px] font-bold text-slate-800 uppercase tracking-widest font-sans flex items-center gap-1.5 leading-none">
-                  <BadgeCheck className="text-emerald-600" size={18} />
+                <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider font-display flex items-center gap-2 leading-none">
+                  <BadgeCheck className="text-emerald-600" size={20} />
                   {isEditing ? 'Modify Student Profile Enrolment' : 'New Student Academic Registration'}
                 </h3>
-                <p className="text-[10px] text-slate-400 mt-1">Specify personal bio details and administrative records</p>
+                <p className="text-[11px] text-slate-500 mt-1">Specify student bio particulars, family contacts, and health records</p>
               </div>
               <button 
+                type="button"
                 onClick={() => setShowFormModal(false)}
-                className="p-1 px-1.5 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-600 transition cursor-pointer"
+                className="p-1.5 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-slate-600 transition cursor-pointer"
               >
-                <X size={18} />
+                <X size={20} />
               </button>
             </div>
 
-            <form onSubmit={handleSaveSubmit} className="flex-1 overflow-y-auto p-6 md:p-8 space-y-6 text-xs bg-white">
+            <form onSubmit={handleSaveSubmit} className="flex-1 overflow-y-auto p-6 space-y-6 text-xs bg-slate-100/50">
               
-              {/* Photo Upload area */}
-              <div className="flex flex-col sm:flex-row items-center gap-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
-                <div className="w-16 h-16 rounded-xl bg-white border border-slate-200 overflow-hidden flex items-center justify-center flex-shrink-0">
-                  {formState.photoUrl ? (
-                    <img src={formState.photoUrl} alt="Preview" className="w-full h-full object-cover" />
-                  ) : (
-                    <User size={24} className="text-slate-300" />
-                  )}
-                </div>
-                <div className="space-y-1.5 text-center sm:text-left">
-                  <div className="font-semibold text-slate-700">Student Profile Photo</div>
-                  <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
-                    <button
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 rounded font-medium shadow-2xs transition flex items-center gap-1 cursor-pointer"
-                    >
-                      <Upload size={13} /> Select Local Drive
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleUrlImage}
-                      className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 rounded font-medium shadow-2xs transition flex items-center gap-1 cursor-pointer"
-                    >
-                      Use Image Link
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setIsCameraOpen(true)}
-                      className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 rounded font-medium shadow-2xs transition flex items-center gap-1 cursor-pointer"
-                    >
-                      <Camera size={13} /> Take Live Photo
-                    </button>
-                    {formState.photoUrl && (
-                      <button
-                        type="button"
-                        onClick={() => setFormState(prev => ({ ...prev, photoUrl: '' }))}
-                        className="px-2 py-1 text-red-600 hover:bg-red-50 rounded font-medium transition"
-                      >
-                        Remove
-                      </button>
-                    )}
-                  </div>
-                  <input
-                    type="file"
-                    ref={fileInputRef}
-                    onChange={handleImageUpload}
-                    accept="image/*"
-                    className="hidden"
-                  />
-                  <div className="text-[10px] text-slate-400">File sizes will compress to client persistent storage.</div>
-                </div>
-              </div>
-
-              {/* Step 1: Personal Particulars */}
-              <div className="space-y-4">
-                <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider pb-1 border-b border-slate-100">Personal Identity Details</h4>
-                
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-slate-600 font-medium mb-1">First Name *</label>
-                    <input
-                      type="text"
-                      value={formState.firstName}
-                      onChange={(e) => setFormState(prev => ({ ...prev, firstName: e.target.value }))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-slate-400"
-                      placeholder="e.g. Ama"
-                      required
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-600 font-medium mb-1">Middle Name</label>
-                    <input
-                      type="text"
-                      value={formState.middleName}
-                      onChange={(e) => setFormState(prev => ({ ...prev, middleName: e.target.value }))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-slate-400"
-                      placeholder="Optional"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-600 font-medium mb-1">Last Name *</label>
-                    <input
-                      type="text"
-                      value={formState.lastName}
-                      onChange={(e) => setFormState(prev => ({ ...prev, lastName: e.target.value }))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-slate-400"
-                      placeholder="e.g. Mensah"
-                      required
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-slate-600 font-medium mb-1">Active Class Level *</label>
-                    <select
-                      value={formState.class}
-                      onChange={(e) => setFormState(prev => ({ ...prev, class: e.target.value as ClassType }))}
-                      disabled={userRole === 'Teacher'}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white bg-no-repeat focus:outline-none focus:ring-1 focus:ring-slate-400 disabled:bg-slate-50 disabled:text-slate-500 disabled:cursor-not-allowed"
-                    >
-                      {CLASSES.map(cls => (
-                        <option key={cls} value={cls}>{cls}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="block text-slate-600 font-medium">Section Assignment</label>
-                      <button
-                        type="button"
-                        onClick={() => setShowSectionManagerModal(true)}
-                        className="text-[10px] font-bold text-slate-700 hover:text-slate-950 transition flex items-center gap-1 cursor-pointer bg-slate-100 hover:bg-slate-200 px-2.5 py-0.5 rounded-md border border-slate-200 shadow-2xs"
-                        title="Manage or delete section categories"
-                      >
-                        <span>Manage / Delete</span>
-                      </button>
+              {/* Card 1: Student Photo & Personal Bio Identity */}
+              <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden transition-all hover:shadow-md">
+                {/* Labeled Section Header */}
+                <div className="bg-gradient-to-r from-slate-900 to-slate-800 text-white px-6 py-4 flex items-center justify-between border-b border-slate-700/50">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-indigo-500/20 border border-indigo-400/30 flex items-center justify-center text-indigo-300 shrink-0">
+                      <User size={20} />
                     </div>
-
-                    <select
-                      value={formState.section || 'None'}
-                      onChange={(e) => setFormState(prev => ({ ...prev, section: e.target.value as SectionType }))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-slate-400"
-                    >
-                      <option value="None">None (No Section Assignment)</option>
-                      {sectionsList.filter(sec => sec !== 'None').map(sec => (
-                        <option key={sec} value={sec}>{sec}</option>
-                      ))}
-                    </select>
-                    <p className="text-[10px] text-slate-400 mt-1">
-                      If school has no section assignment, select 'None'.
-                    </p>
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-600 font-medium mb-1">Gender *</label>
-                    <select
-                      value={formState.gender}
-                      onChange={(e) => setFormState(prev => ({ ...prev, gender: e.target.value as 'Male' | 'Female' }))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white focus:outline-none"
-                    >
-                      <option value="Male">Male</option>
-                      <option value="Female">Female</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-slate-600 font-medium mb-1">Academic Year *</label>
-                    <select
-                      value={formState.academicYear || '2026/2027'}
-                      onChange={(e) => setFormState(prev => ({ ...prev, academicYear: e.target.value as AcademicYearType }))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-slate-400 font-medium"
-                      required
-                    >
-                      {ACADEMIC_YEARS.map(yr => (
-                        <option key={yr} value={yr}>{yr}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-600 font-medium mb-1">Academic Term *</label>
-                    <select
-                      value={formState.term || 'Term 1'}
-                      onChange={(e) => setFormState(prev => ({ ...prev, term: e.target.value as TermType }))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-slate-400 font-medium"
-                      required
-                    >
-                      {TERMS.map(tm => (
-                        <option key={tm} value={tm}>{tm}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                  <div className="md:col-span-2">
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="block text-slate-600 font-medium">Date of Birth *</label>
-                      {formState.dateOfBirth && (() => {
-                        const ageObj = calculateAgeFromDob(formState.dateOfBirth);
-                        if (!ageObj) return <span className="text-[10px] text-rose-500 font-medium">Future or invalid date</span>;
-                        return (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10.5px] font-extrabold bg-emerald-50 text-emerald-700 border border-emerald-200 shadow-2xs">
-                            <Sparkles size={11} className="text-amber-500 shrink-0" />
-                            <span>Age: {ageObj.formatted}</span>
-                          </span>
-                        );
-                      })()}
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-xs font-bold font-display uppercase tracking-wider text-white">
+                          1. Student Photo & Personal Bio Identity
+                        </h4>
+                        <span className="bg-indigo-500/30 text-indigo-200 text-[9px] font-mono font-bold px-2 py-0.5 rounded-full border border-indigo-400/30">
+                          Bio Particulars
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-300/80">Basic personal information, student photograph, and academic placement</p>
                     </div>
-                    <input
-                      type="date"
-                      value={formState.dateOfBirth}
-                      onChange={(e) => setFormState(prev => ({ ...prev, dateOfBirth: e.target.value }))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-mono text-slate-800"
-                      required
-                    />
-                    {formState.dateOfBirth ? (() => {
-                      const ageObj = calculateAgeFromDob(formState.dateOfBirth);
-                      if (!ageObj) return null;
-                      return (
-                        <div className="mt-1.5 p-2 bg-indigo-50/80 border border-indigo-100 rounded-lg flex items-center justify-between text-[11px] text-indigo-900">
-                          <div className="flex items-center gap-1.5 font-medium">
-                            <Calendar size={13} className="text-indigo-600 shrink-0" />
-                            <span>Calculated Age: <strong className="font-extrabold text-indigo-950">{ageObj.formatted}</strong></span>
-                          </div>
-                          <span className="px-2 py-0.5 rounded-md bg-indigo-200/70 font-extrabold text-[9.5px] text-indigo-900 uppercase tracking-wider">
-                            {ageObj.category}
-                          </span>
-                        </div>
-                      );
-                    })() : (
-                      <p className="text-[10px] text-slate-400 mt-1 italic">Selecting Date of Birth will automatically calculate exact student age.</p>
-                    )}
+                  </div>
+                </div>
+
+                {/* Card Content Grid */}
+                <div className="p-6 space-y-5">
+                  {/* Photo Upload area */}
+                  <div className="flex flex-col sm:flex-row items-center gap-4 bg-slate-50/80 p-4 rounded-xl border border-slate-200/80">
+                    <div className="w-18 h-18 rounded-xl bg-white border border-slate-200 overflow-hidden flex items-center justify-center shrink-0 shadow-xs">
+                      {formState.photoUrl ? (
+                        <img src={formState.photoUrl} alt="Preview" className="w-full h-full object-cover" />
+                      ) : (
+                        <User size={28} className="text-slate-300" />
+                      )}
+                    </div>
+                    <div className="space-y-1.5 text-center sm:text-left grow">
+                      <div className="font-semibold text-slate-800 text-xs">Student Profile Photograph</div>
+                      <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold rounded-lg shadow-2xs transition flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Upload size={13} /> Select Local Drive
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleUrlImage}
+                          className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold rounded-lg shadow-2xs transition flex items-center gap-1.5 cursor-pointer"
+                        >
+                          Use Image Link
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsCameraOpen(true)}
+                          className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold rounded-lg shadow-2xs transition flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Camera size={13} /> Take Live Photo
+                        </button>
+                        {formState.photoUrl && (
+                          <button
+                            type="button"
+                            onClick={() => setFormState(prev => ({ ...prev, photoUrl: '' }))}
+                            className="px-3 py-1.5 text-rose-600 hover:bg-rose-50 rounded-lg text-xs font-bold transition cursor-pointer"
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        type="file"
+                        ref={fileInputRef}
+                        onChange={handleImageUpload}
+                        accept="image/*"
+                        className="hidden"
+                      />
+                      <div className="text-[10px] text-slate-400">Compressed automatically for high performance persistent storage.</div>
+                    </div>
                   </div>
 
-                  <div>
-                    <label className="block text-slate-600 font-medium mb-1">Place of Birth</label>
-                    <input
-                      type="text"
-                      value={formState.placeOfBirth}
-                      onChange={(e) => setFormState(prev => ({ ...prev, placeOfBirth: e.target.value }))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none"
-                      placeholder="e.g. Kumasi"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-600 font-medium mb-1">Nationality & Status</label>
-                    <div className="grid grid-cols-2 gap-1.5">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        First Name <span className="text-rose-500">*</span>
+                      </label>
                       <input
                         type="text"
-                        value={formState.nationality}
-                        onChange={(e) => setFormState(prev => ({ ...prev, nationality: e.target.value }))}
-                        className="w-full px-2.5 py-2 border border-slate-200 rounded-lg focus:outline-none text-xs"
-                        placeholder="e.g. Ghanaian"
+                        value={formState.firstName}
+                        onChange={(e) => setFormState(prev => ({ ...prev, firstName: e.target.value }))}
+                        className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 bg-slate-50/50 hover:bg-white transition"
+                        placeholder="e.g. Ama"
+                        required
                       />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">Middle Name</label>
+                      <input
+                        type="text"
+                        value={formState.middleName}
+                        onChange={(e) => setFormState(prev => ({ ...prev, middleName: e.target.value }))}
+                        className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 bg-slate-50/50 hover:bg-white transition"
+                        placeholder="Optional"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Last Name <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={formState.lastName}
+                        onChange={(e) => setFormState(prev => ({ ...prev, lastName: e.target.value }))}
+                        className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 bg-slate-50/50 hover:bg-white transition"
+                        placeholder="e.g. Mensah"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Active Class Level <span className="text-rose-500">*</span>
+                      </label>
                       <select
-                        value={formState.status}
-                        onChange={(e) => setFormState(prev => ({ ...prev, status: e.target.value as 'Day' | 'Boarder' }))}
-                        className="w-full px-2 py-2 border border-slate-200 rounded-lg bg-white text-xs"
+                        value={formState.class}
+                        onChange={(e) => setFormState(prev => ({ ...prev, class: e.target.value as ClassType }))}
+                        disabled={userRole === 'Teacher'}
+                        className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl bg-slate-50/50 hover:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed text-slate-800 font-medium"
                       >
-                        <option value="Day">Day</option>
-                        <option value="Boarder">Boarder</option>
+                        {CLASSES.map(cls => (
+                          <option key={cls} value={cls}>{cls}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-semibold text-slate-700">
+                          Section Assignment
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setIsCreatingSection(prev => !prev)}
+                          className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 cursor-pointer hover:underline transition"
+                          title="Create a new custom section category for your school"
+                        >
+                          <Plus size={11} />
+                          <span>+ Create Category</span>
+                        </button>
+                      </div>
+
+                      <select
+                        value={formState.section || 'None'}
+                        onChange={(e) => {
+                          if (e.target.value === '__CREATE_NEW_CATEGORY__') {
+                            setIsCreatingSection(true);
+                          } else if (e.target.value === '__MANAGE_SELECTIONS__') {
+                            setShowSectionManagerModal(true);
+                          } else {
+                            setFormState(prev => ({ ...prev, section: e.target.value as SectionType }));
+                          }
+                        }}
+                        className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl bg-slate-50/50 hover:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-800 font-medium transition"
+                      >
+                        <option value="None">None (No Section Assignment)</option>
+                        {sectionsList.filter(sec => sec !== 'None').map(sec => (
+                          <option key={sec} value={sec}>{sec}</option>
+                        ))}
+                        <option disabled className="text-slate-300">──────────</option>
+                        <option value="__CREATE_NEW_CATEGORY__" className="font-bold text-indigo-600 bg-indigo-50/50">
+                          ➕ Create New Section Category...
+                        </option>
+                        <option value="__MANAGE_SELECTIONS__" className="font-bold text-slate-700 bg-slate-100/60">
+                          ⚙️ Manage Selections...
+                        </option>
+                      </select>
+
+                      {/* Expandable New Section Category Creator */}
+                      {isCreatingSection && (
+                        <div className="mt-2.5 p-3 bg-gradient-to-br from-indigo-50/90 to-slate-50 border border-indigo-200/90 rounded-xl shadow-xs space-y-2 animate-fadeIn">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-bold text-indigo-950 flex items-center gap-1.5">
+                              <Layers size={13} className="text-indigo-600" />
+                              Create Section Category
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsCreatingSection(false);
+                                setNewSectionInput('');
+                              }}
+                              className="text-[10px] text-slate-400 hover:text-slate-600 cursor-pointer font-bold px-1.5 py-0.5 rounded hover:bg-slate-200/60 transition"
+                            >
+                              ✕ Cancel
+                            </button>
+                          </div>
+
+                          <div className="flex gap-1.5">
+                            <input
+                              type="text"
+                              value={newSectionInput}
+                              onChange={(e) => setNewSectionInput(e.target.value)}
+                              placeholder="e.g. Gold, Diamond, Stream B, Ruby, Alpha..."
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  handleSaveNewSection();
+                                }
+                              }}
+                              className="flex-1 text-xs px-3 py-2 border border-indigo-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-800 placeholder:text-slate-400"
+                              autoFocus
+                            />
+                            <button
+                              type="button"
+                              onClick={handleSaveNewSection}
+                              className="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white font-bold rounded-lg text-xs transition cursor-pointer shrink-0 shadow-2xs flex items-center gap-1"
+                            >
+                              <Plus size={13} />
+                              <span>Save & Assign</span>
+                            </button>
+                          </div>
+
+                          <div className="flex items-center justify-between text-[10px] text-slate-500 pt-0.5">
+                            <span className="text-slate-500 text-[9.5px]">
+                              Saves to school registry & assigns to this student.
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setShowSectionManagerModal(true)}
+                              className="text-indigo-600 hover:text-indigo-800 font-bold underline cursor-pointer shrink-0 text-[10px]"
+                            >
+                              Manage Sections ({sectionsList.length})
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Gender <span className="text-rose-500">*</span>
+                      </label>
+                      <select
+                        value={formState.gender}
+                        onChange={(e) => setFormState(prev => ({ ...prev, gender: e.target.value as 'Male' | 'Female' }))}
+                        className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl bg-slate-50/50 hover:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-800 font-medium"
+                      >
+                        <option value="Male">Male</option>
+                        <option value="Female">Female</option>
                       </select>
                     </div>
                   </div>
+
+
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-semibold text-slate-700">
+                          Academic Year <span className="text-rose-500">*</span>
+                        </label>
+                        {isAdminOrHead && (
+                          <button
+                            type="button"
+                            onClick={() => setShowAcademicYearModal(true)}
+                            className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5 cursor-pointer hover:underline transition"
+                            title="Add or configure Academic Year"
+                          >
+                            <Plus size={11} />
+                            <span>+ Add Year</span>
+                          </button>
+                        )}
+                      </div>
+                      <select
+                        value={formState.academicYear || '2026/2027'}
+                        onChange={(e) => {
+                          if (e.target.value === '__ADD_ACADEMIC_YEAR__' || e.target.value === '__MANAGE_ACADEMIC_YEARS__') {
+                            setShowAcademicYearModal(true);
+                          } else {
+                            setFormState(prev => ({ ...prev, academicYear: e.target.value as AcademicYearType }));
+                          }
+                        }}
+                        className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl bg-slate-50/50 hover:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-semibold text-slate-800"
+                        required
+                      >
+                        {academicYearsList.map(yr => (
+                          <option key={yr} value={yr}>{yr}</option>
+                        ))}
+                        {isAdminOrHead && (
+                          <option value="__ADD_ACADEMIC_YEAR__" className="font-bold text-indigo-600 bg-indigo-50/50">
+                            ➕ Add Academic Year...
+                          </option>
+                        )}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Academic Term <span className="text-rose-500">*</span>
+                      </label>
+                      <select
+                        value={formState.term || 'Term 1'}
+                        onChange={(e) => setFormState(prev => ({ ...prev, term: e.target.value as TermType }))}
+                        className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl bg-slate-50/50 hover:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-semibold text-slate-800"
+                        required
+                      >
+                        {TERMS.map(tm => (
+                          <option key={tm} value={tm}>{tm}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-semibold text-slate-700">
+                          Date of Birth <span className="text-rose-500">*</span>
+                        </label>
+                        {formState.dateOfBirth && (() => {
+                          const ageObj = calculateAgeFromDob(formState.dateOfBirth);
+                          if (!ageObj) return <span className="text-[10px] text-rose-500 font-medium">Future or invalid date</span>;
+                          return (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10.5px] font-extrabold bg-emerald-50 text-emerald-700 border border-emerald-200 shadow-2xs">
+                              <Calendar size={11} className="text-emerald-600 shrink-0" />
+                              <span>Age: {ageObj.formatted}</span>
+                            </span>
+                          );
+                        })()}
+                      </div>
+                      <input
+                        type="date"
+                        value={formState.dateOfBirth}
+                        onChange={(e) => setFormState(prev => ({ ...prev, dateOfBirth: e.target.value }))}
+                        className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 bg-slate-50/50 hover:bg-white font-mono text-slate-800"
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">Place of Birth</label>
+                      <input
+                        type="text"
+                        value={formState.placeOfBirth}
+                        onChange={(e) => setFormState(prev => ({ ...prev, placeOfBirth: e.target.value }))}
+                        className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 bg-slate-50/50 hover:bg-white transition"
+                        placeholder="e.g. Kumasi"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">Nationality & Status</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <input
+                          type="text"
+                          value={formState.nationality}
+                          onChange={(e) => setFormState(prev => ({ ...prev, nationality: e.target.value }))}
+                          className="w-full text-xs px-3 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 bg-slate-50/50 hover:bg-white transition"
+                          placeholder="e.g. Ghanaian"
+                        />
+                        <select
+                          value={formState.status}
+                          onChange={(e) => setFormState(prev => ({ ...prev, status: e.target.value as 'Day' | 'Boarder' }))}
+                          className="w-full text-xs px-2 py-2.5 border border-slate-200 rounded-xl bg-slate-50/50 hover:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-slate-800 font-medium"
+                        >
+                          <option value="Day">Day</option>
+                          <option value="Boarder">Boarder</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              {/* Step 2: Guardian Details & Parent Information */}
-              <div className="space-y-4 pt-1">
-                <div className="flex items-center justify-between pb-1 border-b border-slate-100">
-                  <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
-                    <Users size={13} className="text-indigo-600" />
-                    <span>Guardian / Family Contacts & Parent Info</span>
-                  </h4>
-                  <span className="text-[10px] text-slate-400">Parent vital status, contact details & residential locator</span>
+              {/* Card 2: Parent & Guardian Family Contacts */}
+              <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden transition-all hover:shadow-md">
+                {/* Labeled Section Header */}
+                <div className="bg-gradient-to-r from-indigo-900 to-indigo-800 text-white px-6 py-4 flex items-center justify-between border-b border-indigo-700/50">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-white/10 border border-white/20 flex items-center justify-center text-indigo-200 shrink-0">
+                      <Users size={20} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-xs font-bold font-display uppercase tracking-wider text-white">
+                          2. Parent & Guardian Family Contacts
+                        </h4>
+                        <span className="bg-white/20 text-indigo-100 text-[9px] font-mono font-bold px-2 py-0.5 rounded-full border border-white/20">
+                          Family Contacts
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-indigo-200/80">Mother, father, primary legal guardian, and residential locator details</p>
+                    </div>
+                  </div>
                 </div>
 
-                {/* PARENT INFORMATION (MOTHER & FATHER) */}
-                <div className="space-y-3">
+                {/* Card Content Grid */}
+                <div className="p-6 space-y-5">
                   {/* Mother's Information */}
-                  <div className="p-3.5 bg-rose-50/50 rounded-xl border border-rose-100 space-y-2.5">
+                  <div className="p-4 bg-rose-50/40 rounded-xl border border-rose-100 space-y-3">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-rose-950 flex items-center gap-1.5">
-                        <User size={13} className="text-rose-600" />
+                        <User size={14} className="text-rose-600" />
                         Mother's Information
                       </span>
                       <button
@@ -3168,7 +3493,7 @@ export default function StudentsTab({
                           }));
                           triggerToast("Copied Mother's information to Primary Guardian", "info");
                         }}
-                        className="text-[10px] text-rose-700 hover:text-rose-900 font-semibold cursor-pointer underline flex items-center gap-1"
+                        className="text-[10px] text-rose-700 hover:text-rose-900 font-bold cursor-pointer underline flex items-center gap-1"
                         title="Set Mother as Primary Guardian"
                       >
                         Copy to Primary Guardian
@@ -3177,57 +3502,57 @@ export default function StudentsTab({
 
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                       <div>
-                        <label className="block text-slate-600 text-xs font-medium mb-1">Mother's Full Name</label>
+                        <label className="block text-slate-700 text-xs font-semibold mb-1">Mother's Full Name</label>
                         <input
                           type="text"
                           value={formState.motherName || ''}
                           onChange={(e) => setFormState(prev => ({ ...prev, motherName: e.target.value }))}
-                          className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white text-xs focus:outline-none focus:ring-1 focus:ring-rose-400"
+                          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs focus:outline-none focus:ring-2 focus:ring-rose-400/30"
                           placeholder="Mother's Full Name"
                         />
                       </div>
 
                       <div>
-                        <label className="block text-slate-600 text-xs font-medium mb-1">Telephone Contact</label>
+                        <label className="block text-slate-700 text-xs font-semibold mb-1">Telephone Contact</label>
                         <input
                           type="tel"
                           value={formState.motherTelephone || ''}
                           onChange={(e) => setFormState(prev => ({ ...prev, motherTelephone: e.target.value }))}
-                          className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white text-xs focus:outline-none focus:ring-1 focus:ring-rose-400"
+                          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs focus:outline-none focus:ring-2 focus:ring-rose-400/30 font-mono"
                           placeholder="e.g. 0244123456"
                         />
                       </div>
 
                       <div>
-                        <label className="block text-slate-600 text-xs font-medium mb-1">Occupation</label>
+                        <label className="block text-slate-700 text-xs font-semibold mb-1">Occupation</label>
                         <input
                           type="text"
                           value={formState.motherOccupation || ''}
                           onChange={(e) => setFormState(prev => ({ ...prev, motherOccupation: e.target.value }))}
-                          className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white text-xs focus:outline-none focus:ring-1 focus:ring-rose-400"
+                          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs focus:outline-none focus:ring-2 focus:ring-rose-400/30"
                           placeholder="e.g. Trader, Nurse"
                         />
                       </div>
 
                       <div>
-                        <label className="block text-slate-600 text-xs font-medium mb-1">Alive / Death</label>
+                        <label className="block text-slate-700 text-xs font-semibold mb-1">Vital Status</label>
                         <select
                           value={formState.motherStatus === 'Death' || formState.motherStatus === 'Deceased' ? 'Death' : 'Alive'}
                           onChange={(e) => setFormState(prev => ({ ...prev, motherStatus: e.target.value }))}
-                          className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-rose-400"
+                          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-rose-400/30"
                         >
                           <option value="Alive">Alive</option>
-                          <option value="Death">Death</option>
+                          <option value="Death">Deceased</option>
                         </select>
                       </div>
                     </div>
                   </div>
 
                   {/* Father's Information */}
-                  <div className="p-3.5 bg-blue-50/50 rounded-xl border border-blue-100 space-y-2.5">
+                  <div className="p-4 bg-blue-50/40 rounded-xl border border-blue-100 space-y-3">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-blue-950 flex items-center gap-1.5">
-                        <User size={13} className="text-blue-600" />
+                        <User size={14} className="text-blue-600" />
                         Father's Information
                       </span>
                       <button
@@ -3241,7 +3566,7 @@ export default function StudentsTab({
                           }));
                           triggerToast("Copied Father's information to Primary Guardian", "info");
                         }}
-                        className="text-[10px] text-blue-700 hover:text-blue-900 font-semibold cursor-pointer underline flex items-center gap-1"
+                        className="text-[10px] text-blue-700 hover:text-blue-900 font-bold cursor-pointer underline flex items-center gap-1"
                         title="Set Father as Primary Guardian"
                       >
                         Copy to Primary Guardian
@@ -3250,236 +3575,243 @@ export default function StudentsTab({
 
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                       <div>
-                        <label className="block text-slate-600 text-xs font-medium mb-1">Father's Full Name</label>
+                        <label className="block text-slate-700 text-xs font-semibold mb-1">Father's Full Name</label>
                         <input
                           type="text"
                           value={formState.fatherName || ''}
                           onChange={(e) => setFormState(prev => ({ ...prev, fatherName: e.target.value }))}
-                          className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
+                          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs focus:outline-none focus:ring-2 focus:ring-blue-400/30"
                           placeholder="Father's Full Name"
                         />
                       </div>
 
                       <div>
-                        <label className="block text-slate-600 text-xs font-medium mb-1">Telephone Contact</label>
+                        <label className="block text-slate-700 text-xs font-semibold mb-1">Telephone Contact</label>
                         <input
                           type="tel"
                           value={formState.fatherTelephone || ''}
                           onChange={(e) => setFormState(prev => ({ ...prev, fatherTelephone: e.target.value }))}
-                          className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
+                          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs focus:outline-none focus:ring-2 focus:ring-blue-400/30 font-mono"
                           placeholder="e.g. 0208123456"
                         />
                       </div>
 
                       <div>
-                        <label className="block text-slate-600 text-xs font-medium mb-1">Occupation</label>
+                        <label className="block text-slate-700 text-xs font-semibold mb-1">Occupation</label>
                         <input
                           type="text"
                           value={formState.fatherOccupation || ''}
                           onChange={(e) => setFormState(prev => ({ ...prev, fatherOccupation: e.target.value }))}
-                          className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
+                          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs focus:outline-none focus:ring-2 focus:ring-blue-400/30"
                           placeholder="e.g. Farmer, Engineer"
                         />
                       </div>
 
                       <div>
-                        <label className="block text-slate-600 text-xs font-medium mb-1">Alive / Death</label>
+                        <label className="block text-slate-700 text-xs font-semibold mb-1">Vital Status</label>
                         <select
                           value={formState.fatherStatus === 'Death' || formState.fatherStatus === 'Deceased' ? 'Death' : 'Alive'}
                           onChange={(e) => setFormState(prev => ({ ...prev, fatherStatus: e.target.value }))}
-                          className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-blue-400"
+                          className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-blue-400/30"
                         >
                           <option value="Alive">Alive</option>
-                          <option value="Death">Death</option>
+                          <option value="Death">Deceased</option>
                         </select>
                       </div>
                     </div>
                   </div>
-                </div>
 
-                {/* Primary Guardian / Emergency Contact */}
-                <div className="space-y-2 pt-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-slate-700 uppercase tracking-wide">
-                      Primary Guardian / Legal Contact
-                    </span>
-                    <span className="text-[10px] text-slate-400">Designated emergency contact & SMS recipient</span>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                    <div>
-                      <label className="block text-slate-600 text-xs font-medium mb-1">Guardian Full Name</label>
-                      <input
-                        type="text"
-                        value={formState.guardianName || ''}
-                        onChange={(e) => setFormState(prev => ({ ...prev, guardianName: e.target.value }))}
-                        className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none text-xs"
-                        placeholder="Parent/Guardian Name"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-slate-600 text-xs font-medium mb-1">Telephone Contact</label>
-                      <input
-                        type="tel"
-                        value={formState.guardianTelephone || ''}
-                        onChange={(e) => setFormState(prev => ({ ...prev, guardianTelephone: e.target.value }))}
-                        className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none text-xs"
-                        placeholder="Phone digits"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-slate-600 text-xs font-medium mb-1">Guardian Email</label>
-                      <input
-                        type="email"
-                        value={formState.guardianEmail || ''}
-                        onChange={(e) => setFormState(prev => ({ ...prev, guardianEmail: e.target.value, email: e.target.value }))}
-                        className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none text-xs"
-                        placeholder="e.g. parent@email.com"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-slate-600 text-xs font-medium mb-1">Occupation</label>
-                      <input
-                        type="text"
-                        value={formState.guardianOccupation || ''}
-                        onChange={(e) => setFormState(prev => ({ ...prev, guardianOccupation: e.target.value }))}
-                        className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none text-xs"
-                        placeholder="e.g. Merchant"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Residential Address & Ghana Post Address */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
-                  <div>
-                    <label className="block text-slate-600 text-xs font-medium mb-1">
-                      Residential Address <span className="text-[10px] text-slate-400">(Physical / Street)</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={formState.residentialAddress || ''}
-                      onChange={(e) => setFormState(prev => ({ ...prev, residentialAddress: e.target.value }))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none text-xs"
-                      placeholder="e.g., PLT 12 BLK B, Kumasi or 15 Independence Ave"
-                    />
-                    <p className="text-[9.5px] text-slate-400 mt-1">Physical street, neighborhood, town or landmark</p>
-                  </div>
-
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="block text-slate-700 text-xs font-medium flex items-center gap-1">
-                        <MapPin size={12} className="text-rose-500" />
-                        <span>Ghana Post Address <span className="text-[10px] text-slate-400">(Digital Address)</span></span>
-                      </label>
-                      <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-100">
-                        🇬🇭 GhanaPostGPS
+                  {/* Primary Guardian / Emergency Contact */}
+                  <div className="p-4 bg-slate-50/80 rounded-xl border border-slate-200/80 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-800 uppercase tracking-wide">
+                        Primary Guardian / Emergency Legal Contact
                       </span>
+                      <span className="text-[10px] text-slate-500 font-mono">Designated SMS & Portal Recipient</span>
                     </div>
-                    <input
-                      type="text"
-                      value={formState.ghanaPostGps || ''}
-                      onChange={(e) => setFormState(prev => ({ ...prev, ghanaPostGps: e.target.value.toUpperCase() }))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono text-xs uppercase"
-                      placeholder="e.g., GA-183-9024 or AK-039-5028"
-                    />
-                    <p className="text-[9.5px] text-slate-400 mt-1">Ghana Post digital GPS property code (e.g. GA-183-9024)</p>
+
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                      <div>
+                        <label className="block text-slate-700 text-xs font-semibold mb-1">Guardian Full Name</label>
+                        <input
+                          type="text"
+                          value={formState.guardianName || ''}
+                          onChange={(e) => setFormState(prev => ({ ...prev, guardianName: e.target.value }))}
+                          className="w-full px-3 py-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 bg-white text-xs"
+                          placeholder="Parent/Guardian Name"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-slate-700 text-xs font-semibold mb-1">Telephone Contact</label>
+                        <input
+                          type="tel"
+                          value={formState.guardianTelephone || ''}
+                          onChange={(e) => setFormState(prev => ({ ...prev, guardianTelephone: e.target.value }))}
+                          className="w-full px-3 py-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 bg-white text-xs font-mono"
+                          placeholder="Phone digits"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-slate-700 text-xs font-semibold mb-1">Guardian Email</label>
+                        <input
+                          type="email"
+                          value={formState.guardianEmail || ''}
+                          onChange={(e) => setFormState(prev => ({ ...prev, guardianEmail: e.target.value, email: e.target.value }))}
+                          className="w-full px-3 py-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 bg-white text-xs"
+                          placeholder="e.g. parent@email.com"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-slate-700 text-xs font-semibold mb-1">Occupation</label>
+                        <input
+                          type="text"
+                          value={formState.guardianOccupation || ''}
+                          onChange={(e) => setFormState(prev => ({ ...prev, guardianOccupation: e.target.value }))}
+                          className="w-full px-3 py-2 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 bg-white text-xs"
+                          placeholder="e.g. Merchant"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Residential Address & Ghana Post GPS */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Residential Address <span className="text-[10px] text-slate-400 font-normal">(Physical Street / Town)</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={formState.residentialAddress || ''}
+                        onChange={(e) => setFormState(prev => ({ ...prev, residentialAddress: e.target.value }))}
+                        className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 bg-slate-50/50 hover:bg-white transition"
+                        placeholder="e.g. PLT 12 BLK B, Kumasi or 15 Independence Ave"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-semibold text-slate-700 flex items-center gap-1">
+                          <MapPin size={13} className="text-rose-500" />
+                          <span>Ghana Post Digital Address</span>
+                        </label>
+                        <span className="text-[9px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                          🇬🇭 GhanaPostGPS
+                        </span>
+                      </div>
+                      <input
+                        type="text"
+                        value={formState.ghanaPostGps || ''}
+                        onChange={(e) => setFormState(prev => ({ ...prev, ghanaPostGps: e.target.value.toUpperCase() }))}
+                        className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 font-mono uppercase bg-slate-50/50 hover:bg-white transition"
+                        placeholder="e.g. GA-183-9024 or AK-039-5028"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
 
-              {/* Step 3: Prior Education & Medical / Health Records */}
-              <div className="space-y-4 pt-1">
-                <div className="flex items-center justify-between pb-1 border-b border-slate-100">
-                  <h4 className="text-[11px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
-                    <Heart size={13} className="text-rose-500" />
-                    <span>Prior School & Health / Medical Records</span>
-                  </h4>
-                  <span className="text-[10px] text-slate-400">Institutional health & enrollment history</span>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-slate-700 font-medium mb-1">
-                      Formal School <span className="text-[10px] text-slate-400">(Former / Previous School Attended)</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={formState.formerSchool || ''}
-                      onChange={(e) => setFormState(prev => ({ ...prev, formerSchool: e.target.value }))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-slate-400 text-xs"
-                      placeholder="e.g. Ridge Church Basic School or None"
-                    />
-                    <p className="text-[9.5px] text-slate-400 mt-1">Specify name of previous formal school or preschool attended</p>
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-700 font-medium mb-1">
-                      Medical Records / Conditions or Allergies
-                    </label>
-                    <select
-                      value={formState.medicalCondition || 'None'}
-                      onChange={(e) => setFormState(prev => ({ ...prev, medicalCondition: e.target.value }))}
-                      className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-slate-400 text-xs font-medium"
-                    >
-                      {COMMON_MEDICAL_CONDITIONS.map((cond) => (
-                        <option key={cond} value={cond}>{cond}</option>
-                      ))}
-                    </select>
-                    <p className="text-[9.5px] text-slate-400 mt-1">Select known condition or choose 'Other' to state specific condition</p>
+              {/* Card 3: Prior Education & Medical / Health Records */}
+              <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden transition-all hover:shadow-md">
+                {/* Labeled Section Header */}
+                <div className="bg-gradient-to-r from-slate-900 to-slate-800 text-white px-6 py-4 flex items-center justify-between border-b border-slate-700/50">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-rose-500/20 border border-rose-400/30 flex items-center justify-center text-rose-300 shrink-0">
+                      <Heart size={20} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-xs font-bold font-display uppercase tracking-wider text-white">
+                          3. Prior Education & Medical Health History
+                        </h4>
+                        <span className="bg-rose-500/30 text-rose-200 text-[9px] font-mono font-bold px-2 py-0.5 rounded-full border border-rose-400/30">
+                          Health & Schooling
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-300/80">Previous formal schooling history, medical conditions, and emergency health instructions</p>
+                    </div>
                   </div>
                 </div>
 
-                {/* State condition if not in list / Other */}
-                {(formState.medicalCondition === 'Other (Specify condition)' || (formState.medicalCondition && formState.medicalCondition !== 'None' && !COMMON_MEDICAL_CONDITIONS.includes(formState.medicalCondition as any))) && (
-                  <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl space-y-1.5 animate-fadeIn">
-                    <label className="block text-amber-900 font-bold text-xs flex items-center gap-1.5">
-                      <AlertTriangle size={13} className="text-amber-600" />
-                      <span>State Specific Medical Condition or Allergy *</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={formState.medicalConditionOther || ''}
-                      onChange={(e) => setFormState(prev => ({ ...prev, medicalConditionOther: e.target.value }))}
-                      placeholder="State student's exact medical condition, allergy, or dietary restriction..."
-                      required
-                      className="w-full px-3 py-2 border border-amber-300 bg-white rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-400/30 text-xs font-semibold text-slate-900"
-                    />
-                    <p className="text-[10px] text-amber-700">This condition will be recorded in student profile and flagged on rosters.</p>
-                  </div>
-                )}
+                {/* Card Content Grid */}
+                <div className="p-6 space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">Formal Former School Attended</label>
+                      <input
+                        type="text"
+                        value={formState.formerSchool || ''}
+                        onChange={(e) => setFormState(prev => ({ ...prev, formerSchool: e.target.value }))}
+                        className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 bg-slate-50/50 hover:bg-white transition"
+                        placeholder="e.g. Ridge Church Basic School or None"
+                      />
+                    </div>
 
-                <div>
-                  <label className="block text-slate-700 font-medium mb-1">
-                    Medical Notes & Emergency Instructions <span className="text-[10px] text-slate-400">(Optional)</span>
-                  </label>
-                  <textarea
-                    rows={2}
-                    value={formState.medicalNotes || ''}
-                    onChange={(e) => setFormState(prev => ({ ...prev, medicalNotes: e.target.value }))}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-slate-400 text-xs"
-                    placeholder="e.g. Inhaler kept in classroom first-aid kit; severe reaction to peanuts; doctor contact details..."
-                  />
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">Medical Condition / Allergies</label>
+                      <select
+                        value={formState.medicalCondition || 'None'}
+                        onChange={(e) => setFormState(prev => ({ ...prev, medicalCondition: e.target.value }))}
+                        className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl bg-slate-50/50 hover:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-slate-800 font-medium"
+                      >
+                        {COMMON_MEDICAL_CONDITIONS.map((cond) => (
+                          <option key={cond} value={cond}>{cond}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* State condition if not in list / Other */}
+                  {(formState.medicalCondition === 'Other (Specify condition)' || (formState.medicalCondition && formState.medicalCondition !== 'None' && !COMMON_MEDICAL_CONDITIONS.includes(formState.medicalCondition as any))) && (
+                    <div className="p-4 bg-amber-50/80 border border-amber-200/80 rounded-xl space-y-1.5">
+                      <label className="block text-amber-950 font-bold text-xs flex items-center gap-1.5">
+                        <AlertTriangle size={15} className="text-amber-600" />
+                        <span>State Specific Medical Condition or Allergy *</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={formState.medicalConditionOther || ''}
+                        onChange={(e) => setFormState(prev => ({ ...prev, medicalConditionOther: e.target.value }))}
+                        placeholder="State student's exact medical condition, allergy, or dietary restriction..."
+                        required
+                        className="w-full px-3.5 py-2.5 border border-amber-300 bg-white rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-400/30 text-xs font-semibold text-slate-900"
+                      />
+                      <p className="text-[10px] text-amber-700">Flagged on class attendance rosters and student health summaries.</p>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Medical Notes & Emergency First-Aid Instructions <span className="text-[10px] text-slate-400 font-normal">(Optional)</span>
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={formState.medicalNotes || ''}
+                      onChange={(e) => setFormState(prev => ({ ...prev, medicalNotes: e.target.value }))}
+                      className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 bg-slate-50/50 hover:bg-white transition"
+                      placeholder="e.g. Inhaler kept in classroom first-aid kit; severe reaction to peanuts; doctor contact details..."
+                    />
+                  </div>
                 </div>
               </div>
 
-              {/* Action buttons */}
-              <div className="flex items-center justify-end gap-3 pt-6 border-t border-slate-100 bg-white">
+              {/* Modal Footer / Action buttons */}
+              <div className="flex items-center justify-end gap-3 pt-4 bg-transparent shrink-0">
                 <button
                   type="button"
                   onClick={() => setShowFormModal(false)}
-                  className="px-5 py-2.5 border border-slate-200 text-slate-500 hover:bg-slate-50 rounded-xl font-semibold transition cursor-pointer text-[12px] bg-white"
+                  className="px-5 py-2.5 border border-slate-200 text-slate-600 hover:bg-slate-100 rounded-xl font-semibold transition cursor-pointer text-xs bg-white shadow-2xs"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="flex items-center gap-1.5 px-5 py-2.5 bg-[#059669] hover:bg-[#047857] text-white font-semibold rounded-xl shadow-xs transition cursor-pointer text-[12px]"
+                  className="flex items-center gap-1.5 px-6 py-2.5 bg-[#059669] hover:bg-[#047857] text-white font-bold rounded-xl shadow-xs transition cursor-pointer text-xs active:translate-y-0.5"
                 >
-                  <Check size={14} /> {isEditing ? 'Confirm Updates' : 'Enrol Student'}
+                  <Check size={16} /> {isEditing ? 'Confirm Updates' : 'Enrol Student'}
                 </button>
               </div>
 
@@ -6771,9 +7103,6 @@ export default function StudentsTab({
               const updated = { ...studentToUpdate, photoUrl };
               DbController.saveStudent(updated);
               onRefresh();
-              if (!isAutoSave) {
-                onManualSave();
-              }
             }
           }}
           onClose={() => setIsBatchCameraOpen(false)}
@@ -6918,6 +7247,216 @@ export default function StudentsTab({
               <button
                 type="button"
                 onClick={() => setShowSectionManagerModal(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SUBJECT CURRICULUM REGISTRY & MANAGEMENT MODAL */}
+      {showSubjectManagerModal && (
+        <div 
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowSubjectManagerModal(false);
+          }}
+          className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-[90] p-4 no-print animate-fade-in"
+        >
+          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-slate-100 overflow-hidden text-left flex flex-col max-h-[85vh] animate-scale-up">
+            {/* Header */}
+            <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/70">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold">
+                  <BookOpen size={18} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 font-sans">
+                    School Curriculum Subjects
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Create, view, and manage curriculum subject courses for your school
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSubjectManagerModal(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Content body */}
+            <div className="p-5 space-y-4 overflow-y-auto flex-1">
+              {/* Add New Subject form */}
+              <div className="p-3.5 bg-indigo-50/70 border border-indigo-200/80 rounded-xl space-y-2">
+                <label className="block text-xs font-bold text-indigo-900">
+                  Add New Subject Course
+                </label>
+                <p className="text-[10.5px] text-indigo-700/80">
+                  Introduce a custom subject course to the school curriculum (e.g. Physical Education, Arabic, Music, Twi, Ga, Robotics)
+                </p>
+                <form 
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleAddSubjectFromModal(e);
+                  }}
+                  className="flex gap-2 pt-1"
+                >
+                  <input
+                    type="text"
+                    value={newManagerSubjectName}
+                    onChange={(e) => setNewManagerSubjectName(e.target.value)}
+                    placeholder="Enter new subject name..."
+                    className="flex-1 px-3 py-2 text-xs border border-indigo-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold text-slate-800 placeholder:text-slate-400"
+                  />
+                  <button
+                    type="submit"
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white font-bold rounded-lg text-xs transition cursor-pointer shrink-0 shadow-xs flex items-center gap-1.5"
+                  >
+                    <Plus size={13} />
+                    <span>Add Subject</span>
+                  </button>
+                </form>
+              </div>
+
+              {/* CSV / Bulk-List Import Section */}
+              <div className="p-3.5 bg-emerald-50/70 border border-emerald-200/80 rounded-xl space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-emerald-900 flex items-center gap-1.5">
+                    <FileSpreadsheet size={14} className="text-emerald-700" />
+                    <span>Import CSV or Bulk List (Active Term: {schoolInfo.currentTerm || 'Term 1'} - {schoolInfo.academicYear || '2026/2027'})</span>
+                  </label>
+                  <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[9px] font-bold">
+                    Auto-Mapped
+                  </span>
+                </div>
+                <p className="text-[10.5px] text-emerald-700/80 leading-relaxed">
+                  Upload a CSV file containing subject names or paste a bulk list separated by commas or newlines. All imported subjects are automatically mapped to the active academic term.
+                </p>
+
+                {/* CSV File Upload Button */}
+                <div className="flex items-center gap-2">
+                  <input
+                    type="file"
+                    accept=".csv, .txt"
+                    ref={importSubjectFileInputRef}
+                    onChange={handleImportSubjectsCsv}
+                    className="hidden"
+                    id="csv-subject-file-input"
+                  />
+                  <label
+                    htmlFor="csv-subject-file-input"
+                    className="flex-1 px-3 py-2 bg-white hover:bg-emerald-100/50 text-emerald-800 border border-emerald-300 rounded-lg text-xs font-bold cursor-pointer transition flex items-center justify-center gap-1.5 shadow-2xs"
+                  >
+                    <Upload size={13} />
+                    <span>Upload CSV Subject File</span>
+                  </label>
+                </div>
+
+                {/* Bulk Textarea */}
+                <div className="space-y-1 pt-1">
+                  <textarea
+                    rows={2}
+                    value={bulkSubjectText}
+                    onChange={(e) => setBulkSubjectText(e.target.value)}
+                    placeholder="Or paste bulk list (e.g. Agricultural Science, Government, Literature, Accounting)..."
+                    className="w-full px-3 py-2 text-xs border border-emerald-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 font-semibold text-slate-800 placeholder:text-slate-400"
+                  />
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={handleBulkAddSubjectsText}
+                      className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold rounded-lg text-xs transition cursor-pointer shadow-xs flex items-center gap-1"
+                    >
+                      <Plus size={13} />
+                      <span>Import Bulk List</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Subjects List */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs font-bold text-slate-600 px-1">
+                  <span>Registered Subjects ({subjectsList.length})</span>
+                  <span className="text-[10px] text-slate-400 font-normal">Click delete icon to remove custom courses</span>
+                </div>
+
+                <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                  {subjectsList.map((subj) => {
+                    const isCustom = !SUBJECTS.includes(subj as any);
+                    const enrolledCount = students.filter(s => {
+                      if (!s.enrolledSubjects || s.enrolledSubjects.length === 0) return true;
+                      return s.enrolledSubjects.includes(subj);
+                    }).length;
+                    return (
+                      <div
+                        key={subj}
+                        className={`flex items-center justify-between p-2.5 rounded-xl border transition ${
+                          isCustom 
+                            ? 'bg-amber-50/40 border-amber-200/80 hover:border-amber-300 shadow-2xs' 
+                            : 'bg-white border-slate-200 hover:border-slate-300 shadow-2xs'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <span className={`px-2.5 py-1 rounded-lg text-xs font-bold ${
+                            isCustom 
+                              ? 'bg-amber-100 text-amber-900 border border-amber-200' 
+                              : 'bg-indigo-100 text-indigo-800'
+                          }`}>
+                            {subj}
+                          </span>
+                          <div>
+                            <p className="text-[11px] font-semibold text-slate-700 flex items-center gap-1.5">
+                              <span>{subj}</span>
+                              {isCustom && (
+                                <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 font-bold border border-amber-200">
+                                  Custom
+                                </span>
+                              )}
+                            </p>
+                            <p className="text-[10px] text-slate-400">
+                              {enrolledCount} enrolled student{enrolledCount === 1 ? '' : 's'}
+                            </p>
+                          </div>
+                        </div>
+
+                        {isCustom ? (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteSubject(subj)}
+                            className="p-1.5 px-2 text-rose-600 hover:text-rose-800 hover:bg-rose-50 rounded-lg transition cursor-pointer border border-rose-200 flex items-center gap-1 text-[11px] font-bold"
+                            title={`Remove subject "${subj}"`}
+                          >
+                            <Trash2 size={12} />
+                            <span>Remove</span>
+                          </button>
+                        ) : (
+                          <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                            GES Core
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Information Note */}
+              <div className="p-3 bg-indigo-50/70 border border-indigo-200/80 rounded-xl text-[10.5px] text-indigo-900 leading-relaxed">
+                <strong>Curriculum Note:</strong> New subjects added here appear across the entire school management system including the Assessment worksheets, Terminal Report Cards, and Teacher subject allocations.
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t border-slate-100 bg-slate-50/50 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowSubjectManagerModal(false)}
                 className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition cursor-pointer"
               >
                 Close
@@ -7116,6 +7655,17 @@ export default function StudentsTab({
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Academic Year Selection & Calendar Creator Modal */}
+      <AcademicYearModal
+        isOpen={showAcademicYearModal}
+        onClose={() => setShowAcademicYearModal(false)}
+        onSelectYear={(yr) => {
+          if (setSelectedYear) setSelectedYear(yr);
+          setFormState(prev => ({ ...prev, academicYear: yr }));
+        }}
+        currentYear={formState.academicYear || selectedYear}
+      />
     </div>
   );
 }

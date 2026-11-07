@@ -9,7 +9,7 @@ import {
   ACADEMIC_YEARS,
   SchoolExpense 
 } from '../../types';
-import { DbController } from '../../db';
+import { DbController, getStorageItem, setStorageItem } from '../../db';
 import { ThemeStyles } from '../ThemeWrapper';
 import { triggerToast, getWatermarkHtml, formatIdentifiableFilename } from '../../utils';
 import { generatePdfFromHtml, downloadBlobLocally } from '../../pdfHelper';
@@ -17,7 +17,7 @@ import { isGoogleAuthenticated, sendGmailMessage } from '../../googleDriveServic
 import { 
   Banknote, Plus, Download, Printer, Search, Filter, 
   CheckCircle2, Clock, AlertTriangle, FileText, Send, 
-  Trash2, Edit2, Sparkles, DollarSign, Building2, User, 
+  Trash2, Edit2, Calculator, DollarSign, Building2, User, 
   CreditCard, ShieldCheck, Mail, ArrowRight, Eye, RefreshCw,
   Check, X, ChevronRight, FileSpreadsheet
 } from 'lucide-react';
@@ -136,7 +136,7 @@ export default function StaffPayslipsTab({
   }, []);
 
   const [selectedMonth, setSelectedMonth] = useState<string>(() => {
-    return localStorage.getItem('sms_payslips_month') || currentMonthYear;
+    return getStorageItem<string>('sms_payslips_month', currentMonthYear);
   });
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'All' | 'Draft' | 'Approved' | 'Disbursed' | 'Paid'>('All');
@@ -164,7 +164,7 @@ export default function StaffPayslipsTab({
   };
 
   useEffect(() => {
-    localStorage.setItem('sms_payslips_month', selectedMonth);
+    setStorageItem('sms_payslips_month', selectedMonth);
   }, [selectedMonth]);
 
   // Filtered payslips
@@ -585,7 +585,7 @@ ${schoolInfo.name || 'School Administration'}
             className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs transition flex items-center gap-1.5 shadow-md shadow-indigo-600/30 cursor-pointer active:scale-95"
             title="Generate monthly payroll batch for all teachers"
           >
-            <Sparkles size={14} className="text-amber-300" />
+            <Calculator size={14} className="text-indigo-200" />
             <span>Generate Monthly Payroll</span>
           </button>
 
@@ -780,7 +780,7 @@ ${schoolInfo.name || 'School Administration'}
                 onClick={openBatchGenerator}
                 className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-extrabold rounded-xl shadow-md transition cursor-pointer"
               >
-                <Sparkles size={14} className="inline mr-1.5 text-amber-300" />
+                <Calculator size={14} className="inline mr-1.5 text-indigo-200" />
                 <span>Generate Batch Payroll for {selectedMonth === 'All Months' ? currentMonthYear : selectedMonth}</span>
               </button>
             </div>
@@ -1313,7 +1313,7 @@ ${schoolInfo.name || 'School Administration'}
             <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-indigo-50/60 via-slate-50 to-white">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-2xl bg-indigo-600 text-white flex items-center justify-center shadow-md shadow-indigo-600/20">
-                  <Sparkles size={20} className="text-amber-300" />
+                  <Calculator size={20} className="text-indigo-100" />
                 </div>
                 <div>
                   <h3 className="text-base font-black text-slate-900">
@@ -1453,7 +1453,7 @@ ${schoolInfo.name || 'School Administration'}
                 onClick={handleGenerateBatchPayroll}
                 className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-extrabold transition shadow-md shadow-indigo-600/30 cursor-pointer active:scale-95"
               >
-                <Sparkles size={14} className="inline mr-1 text-amber-300" />
+                <Calculator size={14} className="inline mr-1 text-indigo-200" />
                 <span>Generate {batchSelectedStaffIds.length} Payslips</span>
               </button>
             </div>

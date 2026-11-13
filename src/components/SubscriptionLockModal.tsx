@@ -26,6 +26,12 @@ export default function SubscriptionLockModal({ user, onUnlocked, onLogout, onSh
   const [platformPricing, setPlatformPricing] = useState<PlatformPricing>(() => DbController.getPlatformPricing());
 
   useEffect(() => {
+    DbController.fetchRemotePlatformPricing().then((pricing) => {
+      if (pricing) {
+        setPlatformPricing(pricing);
+      }
+    }).catch(err => console.warn("Could not fetch remote pricing in lock modal:", err));
+
     const handlePlatformPricingUpdated = (e: Event) => {
       const customEvent = e as CustomEvent;
       const newPricing = customEvent.detail || DbController.getPlatformPricing();

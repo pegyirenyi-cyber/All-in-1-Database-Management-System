@@ -18,6 +18,8 @@
                str.includes('failed to connect') ||
                str.includes('closed without opened') ||
                str.includes('connection refused') ||
+               str.includes('could not reach cloud firestore backend') ||
+               str.includes('client will operate in offline mode') ||
                str.includes('[vite]');
       };
       

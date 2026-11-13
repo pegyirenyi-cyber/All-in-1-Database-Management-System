@@ -116,6 +116,28 @@
         "district": { "type": "string" },
         "circuit": { "type": "string" },
         "photoUrl": { "type": "string" },
+        "assignedClass": { "type": "string" },
+        "assignedClasses": { "type": "array", "items": { "type": "string" } },
+        "assignedSubjects": { "type": "array", "items": { "type": "string" } },
+        "permissions": {
+          "type": "object",
+          "properties": {
+            "canAccessStudents": { "type": "boolean" },
+            "canAccessAttendance": { "type": "boolean" },
+            "canAccessAssessments": { "type": "boolean" },
+            "canAccessSystemControl": { "type": "boolean" },
+            "canEditStudents": { "type": "boolean" },
+            "canApproveAttendance": { "type": "boolean" },
+            "canEditGrades": { "type": "boolean" },
+            "canExportReports": { "type": "boolean" }
+          }
+        },
+        "schoolId": { "type": "string" },
+        "schoolCode": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "headteacherUserId": { "type": "string" },
+        "headteacherName": { "type": "string" },
+        "lastModified": { "type": "string" },
         "createdAt": { "type": "string" }
       },
       "required": ["id", "firstName", "lastName", "gender", "staffId", "rank"]
@@ -385,9 +407,30 @@
         "createdAt": { "type": "string" }
       },
       "required": ["id", "userId", "timestamp", "payload"]
+    },
+    "PlatformPricing": {
+      "title": "PlatformPricing",
+      "description": "System-wide subscription renewal pricing and SMS rate adjusted by administrator",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "licensePrice1Year": { "type": "number" },
+        "licensePrice2Year": { "type": "number" },
+        "licensePrice3Year": { "type": "number" },
+        "licensePrice5Year": { "type": "number" },
+        "smsRate": { "type": "number" },
+        "updatedAt": { "type": "string" },
+        "updatedBy": { "type": "string" },
+        "updatedByName": { "type": "string" }
+      },
+      "required": ["id", "licensePrice1Year"]
     }
   },
   "firestore": {
+    "/platform_settings/{settingId}": {
+      "schema": "PlatformPricing",
+      "description": "System-wide platform configurations including subscription tier pricing and SMS rates"
+    },
     "/schools/{schoolId}": {
       "schema": "SchoolInfo",
       "description": "Collection hosting general school metadata"
@@ -463,6 +506,30 @@
     "/schools/{schoolId}/cloud_sync/{syncId}": {
       "schema": "UserBackup",
       "description": "Cloud synchronization snapshots saved to school account"
+    },
+    "/users/{userId}/teachers/{teacherId}": {
+      "schema": "Teacher",
+      "description": "Enrolled teacher records, assigned classes, and role permissions persisted under Headteacher User ID"
+    },
+    "/users/{userId}/students/{studentId}": {
+      "schema": "Student",
+      "description": "Student profile changes synced under Headteacher User ID"
+    },
+    "/users/{userId}/attendance/{recordId}": {
+      "schema": "AttendanceRecord",
+      "description": "Class attendance roster records synced under Headteacher User ID"
+    },
+    "/users/{userId}/staff_attendance/{recordId}": {
+      "schema": "StaffAttendanceRecord",
+      "description": "Staff attendance logs synced under Headteacher User ID"
+    },
+    "/users/{userId}/assessments/{assessmentId}": {
+      "schema": "StudentAssessment",
+      "description": "Academic assessments synced under Headteacher User ID"
+    },
+    "/users/{userId}/tasks/{taskId}": {
+      "schema": "CustomTask",
+      "description": "Teacher and Headteacher tasks synced under Headteacher User ID"
     }
   }
 }

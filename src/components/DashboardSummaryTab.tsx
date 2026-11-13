@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Student, Teacher, StudentAssessment, ClassType, CLASSES, AcademicYearType, ACADEMIC_YEARS, AttendanceRecord, StudentFeeBill, TermType, TERMS, SubjectType, UserRole, ActivityLog, QuickNote, NoteCategory } from '../types';
+import { Student, Teacher, StudentAssessment, ClassType, CLASSES, AcademicYearType, ACADEMIC_YEARS, AttendanceRecord, StudentFeeBill, TermType, TERMS, SubjectType, UserRole, ActivityLog, QuickNote, NoteCategory, TeacherReflection, LeaveRequest, CustomTask } from '../types';
 import { DbController, getStorageItem, setStorageItem } from '../db';
 import { ThemeStyles } from './ThemeWrapper';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -79,7 +79,6 @@ const EnrollmentTooltip = ({ active, payload, label }: { active?: boolean; paylo
 const GrowthTooltip = ({ active, payload, label }: { active?: boolean; payload?: any[]; label?: string }) => {
   if (active && payload && payload.length) {
     const value = payload[0].value;
-    const isSimulated = payload[0].payload.isSimulated;
     return (
       <div className="bg-slate-900 border border-slate-800 text-slate-100 p-3.5 rounded-xl shadow-xl font-sans text-xs space-y-2">
         <div className="border-b border-slate-800 pb-1.5">
@@ -300,6 +299,15 @@ export default function DashboardSummaryTab({
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>(() => {
     try { return DbController.getActivityLogs() || []; } catch { return []; }
   });
+  const [teacherReflections, setTeacherReflections] = useState<TeacherReflection[]>(() => {
+    try { return DbController.getTeacherReflections() || []; } catch { return []; }
+  });
+  const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>(() => {
+    try { return DbController.getLeaveRequests() || []; } catch { return []; }
+  });
+  const [teacherTasks, setTeacherTasks] = useState<CustomTask[]>(() => {
+    try { return DbController.getTasks() || []; } catch { return []; }
+  });
 
   // Quick Notes state & persistent storage integration
   const [quickNotes, setQuickNotes] = useState<QuickNote[]>(() => {
@@ -394,11 +402,36 @@ export default function DashboardSummaryTab({
     }, 0);
   };
 
-  // Listen to broadcasted real-time updates for quick notes
+  // Listen to broadcasted real-time updates across all teacher & headteacher modules
   useEffect(() => {
+    const refreshLiveFeeds = () => {
+      try { setQuickNotes(DbController.getQuickNotes() || []); } catch {}
+      try { setActivityLogs(DbController.getActivityLogs() || []); } catch {}
+      try { setTeacherReflections(DbController.getTeacherReflections() || []); } catch {}
+      try { setLeaveRequests(DbController.getLeaveRequests() || []); } catch {}
+      try { setTeacherTasks(DbController.getTasks() || []); } catch {}
+    };
+
     const handleSync = (e: any) => {
-      if (e.detail?.type === 'quick-notes-updated') {
-        setQuickNotes(DbController.getQuickNotes());
+      const eventType = e?.detail?.type;
+      if (
+        !eventType ||
+        eventType === 'quick-notes-updated' ||
+        eventType === 'activity-logs-updated' ||
+        eventType === 'teachers-updated' ||
+        eventType === 'teacher-updated' ||
+        eventType === 'reflections-updated' ||
+        eventType === 'leave-requests-updated' ||
+        eventType === 'tasks-updated' ||
+        eventType === 'students-updated' ||
+        eventType === 'attendance-updated' ||
+        eventType === 'assessments-updated' ||
+        eventType === 'users-updated' ||
+        eventType === 'subscribers-timer-updated' ||
+        eventType === 'school-updated'
+      ) {
+        refreshLiveFeeds();
+        setTicker(prev => prev + 1);
       }
     };
     if (typeof window !== 'undefined') {
@@ -410,6 +443,14 @@ export default function DashboardSummaryTab({
       }
     };
   }, []);
+
+  // Keep live feeds synced whenever parent props update from App.tsx Firestore listeners
+  useEffect(() => {
+    try { setActivityLogs(DbController.getActivityLogs() || []); } catch {}
+    try { setTeacherReflections(DbController.getTeacherReflections() || []); } catch {}
+    try { setLeaveRequests(DbController.getLeaveRequests() || []); } catch {}
+    try { setTeacherTasks(DbController.getTasks() || []); } catch {}
+  }, [propStudents, propTeachers, propAttendance, propAssessments]);
 
   const categoryDefaultColor: Record<NoteCategory, 'amber' | 'blue' | 'emerald' | 'rose' | 'purple' | 'slate'> = {
     Academic: 'blue',
@@ -643,6 +684,7 @@ export default function DashboardSummaryTab({
   const [widgets, setWidgets] = useState(() => {
     const defaultWidgets = {
       quickNotes: true,
+      teacherRoles: true,
       dailyAttendance: true,
       pendingFees: true,
       newAdmissions: true,
@@ -661,6 +703,7 @@ export default function DashboardSummaryTab({
 
   const defaultWidgetOrder = [
     'quickNotes',
+    'teacherRoles',
     'dailyAttendance',
     'pendingFees',
     'newAdmissions',
@@ -676,6 +719,7 @@ export default function DashboardSummaryTab({
 
   const defaultWidgetSizes: Record<string, 'normal' | 'wide' | 'full'> = {
     quickNotes: 'full',
+    teacherRoles: 'full',
     dailyAttendance: 'normal',
     pendingFees: 'normal',
     newAdmissions: 'normal',
@@ -740,6 +784,7 @@ export default function DashboardSummaryTab({
   const showAllWidgets = () => {
     const next = {
       quickNotes: true,
+      teacherRoles: true,
       dailyAttendance: true,
       pendingFees: true,
       newAdmissions: true,
@@ -759,6 +804,7 @@ export default function DashboardSummaryTab({
   const hideAllWidgets = () => {
     const next = {
       quickNotes: false,
+      teacherRoles: false,
       dailyAttendance: false,
       pendingFees: false,
       newAdmissions: false,
@@ -777,6 +823,7 @@ export default function DashboardSummaryTab({
 
   const widgetDefinitions = [
     { key: 'quickNotes', label: 'Quick Notes & Urgent Memos', desc: 'Jot down urgent reminders, staff memos, and administrative notices with persistent database storage', category: 'General' },
+    { key: 'teacherRoles', label: 'Teacher Role Matrix & Live Changes', desc: 'Control Student Profiles, Class Attendance Roster, Academic Assessment & System Control roles and track live Teacher page changes', category: 'Faculty Governance' },
     { key: 'dailyAttendance', label: 'Attendance Summary', desc: 'Live status log of today\'s student attendance by class', category: 'Daily Operations' },
     { key: 'pendingFees', label: 'Recent Fee Payments', desc: 'Donut chart showing ratio of collected vs outstanding school fees with live payments log', category: 'Finance' },
     { key: 'newAdmissions', label: 'New Admissions', desc: 'Admissions trend, metrics, and scannable list of recently registered students', category: 'Demographics' },
@@ -1221,8 +1268,8 @@ export default function DashboardSummaryTab({
     totalGrades = l1Count + l2Count + l3Count + l4Count + l5Count;
   }
 
-  // Actual Grade Distribution calculation without simulation
-  const gradeDistributionSimulated = [
+  // Actual Grade Distribution calculation
+  const gradeDistribution = [
     { name: 'Highly Proficient (L1)', value: l1Count, pct: totalGrades > 0 ? Math.round((l1Count / totalGrades) * 100) : 0, color: '#10b981' },
     { name: 'Proficient (L2)', value: l2Count, pct: totalGrades > 0 ? Math.round((l2Count / totalGrades) * 100) : 0, color: '#3b82f6' },
     { name: 'Approaching (L3)', value: l3Count, pct: totalGrades > 0 ? Math.round((l3Count / totalGrades) * 100) : 0, color: '#f59e0b' },
@@ -1230,8 +1277,8 @@ export default function DashboardSummaryTab({
     { name: 'Emerging (L5)', value: l5Count, pct: totalGrades > 0 ? Math.round((l5Count / totalGrades) * 100) : 0, color: '#ef4444' },
   ];
 
-  const currentUser = useMemo(() => DbController.getCurrentUser(), []);
   const [ticker, setTicker] = useState(0);
+  const currentUser = useMemo(() => DbController.getCurrentUser(), [ticker]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -1242,17 +1289,82 @@ export default function DashboardSummaryTab({
 
   const subStatus = useMemo(() => currentUser ? evaluateSubscription(currentUser) : null, [currentUser, ticker]);
 
+  const handleToggleTeacherRole = (
+    teacher: Teacher,
+    permKey: 'canAccessStudents' | 'canAccessAttendance' | 'canAccessAssessments' | 'canAccessSystemControl'
+  ) => {
+    const currentPerms = teacher.permissions || {};
+    const prevVal = currentPerms[permKey] !== false;
+    const nextVal = !prevVal;
+    const teacherFullName = DbController.formatTeacherFullName(teacher);
+    const updatedTeacher: Teacher = {
+      ...teacher,
+      permissions: {
+        canAccessStudents: currentPerms.canAccessStudents !== false,
+        canAccessAttendance: currentPerms.canAccessAttendance !== false,
+        canAccessAssessments: currentPerms.canAccessAssessments !== false,
+        canAccessSystemControl: currentPerms.canAccessSystemControl !== false,
+        canEditStudents: currentPerms.canEditStudents !== false,
+        canApproveAttendance: currentPerms.canApproveAttendance !== false,
+        canEditGrades: currentPerms.canEditGrades !== false,
+        canExportReports: currentPerms.canExportReports !== false,
+        [permKey]: nextVal,
+      },
+      lastModified: new Date().toISOString(),
+    };
+    const roleLabelMap: Record<typeof permKey, string> = {
+      canAccessStudents: 'Student Profiles',
+      canAccessAttendance: 'Class Attendance Roster',
+      canAccessAssessments: 'Academic Assessment',
+      canAccessSystemControl: 'System Control',
+    };
+    DbController.saveTeacher(updatedTeacher);
+    DbController.writeActivityLog(
+      'Teacher Role Updated',
+      `Headteacher ${nextVal ? 'enabled' : 'disabled'} "${roleLabelMap[permKey]}" role for ${teacherFullName} (Staff ID: ${teacher.staffId || teacher.id}).`,
+      'high'
+    );
+    setActivityLogs(DbController.getActivityLogs() || []);
+    onRefresh();
+    window.dispatchEvent(new CustomEvent('app-toast', {
+      detail: {
+        text: `${roleLabelMap[permKey]} ${nextVal ? 'granted' : 'revoked'} for ${teacherFullName} and saved under Headteacher Cloud Firestore.`,
+        type: 'success'
+      }
+    }));
+  };
+
+  const handleLeaveDecision = (req: LeaveRequest, status: 'Approved' | 'Rejected') => {
+    const updated: LeaveRequest = { ...req, status };
+    DbController.saveLeaveRequest(updated);
+    DbController.writeActivityLog(
+      `Leave Request ${status}`,
+      `Headteacher ${status.toLowerCase()} leave request for ${req.teacherName} (${req.startDate} to ${req.endDate}).`,
+      'medium'
+    );
+    setLeaveRequests(DbController.getLeaveRequests() || []);
+    setActivityLogs(DbController.getActivityLogs() || []);
+    onRefresh();
+    window.dispatchEvent(new CustomEvent('app-toast', {
+      detail: { text: `Leave request for ${req.teacherName} marked ${status}.`, type: 'success' }
+    }));
+  };
+
   // --- TEACHER SPECIFIC COMPUTATIONS & DATA PIPELINE ---
   const teacherProfile = useMemo(() => {
     if (!currentUser || currentUser.role !== 'Teacher') return null;
     const userEmail = currentUser.email?.toLowerCase().trim();
-    if (!userEmail) return null;
     return teachers.find(
-      t => t.email?.toLowerCase().trim() === userEmail
-    );
+      t =>
+        (userEmail && t.email?.toLowerCase().trim() === userEmail) ||
+        (currentUser.staffId && t.staffId === currentUser.staffId) ||
+        t.id === currentUser.uid
+    ) || null;
   }, [currentUser, teachers]);
 
-  const teacherName = teacherProfile ? `${teacherProfile.gender === 'Female' ? 'Mrs.' : 'Mr.'} ${teacherProfile.firstName} ${teacherProfile.lastName}` : 'Educator';
+  const teacherName = teacherProfile
+    ? DbController.formatTeacherFullName(teacherProfile)
+    : (currentUser?.name || 'Educator');
 
   // Filtered Assessments for their class
   const classAssessments = useMemo(() => {
@@ -2088,7 +2200,7 @@ export default function DashboardSummaryTab({
 
         <div className="flex items-center gap-3">
           <span className="text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 px-2.5 py-1 rounded-xl font-bold border border-slate-200/65 dark:border-slate-700/60 font-mono">
-            Active: {Object.values(widgets).filter(Boolean).length} of 8
+            Active: {Object.values(widgets).filter(Boolean).length} of {Object.keys(widgets).length}
           </span>
 
           <button
@@ -2281,6 +2393,261 @@ export default function DashboardSummaryTab({
           if (!widgets[key as keyof typeof widgets]) return null;
 
           switch (key) {
+            case 'teacherRoles':
+              if (userRole !== 'Headteacher' && userRole !== 'Admin') return null;
+              return renderWidgetContainer(key, (
+                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-5 text-left">
+                  {/* Header with synced Headteacher subscription badge */}
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+                    <div>
+                      <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                        <ShieldCheck className="text-indigo-600" size={16} />
+                        Assigned Teachers, Role Governance &amp; Live Teacher Page Changes
+                      </h4>
+                      <p className="text-[10px] text-slate-400 font-semibold uppercase mt-0.5">
+                        All teacher roles &amp; changes sync 1:1 with Headteacher&apos;s subscription under UID:{' '}
+                        <span className="font-mono text-indigo-600">{DbController.resolveHeadteacherUserId(DbController.resolveActiveSchoolId())}</span>
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {subStatus && (
+                        <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-black border font-mono ${
+                          subStatus.isLocked
+                            ? 'bg-rose-50 text-rose-700 border-rose-200'
+                            : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        }`}>
+                          <Clock size={12} />
+                          Synced Period: {subStatus.isLocked ? 'Inactive / Expired' : `${subStatus.countdownString} (Exp: ${subStatus.expiryDate.toLocaleDateString()})`}
+                        </span>
+                      )}
+                      {setActiveTab && (
+                        <button
+                          onClick={() => setActiveTab('teachers')}
+                          className="px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-[10px] font-black uppercase tracking-wider transition cursor-pointer"
+                        >
+                          Manage Staff Registry
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Two-column body: Assigned Teachers 4-Role Matrix + Live Changes from Teachers' Pages */}
+                  <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
+                    {/* Left: Teachers Roster + 4 Role Toggles */}
+                    <div className="xl:col-span-7 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                          Enrolled Teachers &amp; Assigned Roles ({teachers.length})
+                        </span>
+                        <span className="text-[10px] text-slate-400 font-medium">
+                          Click any role badge to toggle access
+                        </span>
+                      </div>
+
+                      {teachers.length === 0 ? (
+                        <WidgetEmptyState
+                          icon={Users}
+                          title="No Enrolled Teachers"
+                          description="Add teachers under the Teacher Profiles registry to assign roles and monitor changes."
+                        />
+                      ) : (
+                        <div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1 custom-scrollbar">
+                          {teachers.map((t) => {
+                            const fullName = DbController.formatTeacherFullName(t);
+                            const perms = t.permissions || {};
+                            const roleItems: Array<{
+                              key: 'canAccessStudents' | 'canAccessAttendance' | 'canAccessAssessments' | 'canAccessSystemControl';
+                              label: string;
+                              enabled: boolean;
+                            }> = [
+                              { key: 'canAccessStudents', label: 'Student Profiles', enabled: perms.canAccessStudents !== false },
+                              { key: 'canAccessAttendance', label: 'Class Attendance Roster', enabled: perms.canAccessAttendance !== false },
+                              { key: 'canAccessAssessments', label: 'Academic Assessment', enabled: perms.canAccessAssessments !== false },
+                              { key: 'canAccessSystemControl', label: 'System Control', enabled: perms.canAccessSystemControl !== false },
+                            ];
+
+                            const assignedClassList = Array.from(new Set([
+                              ...(t.assignedClasses || []),
+                              ...(t.assignedClass && t.assignedClass !== 'None' ? [t.assignedClass] : [])
+                            ]));
+
+                            const teacherUserAcc = DbController.getRegisteredUsers().find(
+                              u => u.role === 'Teacher' && (
+                                (t.email && u.email?.toLowerCase().trim() === t.email.toLowerCase().trim()) ||
+                                (t.staffId && u.staffId === t.staffId)
+                              )
+                            );
+                            const teacherSub = teacherUserAcc ? evaluateSubscription(teacherUserAcc) : subStatus;
+
+                            return (
+                              <div key={t.id} className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-white transition space-y-2.5">
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                  <div>
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="text-xs font-black text-slate-800">{fullName}</span>
+                                      <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-slate-200/70 text-slate-600">
+                                        {t.staffId || t.id}
+                                      </span>
+                                      {t.rank && (
+                                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100">
+                                          {t.rank}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="text-[10px] text-slate-500 mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                                      <span>
+                                        Classes: <strong className="text-slate-700">{assignedClassList.length > 0 ? assignedClassList.join(', ') : 'Unassigned'}</strong>
+                                      </span>
+                                      {t.email && <span>Email: {t.email}</span>}
+                                    </div>
+                                  </div>
+                                  {teacherSub && (
+                                    <span className={`text-[9px] font-mono font-black px-2 py-0.5 rounded-md border shrink-0 self-start sm:self-center ${
+                                      teacherSub.isLocked
+                                        ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                        : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    }`}>
+                                      {teacherSub.isLocked
+                                        ? 'Subscription Inactive'
+                                        : `Sub Match: ${teacherSub.remainingDays}d left (${teacherSub.expiryDate.toLocaleDateString()})`}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex flex-wrap gap-1.5 pt-1 border-t border-slate-200/70">
+                                  {roleItems.map((r) => (
+                                    <button
+                                      key={r.key}
+                                      type="button"
+                                      onClick={() => handleToggleTeacherRole(t, r.key)}
+                                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold border transition cursor-pointer ${
+                                        r.enabled
+                                          ? 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                                          : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200'
+                                      }`}
+                                      title={`Click to ${r.enabled ? 'revoke' : 'grant'} ${r.label}`}
+                                    >
+                                      <span className={`w-1.5 h-1.5 rounded-full ${r.enabled ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+                                      <span>{r.label}</span>
+                                      <span className="font-mono text-[9px] uppercase opacity-75">
+                                        {r.enabled ? 'ON' : 'OFF'}
+                                      </span>
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Right: Live Changes & Submissions from Teachers' Pages */}
+                    <div className="xl:col-span-5 space-y-3 border-t xl:border-t-0 xl:border-l border-slate-100 pt-4 xl:pt-0 xl:pl-5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                          Live Changes from Teachers&apos; Pages
+                        </span>
+                        <span className="text-[9px] font-mono font-bold px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-100">
+                          {teacherReflections.length + leaveRequests.length + teacherTasks.length} Updates
+                        </span>
+                      </div>
+
+                      <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1 custom-scrollbar">
+                        {/* Pending / Recent Leave Requests */}
+                        {leaveRequests.slice(0, 4).map((req) => {
+                          const matchedT = teachers.find(t => t.id === req.teacherId || t.staffId === req.teacherId);
+                          const displayTName = matchedT ? DbController.formatTeacherFullName(matchedT) : req.teacherName;
+                          return (
+                            <div key={req.id} className="p-3 rounded-xl border border-amber-200/80 bg-amber-50/40 space-y-1.5">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[10px] font-black text-amber-900 uppercase">
+                                  Leave Request • {displayTName}
+                                </span>
+                                <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border ${
+                                  req.status === 'Approved'
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    : req.status === 'Rejected'
+                                      ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                      : 'bg-amber-100 text-amber-800 border-amber-300'
+                                }`}>
+                                  {req.status}
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-slate-600 font-medium">
+                                {req.startDate} to {req.endDate} — {req.reason}
+                              </p>
+                              {req.status === 'Pending' && (
+                                <div className="flex items-center gap-2 pt-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleLeaveDecision(req, 'Approved')}
+                                    className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[9px] font-black cursor-pointer"
+                                  >
+                                    Approve
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleLeaveDecision(req, 'Rejected')}
+                                    className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-700 text-white text-[9px] font-black cursor-pointer"
+                                  >
+                                    Reject
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+
+                        {/* Recent Teacher Reflections & Classroom Strategies */}
+                        {teacherReflections.slice(0, 5).map((ref) => {
+                          const matchedT = teachers.find(t => t.id === ref.teacherId || t.staffId === ref.teacherId);
+                          const displayTName = matchedT ? DbController.formatTeacherFullName(matchedT) : (ref.teacherName || 'Educator');
+                          return (
+                            <div key={ref.id} className="p-3 rounded-xl border border-indigo-100 bg-indigo-50/30 space-y-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[10px] font-black text-indigo-900">
+                                  {displayTName} {ref.class ? `(${ref.class})` : ''}
+                                </span>
+                                <span className="text-[9px] font-mono text-slate-400">
+                                  {ref.date}
+                                </span>
+                              </div>
+                              <div className="text-[9px] font-bold uppercase text-indigo-600">
+                                {ref.category}{ref.weeklyStrategyTitle ? ` — ${ref.weeklyStrategyTitle}` : ''}
+                              </div>
+                              <p className="text-[10px] text-slate-600 line-clamp-2 leading-relaxed">
+                                {ref.content}
+                              </p>
+                            </div>
+                          );
+                        })}
+
+                        {/* Recent Teacher Activity Logs */}
+                        {activityLogs.slice(0, 6).map((log) => (
+                          <div key={log.id} className="p-2.5 rounded-xl border border-slate-150 bg-slate-50/60 space-y-0.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[10px] font-black text-slate-700 uppercase">{log.action}</span>
+                              <span className="text-[9px] font-mono text-slate-400">
+                                {new Date(log.timestamp).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-slate-600 leading-snug">{log.details}</p>
+                          </div>
+                        ))}
+
+                        {leaveRequests.length === 0 && teacherReflections.length === 0 && activityLogs.length === 0 && (
+                          <div className="text-center py-8 text-slate-400 border border-dashed border-slate-200 rounded-xl">
+                            <p className="text-xs font-bold">No teacher changes recorded yet.</p>
+                            <p className="text-[10px] mt-1">Updates made in Student Profiles, Attendance, Assessments, Reflections &amp; Leave appear here in real time.</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ));
+
             case 'quickNotes':
               return renderWidgetContainer(key, (
                 <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-4 flex flex-col justify-between h-full text-left">
@@ -2965,7 +3332,7 @@ export default function DashboardSummaryTab({
                       />
                     ) : (
                       <div className="space-y-2.5 pt-0.5">
-                        {gradeDistributionSimulated.map((g, index) => (
+                        {gradeDistribution.map((g, index) => (
                           <div key={index} className="space-y-1">
                             <div className="flex justify-between items-center text-xs">
                               <span className="text-slate-500 font-medium">{g.name}</span>
@@ -3321,7 +3688,7 @@ export default function DashboardSummaryTab({
                   ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                       {CLASSES.map(cls => {
-                        const teacher = teachers.find(t => t.assignedClass === cls);
+                        const teacher = teachers.find(t => t.assignedClass === cls || t.assignedClasses?.includes(cls));
                         const classStudents = students.filter(s => s.class === cls);
                         if (classStudents.length === 0) return null;
                         
@@ -3359,7 +3726,7 @@ export default function DashboardSummaryTab({
                                 <h5 className="text-sm font-bold text-slate-800">{cls}</h5>
                                 <p className="text-[10px] text-slate-500 font-medium flex items-center gap-1 mt-0.5">
                                   <UserCheck size={10} />
-                                  {teacher ? `${teacher.firstName} ${teacher.lastName}` : 'No Assigned Teacher'}
+                                  {teacher ? DbController.formatTeacherFullName(teacher) : 'No Assigned Teacher'}
                                 </p>
                               </div>
                               <span className={`flex items-center gap-1 px-2 py-1 rounded border text-[9px] font-black uppercase tracking-widest ${statusColor}`}>

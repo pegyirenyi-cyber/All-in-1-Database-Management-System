@@ -65,46 +65,7 @@ export default function QRBadgeScanner({ onScanSuccess, onClose, isSubscriptionL
         const info = DbController.getSchoolInfo();
         setSchoolInfo(info);
 
-        const activeSchoolId = info?.schoolId || DbController.resolveActiveSchoolId();
-        let allTeachers = DbController.getTeachers();
-
-        // Fallback: Synthesize from user accounts if teachers list is empty
-        if (!allTeachers || allTeachers.length === 0) {
-          const users = DbController.getRegisteredUsers();
-          const teacherUsers = users.filter(u => u.role === 'Teacher' || u.role === 'Headteacher' || u.role === 'Admin');
-          if (teacherUsers.length > 0) {
-            allTeachers = teacherUsers.map((u, i) => {
-              const nameParts = u.name.split(' ');
-              return {
-                id: u.uid || `t_auto_${i + 1}`,
-                firstName: nameParts[0] || u.name,
-                lastName: nameParts.slice(1).join(' ') || 'Staff',
-                gender: 'Male',
-                dateOfBirth: '1990-01-01',
-                placeOfBirth: 'Accra',
-                subjectsTaught: 'Class Teacher',
-                professionalQualifications: 'Degree',
-                highestAcademicQualifications: 'Bachelor of Education',
-                rank: 'Senior Superintendent I',
-                dateOfFirstAppointment: new Date().toISOString().split('T')[0],
-                dateOfPostingToCurrentStation: new Date().toISOString().split('T')[0],
-                staffId: u.staffId || u.uid || `STAFF-00${i + 1}`,
-                ntcNumber: '',
-                ssnitNumber: '',
-                district: '',
-                circuit: '',
-                photoUrl: '',
-                createdAt: new Date().toISOString(),
-                email: u.email,
-                schoolId: u.schoolId || activeSchoolId,
-                assignedClass: 'None',
-                assignedClasses: [],
-                assignedSubjects: []
-              };
-            });
-          }
-        }
-
+        const allTeachers = DbController.getTeachers();
         setTeachers(allTeachers || []);
       } catch (err) {
         console.error("Error loading teachers for QR scanner:", err);
@@ -117,6 +78,7 @@ export default function QRBadgeScanner({ onScanSuccess, onClose, isSubscriptionL
 
     loadSchoolAndTeachers();
     window.addEventListener('storage', loadSchoolAndTeachers);
+    window.addEventListener('school-system-sync', loadSchoolAndTeachers);
 
     // Close modal on Escape key press
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -133,6 +95,7 @@ export default function QRBadgeScanner({ onScanSuccess, onClose, isSubscriptionL
 
     return () => {
       window.removeEventListener('storage', loadSchoolAndTeachers);
+      window.removeEventListener('school-system-sync', loadSchoolAndTeachers);
       window.removeEventListener('keydown', handleKeyDown);
       stopCamera();
       // Explicitly restore the CSS 'overflow' property on document body and html root to prevent frozen sidebar
@@ -153,11 +116,12 @@ export default function QRBadgeScanner({ onScanSuccess, onClose, isSubscriptionL
   };
 
   // Handle Headteacher School ID Code verification
-  const handleVerifySchoolId = (e?: React.FormEvent) => {
+  const handleVerifySchoolId = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setSchoolIdError(null);
 
-    const cleanCode = inputSchoolId.trim().toUpperCase();
+    const rawCode = inputSchoolId.trim();
+    const cleanCode = rawCode.toUpperCase();
 
     if (!cleanCode) {
       setSchoolIdError("Please enter Headteacher's School ID code to proceed.");
@@ -165,16 +129,23 @@ export default function QRBadgeScanner({ onScanSuccess, onClose, isSubscriptionL
       return;
     }
 
-    const info = schoolInfo || DbController.getSchoolInfo();
+    // Pre-sync enrolled staff list for this School Code from Cloud Firestore if online
+    await DbController.preSyncSchoolDirectoryForLogin(rawCode);
+    const refreshedInfo = DbController.getSchoolInfo();
+    const refreshedTeachers = DbController.getTeachers();
+    setSchoolInfo(refreshedInfo);
+    setTeachers(refreshedTeachers);
+
+    const info = refreshedInfo || schoolInfo;
     const currentSchoolId = (info?.schoolId || DbController.resolveActiveSchoolId() || '').trim().toUpperCase();
     
     const registeredUsers = DbController.getRegisteredUsers();
     const validUserSchoolIds = registeredUsers
-      .map(u => (u.schoolId || u.uid || '').trim().toUpperCase())
+      .map(u => (u.schoolId || u.schoolCode || u.uid || '').trim().toUpperCase())
       .filter(Boolean);
 
-    const teacherSchoolIds = (teachers || [])
-      .map(t => (t.schoolId || '').trim().toUpperCase())
+    const teacherSchoolIds = (refreshedTeachers || [])
+      .map(t => (t.schoolId || t.schoolCode || '').trim().toUpperCase())
       .filter(Boolean);
 
     // Accept match against current school ID, user accounts, or registered teachers
@@ -189,7 +160,7 @@ export default function QRBadgeScanner({ onScanSuccess, onClose, isSubscriptionL
 
     if (isMatch) {
       playBeep(true);
-      setVerifiedSchoolCode(cleanCode);
+      setVerifiedSchoolCode(rawCode);
       setStep('select_teacher');
       setSchoolIdError(null);
     } else {
@@ -1051,7 +1022,7 @@ export default function QRBadgeScanner({ onScanSuccess, onClose, isSubscriptionL
                   <div className="mt-3 px-3 py-1 bg-slate-900/90 border border-indigo-500/40 rounded-full flex items-center gap-2 backdrop-blur-md shadow-lg">
                     <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
                     <p className="text-[10px] font-mono tracking-widest text-cyan-300 uppercase">
-                      {isLoginMode ? "Scanning in Progress..." : `Scanning ${selectedTeacher?.firstName || 'Staff'}'s Badge...`}
+                      {isLoginMode ? "Scanning in Progress..." : `Scanning ${selectedTeacher ? DbController.formatTeacherFullName(selectedTeacher) : 'Teacher'}'s Badge...`}
                     </p>
                   </div>
                 </div>

@@ -76,7 +76,17 @@ const INITIAL_FORM: Partial<Teacher> = {
   subjectSpecialization: '',
   assignedClass: 'None',
   assignedClasses: [],
-  assignedSubjects: []
+  assignedSubjects: [],
+  permissions: {
+    canAccessStudents: true,
+    canAccessAttendance: true,
+    canAccessAssessments: true,
+    canAccessSystemControl: true,
+    canEditStudents: true,
+    canApproveAttendance: true,
+    canEditGrades: true,
+    canExportReports: true
+  }
 };
 
 export default function TeachersTab({ theme, teachers, schoolInfo: propSchoolInfo, onRefresh, isAutoSave, onManualSave, onSaveAll, isManualSaving, userRole, onNavigate }: Props) {
@@ -1057,7 +1067,11 @@ export default function TeachersTab({ theme, teachers, schoolInfo: propSchoolInf
       ...INITIAL_FORM,
       ...teacher, 
       assignedClasses: parsedClasses,
-      assignedSubjects: parsedSubjects
+      assignedSubjects: parsedSubjects,
+      permissions: {
+        ...INITIAL_FORM.permissions,
+        ...(teacher.permissions || {})
+      }
     });
     setIsEditing(true);
     setShowFormModal(true);
@@ -1308,6 +1322,16 @@ export default function TeachersTab({ theme, teachers, schoolInfo: propSchoolInf
       assignedClass: finalAssignedClass,
       assignedClasses: finalAssignedClasses,
       assignedSubjects: finalAssignedSubjects,
+      permissions: {
+        canAccessStudents: formState.permissions?.canAccessStudents !== false,
+        canAccessAttendance: formState.permissions?.canAccessAttendance !== false,
+        canAccessAssessments: formState.permissions?.canAccessAssessments !== false,
+        canAccessSystemControl: formState.permissions?.canAccessSystemControl !== false,
+        canEditStudents: formState.permissions?.canEditStudents !== false,
+        canApproveAttendance: formState.permissions?.canApproveAttendance !== false,
+        canEditGrades: formState.permissions?.canEditGrades !== false,
+        canExportReports: formState.permissions?.canExportReports !== false
+      },
       createdAt: formState.createdAt || new Date().toISOString()
     };
 
@@ -1329,15 +1353,21 @@ export default function TeachersTab({ theme, teachers, schoolInfo: propSchoolInf
       }
     }
 
+    const payloadFullName = DbController.formatTeacherFullName(payload);
     try {
       // Save immediately as requested
       DbController.saveTeacher(payload);
+      DbController.writeActivityLog(
+        isEditing ? 'Faculty Record Updated' : 'Faculty Member Enrolled',
+        `${isEditing ? 'Updated' : 'Enrolled'} faculty member ${payloadFullName} (Rank: ${payload.rank || 'Teacher'}, Staff ID: ${payload.staffId || payload.id}).`,
+        'info'
+      );
     } catch (saveErr: any) {
       triggerToast(saveErr?.message || "Failed to save teacher", "error");
       return;
     }
     onRefresh();
-    triggerToast(isEditing ? `Successfully updated record for faculty member ${payload.firstName} ${payload.lastName} in Cloud Firestore.` : `Successfully enrolled faculty member ${payload.firstName} ${payload.lastName} in Cloud Firestore.`, "success");
+    triggerToast(isEditing ? `Successfully updated record for faculty member ${payloadFullName} in Cloud Firestore.` : `Successfully enrolled faculty member ${payloadFullName} in Cloud Firestore.`, "success");
     setPendingTeacher(null);
     setShowFormModal(false);
   };
@@ -1345,10 +1375,16 @@ export default function TeachersTab({ theme, teachers, schoolInfo: propSchoolInf
   const handleConfirmSave = () => {
     // This is now integrated into handleSaveSubmit for immediate action
     if (!pendingTeacher) return;
+    const pendingFullName = DbController.formatTeacherFullName(pendingTeacher);
     DbController.saveTeacher(pendingTeacher);
+    DbController.writeActivityLog(
+      isEditing ? 'Faculty Record Updated' : 'Faculty Member Enrolled',
+      `${isEditing ? 'Updated' : 'Enrolled'} faculty member ${pendingFullName} (Rank: ${pendingTeacher.rank || 'Teacher'}, Staff ID: ${pendingTeacher.staffId || pendingTeacher.id}).`,
+      'info'
+    );
     onRefresh();
     setShowFormModal(false);
-    showToast(isEditing ? `Successfully updated record for faculty member ${pendingTeacher.firstName} ${pendingTeacher.lastName} in Cloud Firestore.` : `Successfully enrolled faculty member ${pendingTeacher.firstName} ${pendingTeacher.lastName} in Cloud Firestore.`, "success");
+    showToast(isEditing ? `Successfully updated record for faculty member ${pendingFullName} in Cloud Firestore.` : `Successfully enrolled faculty member ${pendingFullName} in Cloud Firestore.`, "success");
     setPendingTeacher(null);
   };
 
@@ -3557,6 +3593,111 @@ export default function TeachersTab({ theme, teachers, schoolInfo: propSchoolInf
                         />
                       </div>
                     </div>
+
+                    {/* Assigned Roles & System Privileges */}
+                    <div className="pt-4 border-t border-slate-200/70 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <label className="block text-slate-800 font-bold text-xs uppercase tracking-wider">
+                            Assigned Teacher Roles &amp; Workspace Modules
+                          </label>
+                          <p className="text-[10px] text-slate-500">
+                            Select which core modules this Teacher can access after signing in
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-[10px]">
+                          <button
+                            type="button"
+                            onClick={() => setFormState(prev => ({
+                              ...prev,
+                              permissions: {
+                                canAccessStudents: true,
+                                canAccessAttendance: true,
+                                canAccessAssessments: true,
+                                canAccessSystemControl: true,
+                                canEditStudents: true,
+                                canApproveAttendance: true,
+                                canEditGrades: true,
+                                canExportReports: true
+                              }
+                            }))}
+                            className="px-2 py-1 bg-white border border-slate-200 hover:border-emerald-300 rounded font-semibold text-emerald-700 transition shadow-2xs cursor-pointer"
+                          >
+                            Enable All Roles
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                        {[
+                          { key: 'canAccessStudents' as const, label: 'Student Profiles', desc: 'View & manage assigned class roster' },
+                          { key: 'canAccessAttendance' as const, label: 'Class Attendance Roster', desc: 'Access daily attendance register' },
+                          { key: 'canAccessAssessments' as const, label: 'Academic Assessment', desc: 'View & enter terminal assessment' },
+                          { key: 'canAccessSystemControl' as const, label: 'System Control', desc: 'Theme, sync & workstation controls' },
+                        ].map(roleItem => {
+                          const enabled = formState.permissions?.[roleItem.key] !== false;
+                          return (
+                            <button
+                              key={roleItem.key}
+                              type="button"
+                              onClick={() => setFormState(prev => ({
+                                ...prev,
+                                permissions: {
+                                  ...(prev.permissions || {}),
+                                  [roleItem.key]: !enabled
+                                }
+                              }))}
+                              className={`p-3 rounded-xl border text-left transition cursor-pointer flex items-start justify-between gap-2 ${
+                                enabled
+                                  ? 'bg-emerald-50/80 border-emerald-300 text-emerald-950 shadow-2xs'
+                                  : 'bg-slate-50 border-slate-200 text-slate-500'
+                              }`}
+                            >
+                              <div className="space-y-0.5">
+                                <span className="text-[11px] font-bold block">{roleItem.label}</span>
+                                <span className="text-[9px] opacity-80 block leading-snug">{roleItem.desc}</span>
+                              </div>
+                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase shrink-0 ${
+                                enabled ? 'bg-emerald-600 text-white' : 'bg-slate-300 text-slate-700'
+                              }`}>
+                                {enabled ? 'ON' : 'OFF'}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                        {[
+                          { key: 'canEditStudents' as const, label: 'Edit Student Profiles' },
+                          { key: 'canApproveAttendance' as const, label: 'Mark Attendance' },
+                          { key: 'canEditGrades' as const, label: 'Edit Assessment Grades' },
+                          { key: 'canExportReports' as const, label: 'Export & Print Reports' },
+                        ].map(permItem => {
+                          const enabled = formState.permissions?.[permItem.key] !== false;
+                          return (
+                            <label
+                              key={permItem.key}
+                              className="flex items-center gap-2 p-2 rounded-lg border border-slate-200 bg-white text-[10.5px] font-semibold text-slate-700 cursor-pointer hover:bg-slate-50"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={enabled}
+                                onChange={() => setFormState(prev => ({
+                                  ...prev,
+                                  permissions: {
+                                    ...(prev.permissions || {}),
+                                    [permItem.key]: !enabled
+                                  }
+                                }))}
+                                className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                              />
+                              <span>{permItem.label}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -3873,13 +4014,6 @@ export default function TeachersTab({ theme, teachers, schoolInfo: propSchoolInf
                       </p>
                     </div>
                   </div>
-                </div>
-
-                <div className="bg-amber-50 p-2.5 rounded-lg border border-amber-200/60 text-[10px] text-amber-800 leading-relaxed space-y-1">
-                  <strong>💡 Tip for Sandbox Environments:</strong>
-                  <p className="leading-normal">
-                    Some browsers limit script popups within frame sandboxes. If the trigger fails, please click the <strong className="font-bold">"Open in a new tab" ↗</strong> button on the top right, then trigger print.
-                  </p>
                 </div>
               </div>
 

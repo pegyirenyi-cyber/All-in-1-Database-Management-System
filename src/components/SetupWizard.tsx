@@ -499,10 +499,6 @@ export const SetupWizard: React.FC<SetupWizardProps> = ({
     }
   };
 
-  // Preview domain for parent link demonstration
-  const sampleOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://schoolportal.edu.gh';
-  const sampleParentLink = `${sampleOrigin}/?parentMode=true&studentId=STU-001&year=${encodeURIComponent(academicYear)}&term=${encodeURIComponent(currentTerm)}&token=SEC-GHANA-TOKEN`;
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-md p-3 sm:p-4 overflow-y-auto">
       <div className="bg-white rounded-3xl shadow-2xl border border-slate-100 w-full max-w-3xl overflow-hidden flex flex-col my-auto transition-all animate-in fade-in zoom-in-95 duration-200">

@@ -367,7 +367,7 @@ export default function TeacherReflections({ teacher, reflections, schoolInfo, o
     const newReflection: TeacherReflection = {
       id: `refl_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
       teacherId: teacher.id,
-      teacherName: `${teacher.firstName} ${teacher.lastName}`,
+      teacherName: DbController.formatTeacherFullName(teacher),
       date: new Date().toISOString().split('T')[0],
       content: content.trim(),
       category,

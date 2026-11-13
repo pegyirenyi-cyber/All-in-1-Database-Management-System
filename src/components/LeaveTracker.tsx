@@ -24,7 +24,12 @@ export default function LeaveTracker({ theme, teachers, onRefresh, isAdminOrHead
 
   const currentUser = DbController.getCurrentUser();
   const currentTeacher = useMemo(() => {
-    return teachers.find(t => t.email === currentUser?.email);
+    const cuEmail = currentUser?.email?.toLowerCase().trim();
+    return teachers.find(t =>
+      (cuEmail && t.email?.toLowerCase().trim() === cuEmail) ||
+      (currentUser?.staffId && t.staffId === currentUser.staffId) ||
+      (currentUser?.uid && t.id === currentUser.uid)
+    );
   }, [teachers, currentUser]);
 
   const displayedRequests = useMemo(() => {
@@ -45,11 +50,11 @@ export default function LeaveTracker({ theme, teachers, onRefresh, isAdminOrHead
       const t = teachers.find(t => t.id === selectedTeacherId);
       if (!t) return;
       tId = t.id;
-      tName = `${t.firstName} ${t.lastName}`;
+      tName = DbController.formatTeacherFullName(t);
     } else {
       if (!currentTeacher) return;
       tId = currentTeacher.id;
-      tName = `${currentTeacher.firstName} ${currentTeacher.lastName}`;
+      tName = DbController.formatTeacherFullName(currentTeacher);
     }
 
     const newReq: LeaveRequest = {
@@ -68,6 +73,7 @@ export default function LeaveTracker({ theme, teachers, onRefresh, isAdminOrHead
     DbController.writeActivityLog('Leave Request Submitted', `Leave request for ${tName} from ${formState.startDate} to ${formState.endDate}.`, 'low');
     setShowForm(false);
     setFormState(INITIAL_FORM);
+    onRefresh();
   };
 
   const handleAction = (req: LeaveRequest, action: 'Approved' | 'Rejected') => {
@@ -75,6 +81,7 @@ export default function LeaveTracker({ theme, teachers, onRefresh, isAdminOrHead
     DbController.saveLeaveRequest(updated);
     setRequests(DbController.getLeaveRequests());
     DbController.writeActivityLog(`Leave Request ${action}`, `Request for ${req.teacherName} was ${action.toLowerCase()}.`, 'medium');
+    onRefresh();
   };
 
   const getStatusBadge = (status: string) => {

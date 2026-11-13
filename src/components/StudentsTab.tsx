@@ -1,6 +1,6 @@
 import React, { useState, useRef, ChangeEvent, FormEvent, useMemo, useEffect } from 'react';
 import { 
-  Student, ClassType, CLASSES, SectionType, SECTIONS, 
+  Student, Teacher, ClassType, CLASSES, SectionType, SECTIONS, 
   AcademicYearType, ACADEMIC_YEARS, TermType, TERMS, UserRole,
   BehavioralRemark, SubjectType, SUBJECTS, COMMON_MEDICAL_CONDITIONS
 } from '../types';
@@ -58,6 +58,7 @@ interface Props {
   assignedClasses?: ClassType[];
   assignedSubjects?: SubjectType[];
   userRole?: UserRole;
+  teacherPermissions?: Teacher['permissions'];
 }
 
 const TRANSCRIPT_DICTIONARY = {
@@ -150,7 +151,8 @@ export default function StudentsTab({
   assignedClasses = [],
   assignedSubjects = [],
   assignedClass,
-  userRole
+  userRole,
+  teacherPermissions
 }: Props) {
   const [searchTerm, setSearchTerm] = useState('');
   const [isListening, setIsListening] = useState(false);
@@ -250,9 +252,18 @@ export default function StudentsTab({
   };
   const currentUserEmail = DbController.getCurrentUser()?.email?.toLowerCase().trim();
   const isAdminOrHead = userRole === 'Admin' || userRole === 'Headteacher' || currentUserEmail === 'pegyirenyi@gmail.com';
+  const canEditStudents = isAdminOrHead || teacherPermissions?.canEditStudents !== false;
+  const canExportReports = isAdminOrHead || teacherPermissions?.canExportReports !== false;
   const canSelectStudents = isAdminOrHead || userRole === 'Teacher';
+  const teacherAllowedClasses = useMemo(() => {
+    const set = new Set<ClassType>(assignedClasses || []);
+    if (assignedClass && assignedClass !== 'None') set.add(assignedClass);
+    return Array.from(set);
+  }, [assignedClasses, assignedClass]);
+
   const [selectedClass, setSelectedClass] = useState<string>(() => {
     if (userRole === 'Teacher') {
+      if (assignedClasses.length > 1) return 'All';
       return assignedClasses.length > 0 ? assignedClasses[0] : (assignedClass || 'None');
     }
     return 'All';
@@ -1356,15 +1367,12 @@ export default function StudentsTab({
       
       let matchesClass = false;
       if (userRole === 'Teacher') {
-        const teacherClasses = [...assignedClasses];
-        if (assignedClass && assignedClass !== 'None' && !teacherClasses.includes(assignedClass)) {
-          teacherClasses.push(assignedClass);
-        }
-        
-        if (teacherClasses.length === 0) {
+        if (teacherAllowedClasses.length === 0) {
           matchesClass = false; // No access if no assignments
+        } else if (selectedClass === 'All') {
+          matchesClass = teacherAllowedClasses.includes(std.class);
         } else {
-          matchesClass = teacherClasses.includes(std.class);
+          matchesClass = teacherAllowedClasses.includes(std.class) && std.class === selectedClass;
         }
       } else {
         matchesClass = selectedClass === 'All' || std.class === selectedClass;
@@ -1394,7 +1402,7 @@ export default function StudentsTab({
       const nameB = `${b.firstName || ''} ${b.middleName || ''} ${b.lastName || ''}`.trim().toLowerCase();
       return nameA.localeCompare(nameB);
     });
-  }, [students, searchTerm, selectedClass, selectedSection, selectedYear, selectedTerm, userRole, assignedClass, studentSortBy]);
+  }, [students, searchTerm, selectedClass, selectedSection, selectedYear, selectedTerm, userRole, teacherAllowedClasses, studentSortBy]);
 
   // Paginated students slice for desktop UI performance with high-performance memoization
   const totalStudentsCount = filteredStudents.length;
@@ -1788,13 +1796,19 @@ export default function StudentsTab({
     e.preventDefault();
     if (!selectedRemarkStudent || !newRemarkText.trim()) return;
 
-    const teacher = DbController.getTeachers().find(t => t.email === DbController.getCurrentUser()?.email);
+    const cu = DbController.getCurrentUser();
+    const cuEmail = cu?.email?.toLowerCase().trim();
+    const teacher = DbController.getTeachers().find(t =>
+      (cuEmail && t.email?.toLowerCase().trim() === cuEmail) ||
+      (cu?.staffId && t.staffId === cu.staffId) ||
+      (cu?.uid && t.id === cu.uid)
+    );
 
     const remark: BehavioralRemark = {
       id: 'BR' + Math.floor(100000 + Math.random() * 90000),
       studentId: selectedRemarkStudent.id,
       teacherId: teacher?.id || 'T_SYSTEM',
-      teacherName: teacher ? `${teacher.firstName} ${teacher.lastName}` : (DbController.getCurrentUser()?.name || 'Teacher'),
+      teacherName: teacher ? DbController.formatTeacherFullName(teacher) : DbController.resolveAuthorDisplayName(cu),
       category: newRemarkCategory,
       remark: newRemarkText.trim(),
       date: new Date().toISOString(),
@@ -1965,6 +1979,11 @@ export default function StudentsTab({
 
     // Save immediately as requested
     DbController.saveStudent(payload);
+    DbController.writeActivityLog(
+      isEditing ? 'Student Profile Updated' : 'Student Enrolled',
+      `${isEditing ? 'Updated' : 'Enrolled'} student ${payload.firstName} ${payload.lastName} (Class: ${payload.class}, ID: ${payload.id}).`,
+      'info'
+    );
     onRefresh();
     triggerToast(isEditing ? `Successfully updated student record for ${payload.firstName} ${payload.lastName} in Cloud Firestore.` : `Successfully enrolled student ${payload.firstName} ${payload.lastName} in Cloud Firestore.`, "success");
     setPendingStudent(null);
@@ -1975,6 +1994,11 @@ export default function StudentsTab({
     // This is now integrated into handleSaveSubmit for immediate action
     if (!pendingStudent) return;
     DbController.saveStudent(pendingStudent);
+    DbController.writeActivityLog(
+      isEditing ? 'Student Profile Updated' : 'Student Enrolled',
+      `${isEditing ? 'Updated' : 'Enrolled'} student ${pendingStudent.firstName} ${pendingStudent.lastName} (Class: ${pendingStudent.class}, ID: ${pendingStudent.id}).`,
+      'info'
+    );
     onRefresh();
     setShowFormModal(false);
     showToast(isEditing ? `Successfully updated student record for ${pendingStudent.firstName} ${pendingStudent.lastName} in Cloud Firestore.` : `Successfully enrolled student ${pendingStudent.firstName} ${pendingStudent.lastName} in Cloud Firestore.`, "success");
@@ -2025,6 +2049,21 @@ export default function StudentsTab({
     setWhatsappShareStudent(student);
     setIndividualWhatsAppTemplate('FEES_REMINDER');
   };
+
+  if (userRole === 'Teacher' && teacherPermissions?.canAccessStudents === false) {
+    return (
+      <div className="bg-rose-50/60 border border-rose-200 text-rose-900 p-8 rounded-2xl text-center space-y-4 max-w-xl mx-auto my-12 shadow-sm">
+        <ShieldAlert size={48} className="text-rose-500 mx-auto animate-pulse" />
+        <h3 className="font-bold text-lg">Student Profiles Access Restricted</h3>
+        <p className="text-sm text-rose-700 leading-relaxed">
+          Your Headteacher has not assigned the <strong>Student Profiles</strong> role to your staff account.
+        </p>
+        <p className="text-xs text-rose-600 font-mono">
+          Please contact your Headteacher to enable Student Profiles under Teacher Permissions.
+        </p>
+      </div>
+    );
+  }
 
   const hasAnyAssignment = (assignedClasses.length > 0) || (assignedSubjects.length > 0) || (assignedClass && assignedClass !== 'None');
 
@@ -2148,11 +2187,22 @@ export default function StudentsTab({
           <select
             value={selectedClass}
             onChange={(e) => setSelectedClass(e.target.value)}
-            disabled={userRole === 'Teacher'}
+            disabled={userRole === 'Teacher' && teacherAllowedClasses.length <= 1}
             className="text-xs px-2.5 py-2 border border-slate-200 rounded-lg bg-white disabled:bg-slate-50 disabled:text-slate-500 disabled:cursor-not-allowed"
           >
             {userRole === 'Teacher' ? (
-              <option value={assignedClass || 'None'}>{assignedClass || 'None'}</option>
+              teacherAllowedClasses.length > 1 ? (
+                <>
+                  <option value="All">All Assigned Classes ({teacherAllowedClasses.length})</option>
+                  {teacherAllowedClasses.map(cls => (
+                    <option key={cls} value={cls}>{cls}</option>
+                  ))}
+                </>
+              ) : (
+                <option value={teacherAllowedClasses[0] || assignedClass || 'None'}>
+                  {teacherAllowedClasses[0] || assignedClass || 'None'}
+                </option>
+              )
             ) : (
               <>
                 <option value="All">All Classes</option>
@@ -2245,15 +2295,17 @@ export default function StudentsTab({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-start md:justify-end">
-          <button
-            onClick={handleExportCSV}
-            className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 border border-emerald-600 text-white hover:bg-emerald-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
-            title="Export filtered/all records to a CSV spreadsheet"
-          >
-            <FileSpreadsheet size={15} />
-            <span className="hidden sm:inline">Export to CSV</span>
-            <span className="sm:hidden">Export</span>
-          </button>
+          {canExportReports && (
+            <button
+              onClick={handleExportCSV}
+              className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 border border-emerald-600 text-white hover:bg-emerald-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
+              title="Export filtered/all records to a CSV spreadsheet"
+            >
+              <FileSpreadsheet size={15} />
+              <span className="hidden sm:inline">Export to CSV</span>
+              <span className="sm:hidden">Export</span>
+            </button>
+          )}
           {isAdminOrHead && (
             <button
               onClick={() => setShowImportModal(true)}
@@ -2265,15 +2317,17 @@ export default function StudentsTab({
               <span className="sm:hidden">Import</span>
             </button>
           )}
-          <button
-            onClick={handleOpenBulkQrModal}
-            className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 border border-indigo-600 text-white hover:bg-indigo-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
-            title="Generate and bulk-print student QR codes"
-          >
-            <QrCode size={15} />
-            <span className="hidden sm:inline">Bulk QR Codes</span>
-            <span className="sm:hidden">QR Codes</span>
-          </button>
+          {canExportReports && (
+            <button
+              onClick={handleOpenBulkQrModal}
+              className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 border border-indigo-600 text-white hover:bg-indigo-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
+              title="Generate and bulk-print student QR codes"
+            >
+              <QrCode size={15} />
+              <span className="hidden sm:inline">Bulk QR Codes</span>
+              <span className="sm:hidden">QR Codes</span>
+            </button>
+          )}
           {(userRole === 'Admin' || userRole === 'Headteacher' || userRole === 'Teacher') && (
             <button
               onClick={handleOpenBulkWhatsAppModal}
@@ -2323,22 +2377,26 @@ export default function StudentsTab({
             </button>
           </div>
 
-          <button
-            onClick={() => setIsBatchCameraOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 border border-indigo-600 text-white hover:bg-indigo-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
-            title="Open batch camera capture station to snap and assign passport photos quickly"
-          >
-            <Camera size={15} />
-            <span className="hidden sm:inline">Batch Camera</span>
-            <span className="sm:hidden">Camera</span>
-          </button>
+          {canEditStudents && (
+            <>
+              <button
+                onClick={() => setIsBatchCameraOpen(true)}
+                className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 border border-indigo-600 text-white hover:bg-indigo-700 active:translate-y-0.5 transition text-xs font-semibold rounded-lg cursor-pointer shadow-xs"
+                title="Open batch camera capture station to snap and assign passport photos quickly"
+              >
+                <Camera size={15} />
+                <span className="hidden sm:inline">Batch Camera</span>
+                <span className="sm:hidden">Camera</span>
+              </button>
 
-          <button
-            onClick={handleOpenAdd}
-            className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-semibold cursor-pointer active:translate-y-0.5 transition ${theme.btnColors}`}
-          >
-            <Plus size={16} /> Add Student
-          </button>
+              <button
+                onClick={handleOpenAdd}
+                className={`flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-semibold cursor-pointer active:translate-y-0.5 transition ${theme.btnColors}`}
+              >
+                <Plus size={16} /> Add Student
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -2384,12 +2442,14 @@ export default function StudentsTab({
             <User size={36} className="text-slate-300 mx-auto mb-2" />
             <h4 className="text-sm font-semibold text-slate-700">No Student Records Found</h4>
             <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">Create student logs to populate indexes, take grades sheets on roll, and create assessment registers.</p>
-            <button
-              onClick={handleOpenAdd}
-              className={`mt-4 inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer ${theme.btnColors}`}
-            >
-              <Plus size={14} /> Add First Student
-            </button>
+            {canEditStudents && (
+              <button
+                onClick={handleOpenAdd}
+                className={`mt-4 inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer ${theme.btnColors}`}
+              >
+                <Plus size={14} /> Add First Student
+              </button>
+            )}
           </div>
         ) : directoryView === 'table' ? (
           <div className="col-span-full bg-white border border-slate-200 rounded-xl shadow-xs overflow-x-auto no-print">
@@ -2543,23 +2603,23 @@ export default function StudentsTab({
                         >
                           <IdCard size={13} />
                         </button>
+                        {canEditStudents && (
+                          <button
+                            onClick={() => handleOpenEdit(std)}
+                            className="p-1.5 hover:bg-slate-150 text-blue-600 hover:text-blue-800 rounded-lg cursor-pointer transition"
+                            title="Edit profile"
+                          >
+                            <Edit2 size={13} />
+                          </button>
+                        )}
                         {isAdminOrHead && (
-                          <>
-                            <button
-                              onClick={() => handleOpenEdit(std)}
-                              className="p-1.5 hover:bg-slate-150 text-blue-600 hover:text-blue-800 rounded-lg cursor-pointer transition"
-                              title="Edit profile"
-                            >
-                              <Edit2 size={13} />
-                            </button>
-                            <button
-                              onClick={() => handleDelete(std.id)}
-                              className="p-1.5 hover:bg-rose-50 text-rose-600 hover:text-rose-800 rounded-lg cursor-pointer transition"
-                              title="Delete profile"
-                            >
-                              <Trash2 size={13} />
-                            </button>
-                          </>
+                          <button
+                            onClick={() => handleDelete(std.id)}
+                            className="p-1.5 hover:bg-rose-50 text-rose-600 hover:text-rose-800 rounded-lg cursor-pointer transition"
+                            title="Delete profile"
+                          >
+                            <Trash2 size={13} />
+                          </button>
                         )}
                       </div>
                     </td>
@@ -2694,20 +2754,24 @@ export default function StudentsTab({
                   >
                     <IdCard size={12} />
                   </button>
-                  <button
-                    onClick={() => handleOpenEdit(std)}
-                    className="p-1 hover:bg-slate-200 rounded text-slate-600 cursor-pointer transition"
-                    title="Edit profile"
-                  >
-                    <Edit2 size={12} />
-                  </button>
-                  <button
-                    onClick={() => handleDelete(std.id)}
-                    className="p-1 hover:bg-red-50 hover:text-red-600 rounded text-slate-600 cursor-pointer transition"
-                    title="Delete profile"
-                  >
-                    <Trash2 size={12} />
-                  </button>
+                  {canEditStudents && (
+                    <button
+                      onClick={() => handleOpenEdit(std)}
+                      className="p-1 hover:bg-slate-200 rounded text-slate-600 cursor-pointer transition"
+                      title="Edit profile"
+                    >
+                      <Edit2 size={12} />
+                    </button>
+                  )}
+                  {isAdminOrHead && (
+                    <button
+                      onClick={() => handleDelete(std.id)}
+                      className="p-1 hover:bg-red-50 hover:text-red-600 rounded text-slate-600 cursor-pointer transition"
+                      title="Delete profile"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -4004,13 +4068,6 @@ export default function StudentsTab({
                     </div>
                   </div>
                 </div>
-
-                <div className="bg-amber-50 p-2.5 rounded-lg border border-amber-200/60 text-[10px] text-amber-800 leading-relaxed space-y-1">
-                  <strong>💡 Tip for Sandbox Environments:</strong>
-                  <p className="leading-normal">
-                    Some browsers limit script popups within frame sandboxes. If the trigger fails, please click the <strong className="font-bold">"Open in a new tab" ↗</strong> button on the top right, then trigger print.
-                  </p>
-                </div>
               </div>
 
               <div className="flex items-center gap-3 pt-6 border-t border-slate-100 mt-6 font-sans">
@@ -4644,13 +4701,6 @@ export default function StudentsTab({
                       </div>
                     </div>
                   </div>
-
-                  <div className="bg-amber-50 p-2.5 rounded-lg border border-amber-200/60 text-[10px] text-amber-800 leading-relaxed space-y-1">
-                    <strong>💡 Sandbox Printing Tip:</strong>
-                    <p className="leading-normal">
-                      Direct printing can be blocked inside preview iframes. If clicking the trigger displays an alert, use the <strong className="font-bold">"Open in a new tab" ↗</strong> button at the top right of the application first.
-                    </p>
-                  </div>
                 </div>
 
                 <div className="flex items-center gap-3 pt-6 border-t border-slate-100 mt-6 font-sans">
@@ -5084,9 +5134,9 @@ export default function StudentsTab({
                   </div>
 
                   <div className="bg-amber-50 p-2.5 rounded-lg border border-amber-200/60 text-[10px] text-amber-800 leading-relaxed space-y-1">
-                    <strong>💡 Sandbox Hint:</strong>
+                    <strong>Printing Recommendation:</strong>
                     <p className="leading-normal">
-                      For best printing alignment, make sure to open the application in a new window or tab.
+                      For best printing alignment, make sure your printer is set to 100% scale and background graphics are enabled.
                     </p>
                   </div>
                 </div>

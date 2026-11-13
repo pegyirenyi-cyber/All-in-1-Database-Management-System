@@ -17,6 +17,7 @@ import { DbController } from '../db';
 import { AcademicCalendarConfig, AcademicYearType, TermType, ACADEMIC_YEARS } from '../types';
 import { evaluateSubscription } from '../subscription';
 import { AcademicYearModal } from './common/AcademicYearModal';
+import { triggerToast } from '../utils';
 
 interface AcademicCalendarTabProps {
   themeStyles: any;
@@ -139,6 +140,7 @@ export default function AcademicCalendarTab({ themeStyles, onConfigChanged }: Ac
     setErrorMsg(null);
     DbController.saveAcademicCalendar(calendar);
     setSaveSuccess(true);
+    triggerToast("🎉 Academic Calendar successfully saved and synchronized to Cloud Firestore!", "success");
     
     // Notify main App configuration changed (refresh subscription evaluation status, etc.)
     if (onConfigChanged) {

@@ -120,7 +120,40 @@ export default function SettingsTab({
   const isAdmin = useMemo(() => {
     return currentUser?.role === 'Admin' || currentUser?.email?.toLowerCase().trim() === 'pegyirenyi@gmail.com';
   }, [currentUser]);
-  const subStatus = useMemo(() => currentUser ? evaluateSubscription(currentUser) : null, [currentUser]);
+  const isTeacher = currentUser?.role === 'Teacher' && !isAdmin;
+  const [subTicker, setSubTicker] = useState(0);
+
+  useEffect(() => {
+    const bump = () => {
+      setSubTicker(prev => prev + 1);
+      setTeachersList(DbController.getTeachers());
+      setRegisteredAccounts(DbController.getRegisteredUsers());
+    };
+    const timer = setInterval(() => setSubTicker(prev => prev + 1), 5000);
+    window.addEventListener('users-updated', bump);
+    window.addEventListener('subscribers-timer-updated', bump);
+    window.addEventListener('school-system-sync', bump);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('users-updated', bump);
+      window.removeEventListener('subscribers-timer-updated', bump);
+      window.removeEventListener('school-system-sync', bump);
+    };
+  }, []);
+
+  const subStatus = useMemo(() => currentUser ? evaluateSubscription(currentUser) : null, [currentUser, subTicker]);
+
+  const teacherRecord = useMemo(() => {
+    if (!currentUser || !isTeacher) return null;
+    const email = currentUser.email?.toLowerCase().trim();
+    const staffId = currentUser.staffId?.toLowerCase().trim();
+    const uid = currentUser.uid;
+    return teachersList.find(t =>
+      (email && t.email?.toLowerCase().trim() === email) ||
+      (staffId && t.staffId?.toLowerCase().trim() === staffId) ||
+      (uid && (t.id === uid || t.userId === uid))
+    ) || null;
+  }, [currentUser, isTeacher, teachersList]);
 
   // Backup and restore UI states
   const [importError, setImportError] = useState('');
@@ -159,18 +192,21 @@ export default function SettingsTab({
       `Scheduled Cloud Sync set to: ${enabled ? 'ENABLED' : 'DISABLED'}.`,
       'medium'
     );
+    triggerToast(enabled ? "Cloud sync enabled & saved to Firestore" : "Cloud sync disabled & saved to Firestore", "success");
   };
 
   const handleCloudSyncProviderChange = (provider: 'Google Drive' | 'Firebase Cloud Storage' | 'Firebase Firestore (User ID Cloud Database)') => {
     const updated = { ...cloudSyncConfig, provider };
     DbController.saveCloudSyncConfig(updated);
     setCloudSyncConfig(updated);
+    triggerToast(`Cloud sync provider set to ${provider}`, "info");
   };
 
   const handleCloudSyncIntervalChange = (interval: 'daily' | 'weekly' | 'monthly') => {
     const updated = { ...cloudSyncConfig, interval };
     DbController.saveCloudSyncConfig(updated);
     setCloudSyncConfig(updated);
+    triggerToast(`Cloud sync interval set to ${interval} and saved to Firestore`, "success");
   };
 
   const handleTriggerCloudSyncNow = async () => {
@@ -178,14 +214,17 @@ export default function SettingsTab({
     setImportSuccess('');
     setImportError('');
     setCloudSyncConfig(prev => ({ ...prev, status: 'syncing' }));
+    triggerToast("Starting Cloud Firestore data sync...", "info");
     
     const result = await DbController.performCloudSync();
     setCloudSyncConfig(DbController.getCloudSyncConfig());
     if (result.success) {
       setImportSuccess(`✓ Successfully synced database to ${cloudSyncConfig.provider}!`);
+      triggerToast("✓ Data & backup file successfully saved and synced to Cloud Firestore!", "success");
       setTimeout(() => setImportSuccess(''), 5000);
     } else {
       setImportError(`Cloud Sync failed: ${result.error}`);
+      triggerToast(`Cloud Sync notice: ${result.error}`, "error");
       setTimeout(() => setImportError(''), 5000);
     }
   };
@@ -201,12 +240,14 @@ export default function SettingsTab({
       `Automatic database backup set to: ${enabled ? 'ENABLED' : 'DISABLED'}.`,
       'medium'
     );
+    triggerToast(enabled ? "Automatic cloud backup enabled and saved to Firestore" : "Automatic cloud backup disabled and saved to Firestore", "success");
   };
 
   const handleAutoBackupFrequencyChange = (frequency: 'daily' | 'weekly') => {
     const updated = { ...autoBackupConfig, frequency };
     DbController.saveAutoBackupConfig(updated);
     setAutoBackupConfig(updated);
+    triggerToast(`Auto backup frequency set to ${frequency} and saved to Firestore`, "success");
     
     // Write activity log
     DbController.writeActivityLog(
@@ -329,7 +370,9 @@ export default function SettingsTab({
   const [wipeBiometricStep, setWipeBiometricStep] = useState<'idle' | 'scanning' | 'success' | 'failed'>('idle');
 
   // === BIOMETRIC WEBAUTHN STATES ===
-  const [webauthnCredentials, setWebauthnCredentials] = useState<WebAuthnCredential[]>(() => DbController.getWebAuthnCredentials());
+  const [webauthnCredentials, setWebauthnCredentials] = useState<WebAuthnCredential[]>(() => 
+    DbController.getWebAuthnCredentials().filter(c => !c.isSimulated && !c.id.startsWith('SIM_CRED_'))
+  );
   const [biometricDeviceName, setBiometricDeviceName] = useState('');
   const [isBiometricModalOpen, setIsBiometricModalOpen] = useState(false);
   const [biometricModalStep, setBiometricModalStep] = useState<'idle' | 'scanning' | 'success' | 'failed'>('idle');
@@ -532,12 +575,19 @@ export default function SettingsTab({
     }
   };
 
-  // Refresh logs when tab selected
+  // Refresh logs / restrict Teacher subtabs inside System Control
   useEffect(() => {
+    if (isTeacher && settingsSubTab !== 'general') {
+      setSettingsSubTab('general');
+      return;
+    }
     if (settingsSubTab === 'logs') {
       setActivityLogs(DbController.getActivityLogs());
     }
-  }, [settingsSubTab]);
+    if (settingsSubTab === 'teachers') {
+      setTeachersList(DbController.getTeachers());
+    }
+  }, [settingsSubTab, isTeacher]);
 
   // Load platform and school pricing configuration dynamically
   useEffect(() => {
@@ -567,6 +617,17 @@ export default function SettingsTab({
       setAdminPrice3Y(livePricing.licensePrice3Year);
       setAdminPrice5Y(livePricing.licensePrice5Year);
       setAdminSmsRate(livePricing.smsRate);
+
+      DbController.fetchRemotePlatformPricing().then((remotePricing) => {
+        if (remotePricing) {
+          setPlatformPricing(remotePricing);
+          setAdminPrice1Y(remotePricing.licensePrice1Year);
+          setAdminPrice2Y(remotePricing.licensePrice2Year);
+          setAdminPrice3Y(remotePricing.licensePrice3Year);
+          setAdminPrice5Y(remotePricing.licensePrice5Year);
+          setAdminSmsRate(remotePricing.smsRate);
+        }
+      }).catch(err => console.warn("Could not fetch remote pricing in SettingsTab:", err));
     }
 
     return () => {
@@ -590,6 +651,7 @@ export default function SettingsTab({
       setPlatformPricing(saved);
       setSchool(DbController.getSchoolInfo());
       setPricingSuccessMsg("Subscription renewal period pricing and SMS rate saved to Cloud Firestore and effectively applied to all user accounts!");
+      triggerToast("🎉 Platform Subscription Pricing saved and synchronized to Cloud Firestore!", "success");
       setTimeout(() => setPricingSuccessMsg(null), 5000);
       onRefresh();
     } catch (e: any) {
@@ -600,21 +662,42 @@ export default function SettingsTab({
   const handleSchoolImageUpload = (e: React.ChangeEvent<HTMLInputElement>, field: 'crestUrl' | 'watermarkUrl' | 'headteacherSignatureUrl' | 'bursarSignatureUrl') => {
     const file = e.target.files?.[0];
     if (!file) return;
+
     const reader = new FileReader();
     reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      if (dataUrl) {
-        const updated = { 
-          ...school, 
-          [field]: dataUrl,
-          ...(field === 'crestUrl' ? { logoUrl: dataUrl } : {})
-        };
-        setSchool(updated);
-        DbController.saveSchoolInfo(updated);
-        setSaveStatus(true);
-        onRefresh();
-        setTimeout(() => setSaveStatus(false), 3000);
-      }
+      const rawDataUrl = event.target?.result as string;
+      if (!rawDataUrl) return;
+
+      const img = new Image();
+      img.onload = () => {
+        const maxWidth = 400;
+        const maxHeight = 400;
+        let { width, height } = img;
+        if (width > maxWidth || height > maxHeight) {
+          const ratio = Math.min(maxWidth / width, maxHeight / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          const compressed = canvas.toDataURL('image/jpeg', 0.85);
+          const updated = { 
+            ...school, 
+            [field]: compressed,
+            ...(field === 'crestUrl' ? { logoUrl: compressed } : {})
+          };
+          setSchool(updated);
+          DbController.saveSchoolInfo(updated);
+          setSaveStatus(true);
+          onRefresh();
+          setTimeout(() => setSaveStatus(false), 3000);
+        }
+      };
+      img.src = rawDataUrl;
     };
     reader.readAsDataURL(file);
     e.target.value = '';
@@ -827,32 +910,12 @@ export default function SettingsTab({
           return;
         }
       }
-      throw new Error("WebAuthn API is not fully available or was canceled/blocked by environment sandboxing.");
+      throw new Error("WebAuthn API is not fully available or was canceled/unsupported by browser.");
     } catch (err: any) {
-      console.warn("Real WebAuthn failed or blocked:", err);
-      // Fallback to beautiful high-fidelity, educational biometric simulator modal
-      setBiometricModalStep('scanning');
-      setIsBiometricModalOpen(true);
+      console.warn("Real WebAuthn failed or unsupported:", err);
+      alert("Hardware Biometric Authentication (Touch ID / Face ID / Windows Hello) is not available or was canceled on this device. Real hardware biometric credentials are required.");
+      setIsBiometricModalOpen(false);
     }
-  };
-
-  const handleSimulateEnrolmentSuccess = () => {
-    if (!currentUser) return;
-    const devName = biometricDeviceName.trim() || `${currentUser.name}'s Shared Device Key`;
-    const randomId = `SIM_CRED_${Math.random().toString(36).substring(2, 11).toUpperCase()}`;
-    const newCred: WebAuthnCredential = {
-      id: randomId,
-      publicKey: "SIMULATED_SECURE_PUBLIC_KEY_" + Math.floor(1000 + Math.random() * 9000),
-      userEmail: currentUser.email,
-      userName: currentUser.name,
-      deviceName: devName,
-      createdAt: new Date().toISOString(),
-      isSimulated: true
-    };
-    DbController.registerWebAuthnCredential(newCred);
-    setWebauthnCredentials(DbController.getWebAuthnCredentials());
-    setBiometricDeviceName('');
-    setBiometricModalStep('success');
   };
 
   const handleBulkPromote = () => {
@@ -1073,7 +1136,7 @@ export default function SettingsTab({
               onClick={() => setSettingsSubTab('general')}
               className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold transition text-[11px] cursor-pointer ${settingsSubTab === 'general' ? `${theme.btnColors} shadow-xs` : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}
             >
-              <Palette size={13} /> Appearance & Themes
+              <Palette size={13} /> {isTeacher ? 'Workstation & Role Control' : 'Appearance & Themes'}
             </button>
             {isAdmin && (
               <button
@@ -1084,13 +1147,15 @@ export default function SettingsTab({
                 <UserPlus size={13} /> Account Provisioning
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => setSettingsSubTab('backup')}
-              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold transition text-[11px] cursor-pointer ${settingsSubTab === 'backup' ? `${theme.btnColors} shadow-xs` : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}
-            >
-              <Database size={13} /> Backup & Hard Reset
-            </button>
+            {!isTeacher && (
+              <button
+                type="button"
+                onClick={() => setSettingsSubTab('backup')}
+                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg font-bold transition text-[11px] cursor-pointer ${settingsSubTab === 'backup' ? `${theme.btnColors} shadow-xs` : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}
+              >
+                <Database size={13} /> Backup & Hard Reset
+              </button>
+            )}
           </>
         )}
         {(isAdmin || currentUser?.role === 'Headteacher') && (
@@ -1102,7 +1167,7 @@ export default function SettingsTab({
             <CreditCard size={13} /> Buy Subscription / Renewal
           </button>
         )}
-        {!subStatus?.isLocked && (
+        {!subStatus?.isLocked && !isTeacher && (
           <>
             <button
               type="button"
@@ -1283,6 +1348,67 @@ export default function SettingsTab({
             <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 p-2.5 rounded-lg flex items-center gap-2 animate-fade-in">
               <CheckCircle2 size={15} className="text-emerald-605" />
               <span>Appearance and persistent configurations successfully locked-in!</span>
+            </div>
+          )}
+
+          {/* Teacher System Control Summary: Linked Headteacher Subscription & Assigned Roles */}
+          {isTeacher && (
+            <div className="space-y-4 pt-4 border-t border-slate-100">
+              {subStatus && (
+                <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/60 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h4 className="text-xs font-black text-emerald-950 uppercase tracking-wider flex items-center gap-1.5">
+                      <CreditCard size={14} className="text-emerald-700" />
+                      Headteacher Linked School Subscription
+                    </h4>
+                    <span className="px-2.5 py-0.5 rounded-lg bg-emerald-600 text-white text-[10px] font-mono font-bold">
+                      {subStatus.licenseType === 'unlimited'
+                        ? 'Unlimited License'
+                        : subStatus.isTrial
+                          ? '7-Day Free Trial'
+                          : `${subStatus.licensePeriod || 1}-Year School License`}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-emerald-900 font-medium leading-relaxed">
+                    {subStatus.message}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-4 text-[10px] font-mono text-emerald-800 pt-1">
+                    <span>Expiry: <strong>{subStatus.expiryDate.toLocaleDateString()}</strong></span>
+                    <span>Countdown: <strong>{subStatus.countdownString}</strong></span>
+                    {subStatus.headteacherName && <span>Headteacher: <strong>{subStatus.headteacherName}</strong></span>}
+                  </div>
+                </div>
+              )}
+
+              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                      <UserCheck size={14} className={theme.accentText} />
+                      Assigned Teacher Roles &amp; Permissions
+                    </h4>
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      Enrolled Staff Profile: <strong className="text-slate-700">{teacherRecord ? DbController.formatTeacherFullName(teacherRecord) : currentUser?.name}</strong>
+                      {teacherRecord?.staffId ? ` (${teacherRecord.staffId})` : ''}
+                    </p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                  {[
+                    { label: 'Student Profiles', active: teacherRecord?.permissions?.canAccessStudents !== false },
+                    { label: 'Class Attendance Roster', active: teacherRecord?.permissions?.canAccessAttendance !== false },
+                    { label: 'Academic Assessment', active: teacherRecord?.permissions?.canAccessAssessments !== false },
+                    { label: 'System Control', active: teacherRecord?.permissions?.canAccessSystemControl !== false },
+                  ].map(roleItem => (
+                    <div key={roleItem.label} className={`p-2.5 rounded-lg border flex items-center justify-between gap-2 ${roleItem.active ? 'bg-white border-emerald-200 text-slate-800' : 'bg-slate-100 border-slate-200 text-slate-400'}`}>
+                      <span className="text-[10.5px] font-bold">{roleItem.label}</span>
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase ${roleItem.active ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-500'}`}>
+                        {roleItem.active ? 'Assigned' : 'Revoked'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
 
@@ -2118,6 +2244,28 @@ export default function SettingsTab({
             </button>
           </div>
 
+          <div className="border border-amber-200 rounded-xl p-4 bg-amber-50/25 flex flex-col justify-between space-y-3 text-left">
+            <div>
+              <span className="font-bold text-amber-800 text-xs block mb-1">Cleanse & Purge Demo Data</span>
+              <p className="text-[10px] text-slate-500 leading-normal">
+                Removes any demo students, mock teachers, simulated biometric keys, and temporary sample components to protect data security.
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                const res = DbController.purgeAllDemoData();
+                setImportSuccess(`✓ Demo data purge complete! Removed ${res.removedCount} demo/simulated records.`);
+                onRefresh();
+                setTimeout(() => setImportSuccess(''), 5000);
+              }}
+              type="button"
+              className="w-full py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-bold shadow-xs cursor-pointer active:translate-y-0.5 transition flex items-center justify-center gap-1.5 text-center font-sans tracking-wide text-xs"
+            >
+              <ShieldCheck size={14} />
+              Purge Demo Records
+            </button>
+          </div>
+
           <div className="border border-rose-100 rounded-xl p-4 bg-rose-50/20 flex flex-col justify-between space-y-3 text-left">
             <div>
               <span className="font-bold text-rose-700 text-xs block mb-1">Permanent Format & Clear All Data</span>
@@ -2173,7 +2321,7 @@ export default function SettingsTab({
                 <div className="flex items-center gap-2">
                   <span className={`w-2.5 h-2.5 rounded-full ${subStatus?.isLocked ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'}`} />
                   <strong className="text-slate-800 text-xs font-black">
-                    {subStatus?.isLocked ? 'License Required / Expired' : subStatus?.licenseType === 'unlimited' ? 'Unlimited Lifetime License' : `${currentUser?.licensePeriod || 1}-Year School License`}
+                    {subStatus?.isLocked ? 'License Required / Expired' : subStatus?.licenseType === 'unlimited' ? 'Unlimited Lifetime License' : subStatus?.isTrial ? '7-Day Free Trial Active' : `${subStatus?.licensePeriod || currentUser?.licensePeriod || 1}-Year School License`}
                   </strong>
                 </div>
                 <p className="text-[10px] text-slate-500 leading-normal font-sans pt-1">
@@ -3228,7 +3376,7 @@ export default function SettingsTab({
               <ul className="space-y-1.5 text-slate-600 font-medium pl-1">
                 <li className="flex items-start gap-2">
                   <span className="text-rose-600 font-bold mt-0.5">✕</span>
-                  <span>Erase User ID profile, subscription metadata, and cloud backups in <strong>Cloud Firebase Firestore</strong></span>
+                  <span>Erase all cloud backups, sync snapshots, and school records in <strong>Cloud Firebase Firestore</strong> (your subscription timer remains safely preserved)</span>
                 </li>
                 <li className="flex items-start gap-2">
                   <span className="text-rose-600 font-bold mt-0.5">✕</span>
@@ -3306,19 +3454,23 @@ export default function SettingsTab({
                   try {
                     setIsWipingData(true);
                     triggerToast("Executing deep format of Firestore user records & system files...", "info");
+                    setActivityLogs([]);
+                    setAutoBackupsList([]);
+                    setTeachersList([]);
                     if (onResetAll) {
                       await onResetAll();
+                      setShowWipeModal(false);
                     } else {
                       await DbController.clearAllData();
                       DbController.resetSchoolInfo();
                       onRefresh();
+                      setSchool(DbController.getSchoolInfo());
+                      triggerToast("Permanent format complete. Workstation reset to clean slate.", "success");
+                      setShowWipeModal(false);
+                      setTimeout(() => {
+                        window.location.reload();
+                      }, 1000);
                     }
-                    setSchool(DbController.getSchoolInfo());
-                    triggerToast("Permanent format complete. Workstation reset to clean slate.", "success");
-                    setShowWipeModal(false);
-                    setTimeout(() => {
-                      window.location.reload();
-                    }, 400);
                   } catch (err: any) {
                     setIsWipingData(false);
                     setWipeError("Format failed: " + (err.message || String(err)));
@@ -3423,20 +3575,25 @@ export default function SettingsTab({
                       setTimeout(async () => {
                         try {
                           triggerToast("Executing deep format of system files and emptying Firestore user data...", "info");
+                          setActivityLogs([]);
+                          setAutoBackupsList([]);
+                          setTeachersList([]);
                           if (onResetAll) {
                             await onResetAll();
+                            setShowWipeBiometric(false);
+                            setShowWipeModal(false);
                           } else {
                             await DbController.clearAllData();
                             DbController.resetSchoolInfo();
                             onRefresh();
+                            setSchool(DbController.getSchoolInfo());
+                            triggerToast("Permanent format complete. Workstation reset to clean slate.", "success");
+                            setShowWipeBiometric(false);
+                            setShowWipeModal(false);
+                            setTimeout(() => {
+                              window.location.href = window.location.origin;
+                            }, 350);
                           }
-                          setSchool(DbController.getSchoolInfo());
-                          triggerToast("Permanent format complete. Workstation reset to clean slate.", "success");
-                          setShowWipeBiometric(false);
-                          setShowWipeModal(false);
-                          setTimeout(() => {
-                            window.location.href = window.location.origin;
-                          }, 350);
                         } catch (err: any) {
                           alert("Wipe failed: " + (err.message || String(err)));
                           setWipeBiometricStep('failed');
@@ -3506,7 +3663,7 @@ export default function SettingsTab({
       )}
 
       {/* TEACHER MANAGEMENT & GRANULAR PERMISSION CONTROL */}
-      {settingsSubTab === 'teachers' && (
+      {settingsSubTab === 'teachers' && (isAdmin || currentUser?.role === 'Headteacher') && (
         <div className="space-y-6 animate-fade-in text-left">
           
           {/* Header Banner */}
@@ -3515,13 +3672,13 @@ export default function SettingsTab({
             <div className="relative z-10 space-y-2">
               <span className="text-[10px] uppercase font-mono tracking-widest font-black text-emerald-200 bg-white/10 px-2.5 py-1 rounded-md border border-white/10 flex items-center gap-1.5 w-fit">
                 <ShieldCheck size={12} className="text-emerald-300" />
-                Staff Access Controls & Privileges
+                Staff Access Controls &amp; Assigned Teacher Roles
               </span>
               <h3 className="text-lg font-black font-sans leading-tight">
-                Teacher Permission Management
+                Teacher Role &amp; Permission Management
               </h3>
               <p className="text-xs text-white opacity-90 max-w-2xl leading-relaxed">
-                Configure granular access permissions for each class teacher. You can explicitly revoke or grant their ability to enter grades, approve daily attendance logs, or export institutional reports.
+                Assign core module roles (Student Profiles, Class Attendance Roster, Academic Assessment, and System Control) alongside granular editing and export privileges for each enrolled teacher.
               </p>
             </div>
           </div>
@@ -3530,8 +3687,8 @@ export default function SettingsTab({
           <div className="bg-white p-5 border border-slate-200 rounded-2xl shadow-xs space-y-4">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
               <div className="space-y-1">
-                <h4 className="font-sans font-bold text-slate-800 text-xs uppercase tracking-wider">Active Faculty Registry</h4>
-                <p className="text-[10px] text-slate-400">Search for teachers by name, email or Staff ID and manage their active privileges.</p>
+                <h4 className="font-sans font-bold text-slate-800 text-xs uppercase tracking-wider">Enrolled Staff Registry</h4>
+                <p className="text-[10px] text-slate-400">Search for teachers by name, email or Staff ID and manage their assigned module roles &amp; privileges.</p>
               </div>
               
               <div className="relative w-full sm:w-72">
@@ -3548,7 +3705,7 @@ export default function SettingsTab({
             {teacherSaveStatus && (
               <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 p-2.5 rounded-xl flex items-center gap-2 animate-fade-in">
                 <CheckCircle2 size={15} className="text-emerald-600 animate-pulse" />
-                <span className="text-xs font-semibold">Teacher credentials updated and synced to system security register!</span>
+                <span className="text-xs font-semibold">Teacher roles &amp; permissions updated and synced to Cloud Firestore!</span>
               </div>
             )}
 
@@ -3571,173 +3728,148 @@ export default function SettingsTab({
                     <div className="p-8 text-center text-slate-400 space-y-1.5 bg-slate-50/50">
                       <Users size={24} className="text-slate-300 mx-auto animate-bounce" />
                       <p className="text-xs font-bold text-slate-500">No teachers matched your query</p>
-                      <p className="text-[10px] text-slate-400">Add or register teachers in the Primary Teachers Profiles tab first.</p>
+                      <p className="text-[10px] text-slate-400">Add or register teachers in the Teacher Profiles tab first.</p>
                     </div>
                   );
                 }
 
                 return filtered.map(teacher => {
-                  const canEditGrades = teacher.permissions?.canEditGrades !== false;
-                  const canApproveAttendance = teacher.permissions?.canApproveAttendance !== false;
-                  const canExportReports = teacher.permissions?.canExportReports !== false;
+                  const fullName = DbController.formatTeacherFullName(teacher);
+                  const toggleTeacherPerm = (permKey: keyof NonNullable<typeof teacher.permissions>, label: string, currentVal: boolean) => {
+                    const updatedPermissions = {
+                      canAccessStudents: teacher.permissions?.canAccessStudents !== false,
+                      canAccessAttendance: teacher.permissions?.canAccessAttendance !== false,
+                      canAccessAssessments: teacher.permissions?.canAccessAssessments !== false,
+                      canAccessSystemControl: teacher.permissions?.canAccessSystemControl !== false,
+                      canEditStudents: teacher.permissions?.canEditStudents !== false,
+                      canEditGrades: teacher.permissions?.canEditGrades !== false,
+                      canApproveAttendance: teacher.permissions?.canApproveAttendance !== false,
+                      canExportReports: teacher.permissions?.canExportReports !== false,
+                      ...(teacher.permissions || {}),
+                      [permKey]: !currentVal
+                    };
+                    const updatedTeacher = {
+                      ...teacher,
+                      permissions: updatedPermissions
+                    };
+                    DbController.saveTeacher(updatedTeacher);
+                    DbController.writeActivityLog(
+                      'Teacher Role & Permission Change',
+                      `Updated "${label}" role/permission for ${fullName} to ${!currentVal ? 'ENABLED' : 'DISABLED'}.`,
+                      'info'
+                    );
+                    setTeachersList(DbController.getTeachers());
+                    setTeacherSaveStatus(true);
+                    triggerToast(`Updated "${label}" for ${fullName} in Cloud Firestore!`, 'success');
+                    onRefresh();
+                    setTimeout(() => setTeacherSaveStatus(false), 2000);
+                  };
+
+                  const moduleRoleItems = [
+                    { key: 'canAccessStudents' as const, label: 'Student Profiles', desc: 'Students workspace access', val: teacher.permissions?.canAccessStudents !== false },
+                    { key: 'canAccessAttendance' as const, label: 'Class Attendance Roster', desc: 'Daily attendance roll access', val: teacher.permissions?.canAccessAttendance !== false },
+                    { key: 'canAccessAssessments' as const, label: 'Academic Assessment', desc: 'Terminal assessment access', val: teacher.permissions?.canAccessAssessments !== false },
+                    { key: 'canAccessSystemControl' as const, label: 'System Control', desc: 'Workstation preferences access', val: teacher.permissions?.canAccessSystemControl !== false },
+                  ];
+
+                  const actionPermItems = [
+                    { key: 'canEditStudents' as const, label: 'Edit Students', desc: 'Can add/edit profiles', val: teacher.permissions?.canEditStudents !== false },
+                    { key: 'canApproveAttendance' as const, label: 'Mark Attendance', desc: 'Can submit class roll', val: teacher.permissions?.canApproveAttendance !== false },
+                    { key: 'canEditGrades' as const, label: 'Edit Grades', desc: 'Can update worksheet', val: teacher.permissions?.canEditGrades !== false },
+                    { key: 'canExportReports' as const, label: 'Export & Print', desc: 'Can print report cards', val: teacher.permissions?.canExportReports !== false },
+                  ];
 
                   return (
-                    <div key={teacher.id} className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white hover:bg-slate-50/30 transition-all">
+                    <div key={teacher.id} className="p-4 space-y-3 bg-white hover:bg-slate-50/30 transition-all">
                       
                       {/* Teacher Profile Info */}
-                      <div className="flex items-center gap-3">
-                        {teacher.photoUrl ? (
-                          <img src={teacher.photoUrl} alt="" className="w-10 h-10 rounded-full border border-slate-200 object-cover" referrerPolicy="no-referrer" />
-                        ) : (
-                          <div className="w-10 h-10 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-500 font-bold text-xs uppercase">
-                            {teacher.firstName[0] || ''}{teacher.lastName[0] || ''}
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          {teacher.photoUrl ? (
+                            <img src={teacher.photoUrl} alt="" className="w-10 h-10 rounded-full border border-slate-200 object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <div className="w-10 h-10 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-500 font-bold text-xs uppercase">
+                              {teacher.firstName?.[0] || ''}{teacher.lastName?.[0] || ''}
+                            </div>
+                          )}
+                          <div className="space-y-0.5 text-left">
+                            <h4 className="font-sans font-bold text-slate-850 text-xs flex items-center gap-1.5 flex-wrap">
+                              {fullName}
+                              {teacher.assignedClass && teacher.assignedClass !== 'None' ? (
+                                <span className="bg-indigo-50 border border-indigo-150 text-indigo-700 text-[9px] px-1.5 py-0.5 rounded-md font-mono font-bold">
+                                  {teacher.assignedClass} Class Duty
+                                </span>
+                              ) : (
+                                <span className="bg-slate-100 border border-slate-200 text-slate-500 text-[9px] px-1.5 py-0.5 rounded-md font-mono">
+                                  Floating Duty
+                                </span>
+                              )}
+                            </h4>
+                            <p className="text-[10px] text-slate-400 font-medium">
+                              {teacher.email || 'No email bound'} • Staff ID: {teacher.staffId || 'N/A'}
+                            </p>
                           </div>
-                        )}
-                        <div className="space-y-0.5 text-left">
-                          <h4 className="font-sans font-bold text-slate-850 text-xs flex items-center gap-1.5">
-                            {teacher.firstName} {teacher.lastName}
-                            {teacher.assignedClass && teacher.assignedClass !== 'None' ? (
-                              <span className="bg-indigo-50 border border-indigo-150 text-indigo-700 text-[9px] px-1.5 py-0.5 rounded-md font-mono font-bold">
-                                {teacher.assignedClass} Class Duty
-                              </span>
-                            ) : (
-                              <span className="bg-slate-100 border border-slate-200 text-slate-500 text-[9px] px-1.5 py-0.5 rounded-md font-mono">
-                                Floating Duty
-                              </span>
-                            )}
-                          </h4>
-                          <p className="text-[10px] text-slate-400 font-medium">
-                            {teacher.email || 'No email bound'} • Staff ID: {teacher.staffId || 'N/A'}
-                          </p>
                         </div>
                       </div>
 
-                      {/* Permissions Toggles Grid */}
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 sm:gap-4 w-full md:w-auto">
-                        
-                        {/* Toggle 1: Can Edit Grades */}
-                        <div className="flex items-center justify-between gap-4 p-2 bg-slate-50 border border-slate-150 rounded-xl">
-                          <div className="space-y-0.5 text-left">
-                            <span className="text-[10px] font-bold text-slate-700 block">Edit Grades</span>
-                            <span className="text-[9px] text-slate-400 block font-medium">Can update worksheet</span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const updatedPermissions = {
-                                ...teacher.permissions,
-                                canEditGrades: !canEditGrades
-                              };
-                              const updatedTeacher = {
-                                ...teacher,
-                                permissions: updatedPermissions
-                              };
-                              DbController.saveTeacher(updatedTeacher);
-                              
-                              DbController.writeActivityLog(
-                                'Teacher Permission Change',
-                                `Updated grading permissions for ${teacher.firstName} ${teacher.lastName} to ${!canEditGrades}`,
-                                'info'
-                              );
-
-                              setTeachersList(DbController.getTeachers());
-                              setTeacherSaveStatus(true);
-                              setTimeout(() => setTeacherSaveStatus(false), 2000);
-                            }}
-                            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                              canEditGrades ? 'bg-emerald-600' : 'bg-slate-350 bg-slate-300'
-                            }`}
-                          >
-                            <span
-                              className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
-                                canEditGrades ? 'translate-x-4' : 'translate-x-0'
-                              }`}
-                            />
-                          </button>
+                      {/* Assigned Module Roles (4 Core Roles) */}
+                      <div className="space-y-1.5">
+                        <span className="text-[9.5px] font-black uppercase tracking-wider text-indigo-700 block">
+                          Assigned Teacher Roles (Module Access)
+                        </span>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                          {moduleRoleItems.map(item => (
+                            <div key={item.key} className={`flex items-center justify-between gap-3 p-2.5 rounded-xl border ${item.val ? 'bg-indigo-50/40 border-indigo-200' : 'bg-slate-50 border-slate-200'}`}>
+                              <div className="space-y-0.5 text-left">
+                                <span className="text-[10.5px] font-bold text-slate-800 block">{item.label}</span>
+                                <span className="text-[9px] text-slate-500 block font-medium">{item.desc}</span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => toggleTeacherPerm(item.key, item.label, item.val)}
+                                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                                  item.val ? 'bg-indigo-600' : 'bg-slate-300'
+                                }`}
+                              >
+                                <span
+                                  className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
+                                    item.val ? 'translate-x-4' : 'translate-x-0'
+                                  }`}
+                                />
+                              </button>
+                            </div>
+                          ))}
                         </div>
+                      </div>
 
-                        {/* Toggle 2: Can Approve Attendance */}
-                        <div className="flex items-center justify-between gap-4 p-2 bg-slate-50 border border-slate-150 rounded-xl">
-                          <div className="space-y-0.5 text-left">
-                            <span className="text-[10px] font-bold text-slate-700 block">Mark Attendance</span>
-                            <span className="text-[9px] text-slate-400 block font-medium">Can submit class roll</span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const updatedPermissions = {
-                                ...teacher.permissions,
-                                canApproveAttendance: !canApproveAttendance
-                              };
-                              const updatedTeacher = {
-                                ...teacher,
-                                permissions: updatedPermissions
-                              };
-                              DbController.saveTeacher(updatedTeacher);
-                              
-                              DbController.writeActivityLog(
-                                'Teacher Permission Change',
-                                `Updated attendance permissions for ${teacher.firstName} ${teacher.lastName} to ${!canApproveAttendance}`,
-                                'info'
-                              );
-
-                              setTeachersList(DbController.getTeachers());
-                              setTeacherSaveStatus(true);
-                              setTimeout(() => setTeacherSaveStatus(false), 2000);
-                            }}
-                            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                              canApproveAttendance ? 'bg-emerald-600' : 'bg-slate-350 bg-slate-300'
-                            }`}
-                          >
-                            <span
-                              className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
-                                canApproveAttendance ? 'translate-x-4' : 'translate-x-0'
-                              }`}
-                            />
-                          </button>
+                      {/* Granular Action Privileges */}
+                      <div className="space-y-1.5">
+                        <span className="text-[9.5px] font-black uppercase tracking-wider text-slate-500 block">
+                          Action &amp; Editing Privileges
+                        </span>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                          {actionPermItems.map(item => (
+                            <div key={item.key} className="flex items-center justify-between gap-3 p-2 bg-slate-50 border border-slate-200 rounded-xl">
+                              <div className="space-y-0.5 text-left">
+                                <span className="text-[10px] font-bold text-slate-700 block">{item.label}</span>
+                                <span className="text-[9px] text-slate-400 block font-medium">{item.desc}</span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => toggleTeacherPerm(item.key, item.label, item.val)}
+                                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                                  item.val ? 'bg-emerald-600' : 'bg-slate-300'
+                                }`}
+                              >
+                                <span
+                                  className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
+                                    item.val ? 'translate-x-4' : 'translate-x-0'
+                                  }`}
+                                />
+                              </button>
+                            </div>
+                          ))}
                         </div>
-
-                        {/* Toggle 3: Can Export Reports */}
-                        <div className="flex items-center justify-between gap-4 p-2 bg-slate-50 border border-slate-150 rounded-xl">
-                          <div className="space-y-0.5 text-left">
-                            <span className="text-[10px] font-bold text-slate-700 block">Export & Print</span>
-                            <span className="text-[9px] text-slate-400 block font-medium">Can print report cards</span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const updatedPermissions = {
-                                ...teacher.permissions,
-                                canExportReports: !canExportReports
-                              };
-                              const updatedTeacher = {
-                                ...teacher,
-                                permissions: updatedPermissions
-                              };
-                              DbController.saveTeacher(updatedTeacher);
-                              
-                              DbController.writeActivityLog(
-                                'Teacher Permission Change',
-                                `Updated export/print permissions for ${teacher.firstName} ${teacher.lastName} to ${!canExportReports}`,
-                                'info'
-                              );
-
-                              setTeachersList(DbController.getTeachers());
-                              setTeacherSaveStatus(true);
-                              setTimeout(() => setTeacherSaveStatus(false), 2000);
-                            }}
-                            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                              canExportReports ? 'bg-emerald-600' : 'bg-slate-350 bg-slate-300'
-                            }`}
-                          >
-                            <span
-                              className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
-                                canExportReports ? 'translate-x-4' : 'translate-x-0'
-                              }`}
-                            />
-                          </button>
-                        </div>
-
                       </div>
 
                     </div>
@@ -4018,19 +4150,19 @@ export default function SettingsTab({
 
                 <div className="space-y-2">
                   <h3 className="text-sm font-bold tracking-tight text-white">
-                    {biometricModalType === 'finger' ? 'Scanning Touch ID Fingerprint...' : 'Reading Face ID Biomap...'}
+                    {biometricModalType === 'finger' ? 'Waiting for Touch ID Fingerprint...' : 'Waiting for Face ID Recognition...'}
                   </h3>
-                  <p className="text-[10px] text-slate-400 max-w-xs mx-auto leading-relaxed font-semibold">
-                    The sandbox environment requires user verification. Please place your finger or align your face to compile public-key credentials.
+                  <p className="text-[10px] text-slate-400 max-w-xs mx-auto leading-relaxed">
+                    Please complete the biometric prompt on your device sensor to register your hardware credentials.
                   </p>
                 </div>
 
                 <button
                   type="button"
-                  onClick={handleSimulateEnrolmentSuccess}
-                  className="w-full py-2.5 bg-indigo-600 hover:bg-slate-700 text-white text-xs font-black rounded-xl transition cursor-pointer shadow-md tracking-wider uppercase font-mono animate-pulse"
+                  onClick={() => setIsBiometricModalOpen(false)}
+                  className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl transition cursor-pointer shadow-md font-sans border border-slate-700"
                 >
-                  Verify Biomap ID Key
+                  Cancel Registration
                 </button>
               </div>
             )}

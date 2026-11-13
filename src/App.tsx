@@ -114,10 +114,25 @@ function SubscriptionCountdown({ currentUser }: SubscriptionCountdownProps) {
 function AppContent() {
   // Global Session Identity State
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(DbController.getCurrentUser());
+  const [subTicker, setSubTicker] = useState(0);
+
+  useEffect(() => {
+    const bump = () => setSubTicker(prev => prev + 1);
+    const interval = setInterval(bump, 5000);
+    window.addEventListener('users-updated', bump);
+    window.addEventListener('subscribers-timer-updated', bump);
+    window.addEventListener('school-system-sync', bump);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('users-updated', bump);
+      window.removeEventListener('subscribers-timer-updated', bump);
+      window.removeEventListener('school-system-sync', bump);
+    };
+  }, []);
   
   const subscriptionStatus = useMemo(() => {
     return currentUser ? evaluateSubscription(currentUser) : null;
-  }, [currentUser]);
+  }, [currentUser, subTicker]);
   const isSubscriptionLocked = subscriptionStatus?.isLocked || false;
   const [isFirebaseChecking, setIsFirebaseChecking] = useState(DbController.isFirebaseEnabled());
   const [isManualSetupWizardOpen, setIsManualSetupWizardOpen] = useState(false);
@@ -188,15 +203,55 @@ function AppContent() {
     const userEmail = currentUser.email?.toLowerCase().trim();
     const userStaffId = currentUser.staffId?.toLowerCase().trim();
     const userUid = currentUser.uid;
-    const userSchoolCode = (currentUser.schoolCode || currentUser.schoolId || '').toLowerCase().trim();
+    const userName = currentUser.name?.toLowerCase().trim();
 
-    return teachersList.find(t => 
-      (userEmail && t.email?.toLowerCase().trim() === userEmail) ||
-      (userStaffId && t.staffId?.toLowerCase().trim() === userStaffId) ||
-      (userUid && (t.id === userUid || (t as any).userId === userUid)) ||
-      (currentUser.role === 'Teacher' && userSchoolCode && ((t.schoolCode && t.schoolCode.toLowerCase().trim() === userSchoolCode) || (t.schoolId && t.schoolId.toLowerCase().trim() === userSchoolCode)))
-    ) || null;
+    return teachersList.find(t => {
+      const enrolledName = [t.firstName, t.middleName, t.lastName].map(p => (p || '').trim()).filter(Boolean).join(' ').toLowerCase();
+      return (
+        (userEmail && t.email?.toLowerCase().trim() === userEmail) ||
+        (userStaffId && t.staffId?.toLowerCase().trim() === userStaffId) ||
+        (userUid && (t.id === userUid || (t as any).userId === userUid)) ||
+        (currentUser.role === 'Teacher' && userName && userName !== 'staff member' && userName !== 'faculty teacher' && enrolledName === userName)
+      );
+    }) || null;
   }, [currentUser, teachers]);
+
+  const displayUserName = useMemo(() => {
+    if (!currentUser) return '';
+    if (currentUser.role === 'Teacher' && teacherProfile) {
+      const enrolled = [teacherProfile.firstName, teacherProfile.middleName, teacherProfile.lastName]
+        .map(p => (p || '').trim())
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+      if (enrolled) return enrolled;
+    }
+    return currentUser.name || currentUser.email || '';
+  }, [currentUser, teacherProfile]);
+
+  useEffect(() => {
+    if (currentUser?.role === 'Teacher' && teacherProfile) {
+      const enrolled = [teacherProfile.firstName, teacherProfile.middleName, teacherProfile.lastName]
+        .map(p => (p || '').trim())
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+      if (enrolled && currentUser.name !== enrolled) {
+        const synced = DbController.saveProfileLocally({ ...currentUser, name: enrolled });
+        setCurrentUser(synced);
+      }
+    }
+  }, [currentUser, teacherProfile]);
+
+  const teacherModuleRoles = useMemo(() => {
+    const perms = teacherProfile?.permissions;
+    return {
+      canAccessStudents: perms?.canAccessStudents !== false,
+      canAccessAttendance: perms?.canAccessAttendance !== false,
+      canAccessAssessments: perms?.canAccessAssessments !== false,
+      canAccessSystemControl: perms?.canAccessSystemControl !== false,
+    };
+  }, [teacherProfile]);
 
   const assignedClasses = useMemo(() => {
     const classesList: ClassType[] = [];
@@ -602,7 +657,11 @@ function AppContent() {
           return tab.id === 'dashboard';
         }
         const hasAssignments = classes.length > 0 || subjects.length > 0;
-        const allowedTabs = ['dashboard', 'students', 'attendance', 'assessments', 'settings'];
+        const allowedTabs = ['dashboard'];
+        if (teacherModuleRoles.canAccessStudents) allowedTabs.push('students');
+        if (teacherModuleRoles.canAccessAttendance) allowedTabs.push('attendance');
+        if (teacherModuleRoles.canAccessAssessments) allowedTabs.push('assessments');
+        if (teacherModuleRoles.canAccessSystemControl) allowedTabs.push('settings');
         if (hasAssignments) {
           allowedTabs.push('calendar');
         }
@@ -622,7 +681,7 @@ function AppContent() {
       }
       return tab;
     });
-  }, [subscriptionStatus, currentUser, assignedClasses, assignedSubjects, isAdmin]);
+  }, [subscriptionStatus, currentUser, assignedClasses, assignedSubjects, isAdmin, teacherModuleRoles]);
 
   // Settings & Customization
   const [activeTheme, setActiveTheme] = useState<ThemeType>(() => {
@@ -758,20 +817,102 @@ function AppContent() {
     return () => window.removeEventListener('storage', handleStorageChange);
   }, []);
 
-  // Periodic cross-device background sync
+  // Ensure Teacher activeTab never remains on a revoked role/module
+  useEffect(() => {
+    if (currentUser?.role === 'Teacher' && visibleTabs.length > 0) {
+      const stillAllowed = visibleTabs.some(t => t.id === activeTab);
+      if (!stillAllowed) {
+        setActiveTab('dashboard');
+      }
+    }
+  }, [currentUser, visibleTabs, activeTab]);
+
+  // Periodic cross-device background sync + real-time listeners for Headteacher subscription & Teacher role permissions
   useEffect(() => {
     if (!currentUser || !navigator.onLine) return;
     
     // Sync immediately on login/online
-    DbController.syncAllDataFromFirebase().catch(e => console.warn("Initial background sync failed:", e));
+    DbController.syncAllDataFromFirebase().then(() => {
+      setTeachers(DbController.getTeachers());
+      setSubTicker(prev => prev + 1);
+    }).catch(e => console.warn("Initial background sync failed:", e));
+
+    const unsubs: (() => void)[] = [];
+    const firestoreInstance = DbController.getFirestoreInstance();
+    if (firestoreInstance && DbController.isFirebaseEnabled()) {
+      const activeSchoolId = currentUser.schoolId || currentUser.schoolCode || DbController.resolveActiveSchoolId();
+      if (activeSchoolId && activeSchoolId !== 'school_default') {
+        try {
+          unsubs.push(onSnapshot(collection(firestoreInstance, 'schools', activeSchoolId, 'teachers'), (snap) => {
+            const latestTeachers = snap.docs.map(d => d.data() as Teacher);
+            DbController.syncDatasetFromSnapshot('teachers', latestTeachers);
+            setTeachers(DbController.getTeachers());
+          }, () => {}));
+
+          unsubs.push(onSnapshot(collection(firestoreInstance, 'schools', activeSchoolId, 'subscribers_timer'), (snap) => {
+            const latestTimers = snap.docs.map(d => ({ ...d.data(), id: d.id } as any));
+            DbController.syncDatasetFromSnapshot('subscribers_timer', latestTimers);
+            setSubTicker(prev => prev + 1);
+          }, () => {}));
+        } catch {}
+      }
+
+      const headUid = (currentUser.role === 'Headteacher' || currentUser.role === 'Admin')
+        ? currentUser.uid
+        : (currentUser.ownerId && DbController.isValidHeadteacherUid(currentUser.ownerId) && currentUser.ownerId !== currentUser.uid
+          ? currentUser.ownerId
+          : DbController.resolveHeadteacherUserId(activeSchoolId));
+      if (headUid && DbController.isValidHeadteacherUid(headUid)) {
+        try {
+          if (headUid !== currentUser.uid) {
+            unsubs.push(onSnapshot(doc(firestoreInstance, 'users', headUid), (snap) => {
+              if (snap.exists()) {
+                const headProfile = snap.data() as UserAccount;
+                const list = DbController.getRegisteredUsers();
+                const idx = list.findIndex(u => u.uid === headProfile.uid);
+                const updatedList = [...list];
+                if (idx >= 0) updatedList[idx] = headProfile;
+                else updatedList.push(headProfile);
+                localStorage.setItem('sms_registered_users', JSON.stringify(updatedList));
+                DbController._cache['sms_registered_users'] = updatedList;
+                setSubTicker(prev => prev + 1);
+              }
+            }, () => {}));
+          }
+
+          unsubs.push(onSnapshot(collection(firestoreInstance, 'users', headUid, 'teachers'), (snap) => {
+            if (!snap.empty) {
+              const latestTeachers = snap.docs.map(d => ({ ...d.data(), id: d.id } as Teacher));
+              DbController.syncDatasetFromSnapshot('teachers', latestTeachers);
+              setTeachers(DbController.getTeachers());
+              setSubTicker(prev => prev + 1);
+            }
+          }, () => {}));
+
+          unsubs.push(onSnapshot(collection(firestoreInstance, 'users', headUid, 'subscribers_timer'), (snap) => {
+            if (!snap.empty) {
+              const latestTimers = snap.docs.map(d => ({ ...d.data(), id: d.id } as any));
+              DbController.syncDatasetFromSnapshot('subscribers_timer', latestTimers);
+              setSubTicker(prev => prev + 1);
+            }
+          }, () => {}));
+        } catch {}
+      }
+    }
     
     const interval = setInterval(() => {
       if (navigator.onLine) {
-        DbController.syncAllDataFromFirebase().catch(e => console.warn("Periodic background sync failed:", e));
+        DbController.syncAllDataFromFirebase().then(() => {
+          setTeachers(DbController.getTeachers());
+          setSubTicker(prev => prev + 1);
+        }).catch(e => console.warn("Periodic background sync failed:", e));
       }
     }, 5 * 60 * 1000); // Every 5 minutes
     
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      unsubs.forEach(u => { try { u(); } catch {} });
+    };
   }, [currentUser]);
 
   useEffect(() => {
@@ -1346,16 +1487,17 @@ function AppContent() {
     setManualSaveStep(1);
     
     try {
-      // Step 2: Save data and full backup file snapshot to User ID Firestore immediately (with 4s timeout guarantee)
+      // Step 2: Save data and full backup file snapshot to User ID Firestore immediately
       if (isOnline && DbController.isFirebaseEnabled()) {
         try {
-          const firestoreSavePromise = DbController.saveDataAndFileToUserFirestore();
-          const timeoutPromise = new Promise<{ success: boolean; syncedCount: number; userId: string }>(resolve => 
-            setTimeout(() => resolve({ success: true, syncedCount: 0, userId: 'local' }), 4500)
-          );
-          await Promise.race([firestoreSavePromise, timeoutPromise]);
+          setManualSaveStep(2);
+          const saveRes = await DbController.saveDataAndFileToUserFirestore();
+          // Flush any pending offline queue items to Cloud Firestore
+          await DbController.syncOfflineQueue();
+          setPendingSyncCount(DbController.getOfflineQueueSize());
+          console.log("[Manual Save] Cloud save completed successfully:", saveRes);
         } catch (e) {
-          console.warn("User ID Firestore save skipped/delayed in manual save:", e);
+          console.warn("User ID Firestore save notice in manual save:", e);
         }
       }
       
@@ -1366,11 +1508,14 @@ function AppContent() {
       // Step 4: Finalize save state & verify checksums
       setManualSaveStep(4);
       setHasUnsavedChanges(false);
+      showToast("Data and records successfully saved and synced to Firebase Cloud Firestore!", "success");
       
       // Brief pause to cleanly display completion checkmark
       await new Promise(r => setTimeout(r, 250));
-    } catch (err) {
+    } catch (err: any) {
       console.error("Manual save progress error:", err);
+      showToast("Notice: Save completed locally and queued for cloud synchronization.", "info");
+      setHasUnsavedChanges(false);
     } finally {
       setIsManualSaving(false);
       setManualSaveStep(0);
@@ -1492,8 +1637,25 @@ function AppContent() {
             setIsFirebaseChecking(false);
             return;
           }
-          console.log("Firebase Auth found active session for", firebaseUser.email);
+          console.log("Firebase Auth found active session for", firebaseUser.email || (firebaseUser.isAnonymous ? "Anonymous Cloud Token" : "User"));
           
+          // CRITICAL: If firebaseUser is anonymous, it is purely a background transport token for Firestore network authorization.
+          // It MUST NEVER overwrite or mutate the application's authenticated user profile (role, email, schoolId, permissions).
+          if (firebaseUser.isAnonymous) {
+            console.log("Firebase Auth: Anonymous transport token ready for Firestore persistence:", firebaseUser.uid);
+            const activeProfile = DbController.getCurrentUser();
+            if (activeProfile) {
+              DbController.ensureConnectedTeacherProfile(activeProfile);
+              setCurrentUser(DbController.getCurrentUser() || activeProfile);
+              DbController.syncAllDataFromFirebase().then(() => {
+                refreshAllLogs();
+                setSubTicker(prev => prev + 1);
+              }).catch(() => {});
+            }
+            setIsFirebaseChecking(false);
+            return;
+          }
+
           // IMMEDIATE OPTIMIZATION: Set local profile immediately if available to prevent UI blocking 
           // while we fetch the fresh remote profile from Firestore.
           const cachedProfile = DbController.getCurrentUser();
@@ -1550,7 +1712,7 @@ function AppContent() {
                 // If remote profile is not found or fetch failed, and we have a matched local cached profile, use it.
                 // Otherwise, construct a resilient fallback profile from Firebase Auth state so session never hangs.
                 const currentCached = DbController.getCurrentUser();
-                if (currentCached && currentCached.uid === firebaseUser.uid) {
+                if (currentCached && (currentCached.uid === firebaseUser.uid || firebaseUser.isAnonymous)) {
                   DbController.ensureConnectedTeacherProfile(currentCached);
                   setCurrentUser(currentCached);
                 } else {
@@ -1587,7 +1749,8 @@ function AppContent() {
             console.warn("Background sync error on startup:", err);
           });
         } else {
-          console.log("Firebase Auth: No active session.");
+          console.log("Firebase Auth: Initializing background session for direct Firestore persistence...");
+          DbController.ensureFirebaseAuth().catch(e => console.warn("Background auth startup notice:", e));
           setIsFirebaseChecking(false);
         }
       } catch (err) {
@@ -1851,8 +2014,12 @@ function AppContent() {
       }, 60);
     };
 
-    const handleSyncMessage = (_eventData: { type: string; payload?: any }) => {
+    const handleSyncMessage = (eventData: { type: string; payload?: any }) => {
       triggerDebouncedRefresh();
+      const t = (eventData?.type || '').toLowerCase();
+      if (t.includes('teacher') || t.includes('sub') || t.includes('user') || t.includes('timer') || t.includes('license')) {
+        setSubTicker(prev => prev + 1);
+      }
     };
 
     // Handler for local custom window events
@@ -1908,6 +2075,51 @@ function AppContent() {
     };
   }, [refreshAllLogs]);
 
+  // Dedicated global listener for platform subscription pricing adjustments from Admin
+  useEffect(() => {
+    if (!DbController.isFirebaseEnabled()) return;
+    const firestoreInstance = DbController.getFirestoreInstance();
+    if (!firestoreInstance) return;
+
+    // Proactively fetch authoritative pricing on mount
+    DbController.fetchRemotePlatformPricing().then((pricing) => {
+      setSchoolInfo(prev => ({
+        ...prev,
+        licensePrice1Year: pricing.licensePrice1Year,
+        licensePrice2Year: pricing.licensePrice2Year,
+        licensePrice3Year: pricing.licensePrice3Year,
+        licensePrice5Year: pricing.licensePrice5Year,
+        smsRate: pricing.smsRate
+      }));
+    }).catch(() => {});
+
+    try {
+      const platformPricingDocRef = doc(firestoreInstance, 'platform_settings', 'pricing');
+      const unsubPricing = onSnapshot(platformPricingDocRef, (docSnap) => {
+        if (docSnap.metadata?.hasPendingWrites) return;
+        if (docSnap.exists()) {
+          const pricingData = docSnap.data();
+          if (pricingData) {
+            const updated = DbController.setPlatformPricingLocally(pricingData);
+            setSchoolInfo(prev => ({
+              ...prev,
+              licensePrice1Year: updated.licensePrice1Year,
+              licensePrice2Year: updated.licensePrice2Year,
+              licensePrice3Year: updated.licensePrice3Year,
+              licensePrice5Year: updated.licensePrice5Year,
+              smsRate: updated.smsRate
+            }));
+          }
+        }
+      }, (err) => {
+        console.warn('[Real-time Platform Pricing Listener] Notice:', err);
+      });
+      return () => unsubPricing();
+    } catch (err) {
+      console.warn('[Real-time Platform Pricing Listener] Could not attach listener:', err);
+    }
+  }, []);
+
   // Real-time Firestore Snapshot Listeners for multi-tenant school sync (Teacher <-> Headteacher)
   useEffect(() => {
     if (!DbController.isFirebaseEnabled()) return;
@@ -1956,44 +2168,12 @@ function AppContent() {
 
     const unsubs: (() => void)[] = [];
 
-    // Real-time listener for platform-wide settings (subscription pricing adjustments from admin)
-    try {
-      const platformPricingDocRef = doc(firestoreInstance, 'platform_settings', 'pricing');
-      const unsubPricing = onSnapshot(platformPricingDocRef, (docSnap) => {
-        if (docSnap.metadata?.hasPendingWrites) return;
-        if (docSnap.exists()) {
-          const pricingData = docSnap.data();
-          if (pricingData) {
-            DbController.setPlatformPricingLocally(pricingData);
-            setSchoolInfo(prev => ({
-              ...prev,
-              licensePrice1Year: pricingData.licensePrice1Year ?? prev.licensePrice1Year,
-              licensePrice2Year: pricingData.licensePrice2Year ?? prev.licensePrice2Year,
-              licensePrice3Year: pricingData.licensePrice3Year ?? prev.licensePrice3Year,
-              licensePrice5Year: pricingData.licensePrice5Year ?? prev.licensePrice5Year,
-              smsRate: pricingData.smsRate ?? prev.smsRate
-            }));
-            debouncedRefresh();
-          }
-        } else {
-          // Document does not exist yet: initialize from default/local pricing
-          const initialPricing = DbController.getPlatformPricing();
-          setDoc(platformPricingDocRef, DbController.sanitizeForFirestore(initialPricing), { merge: true }).catch(() => {});
-        }
-      }, (err) => {
-        console.warn('[Real-time Platform Pricing Listener] Notice:', err);
-      });
-      unsubs.push(unsubPricing);
-    } catch (err) {
-      console.warn('[Real-time Platform Pricing Listener] Could not attach listener:', err);
-    }
-
     // Real-time listener for the main school profile document
     try {
       const schoolDocRef = doc(firestoreInstance, 'schools', activeSchoolId);
       const unsubSchool = onSnapshot(schoolDocRef, (docSnap) => {
-        // Echo suppression: Ignore local pending writes to prevent bounce-back
-        if (docSnap.metadata?.hasPendingWrites) return;
+        // Echo suppression & formatting guard: Ignore pending writes or active Deep Format wipes
+        if (DbController._isFormatting || docSnap.metadata?.hasPendingWrites) return;
 
         if (docSnap.exists()) {
           const updatedSchool = docSnap.data() as SchoolInfo;
@@ -2031,8 +2211,8 @@ function AppContent() {
       try {
         const colRef = collection(firestoreInstance, 'schools', activeSchoolId, colName);
         const unsub = onSnapshot(colRef, (snapshot) => {
-          // Echo suppression: Ignore local pending writes to avoid write-echo cycle
-          if (snapshot.metadata?.hasPendingWrites) return;
+          // Echo suppression & formatting guard: Never re-upload or sync while Deep Format is wiping Firestore
+          if (DbController._isFormatting || snapshot.metadata?.hasPendingWrites) return;
 
           if (snapshot.empty) {
             const localItems = DbController.getDataset(colName);
@@ -2059,6 +2239,44 @@ function AppContent() {
       }
     });
 
+    // Also subscribe to mirrored collections stored under the Headteacher's User ID (`users/{headUid}/{colName}`)
+    // so Teacher-side changes and Headteacher-side edits propagate cleanly in real time.
+    const validHeadUid = (currentUser.role === 'Headteacher' || currentUser.role === 'Admin')
+      ? currentUser.uid
+      : DbController.resolveHeadteacherUserId(activeSchoolId);
+    if (DbController.isValidHeadteacherUid(validHeadUid)) {
+      const headMirroredCollections = [
+        'teachers',
+        'students',
+        'attendance',
+        'staff_attendance',
+        'assessments',
+        'assessment_templates',
+        'teacher_reflections',
+        'behavioral_remarks',
+        'leave_requests',
+        'tasks',
+        'quick_notes',
+        'activity_logs',
+        'subscribers_timer'
+      ];
+      headMirroredCollections.forEach((colName) => {
+        try {
+          const userColRef = collection(firestoreInstance, 'users', validHeadUid, colName);
+          const unsubUserCol = onSnapshot(userColRef, (snapshot) => {
+            if (DbController._isFormatting || snapshot.metadata?.hasPendingWrites || snapshot.empty) return;
+            const items = snapshot.docs.map(d => ({ ...d.data(), id: d.id }));
+            DbController.syncDatasetFromSnapshot(colName, items, false);
+            debouncedRefresh();
+            if (colName === 'teachers' || colName === 'subscribers_timer') {
+              setSubTicker(prev => prev + 1);
+            }
+          }, () => {});
+          unsubs.push(unsubUserCol);
+        } catch {}
+      });
+    }
+
     return () => {
       if (refreshDebounceTimer) clearTimeout(refreshDebounceTimer);
       unsubs.forEach(unsub => {
@@ -2073,6 +2291,8 @@ function AppContent() {
 
   const handleResetAndClear = async () => {
     try {
+      DbController._isFormatting = true;
+
       // Clear all fields State
       setIsRegisterMode(false);
       setAuthSubMode('sso');
@@ -2082,7 +2302,7 @@ function AppContent() {
       setRegRole('Headteacher');
       setAuthError(null);
       
-      // Clear the active session and trigger storage wipe
+      // Clear the active session and trigger full Cloud Firestore & local storage deep format
       await DbController.clearAllData();
       setCurrentUser(null);
       
@@ -2092,18 +2312,21 @@ function AppContent() {
       setAttendance([]);
       setAssessments([]);
       setReflections([]);
+      setHasUnsavedChanges(false);
       
       // Refresh school metadata and trigger visual updates in UI components
       const blankSchool = DbController.resetSchoolInfo();
       setSchoolInfo(blankSchool);
       
-      // Set validation message
+      // Set validation message and reload cleanly once
       setWipeSuccessMessage("Successfully performed deep format of all system and Firebase data. Workstation reset to clean slate.");
       setTimeout(() => {
         window.location.reload();
-      }, 700);
+      }, 1000);
     } catch (err: any) {
+      DbController._isFormatting = false;
       console.error("Deep format execution error:", err);
+      throw err;
     }
   };
 
@@ -2187,26 +2410,13 @@ function AppContent() {
           refreshAllLogs();
           return;
         }
+        throw new Error("Biometric hardware token not found or verification not completed.");
+      } else {
+        throw new Error("WebAuthn biometric hardware is not supported or credential is not valid.");
       }
-      throw new Error("Triggering educational sandbox biometrics scanner fallback.");
     } catch (e) {
-      console.warn("Real WebAuthn verification skipped or blocked by iframe constraint. Using visual secure shield simulator:", e);
-      setIsBiometricAuthModalOpen(true);
-    }
-  };
-
-  const handleSimulateAuthenticationSuccess = () => {
-    try {
-      const verifiedUser = DbController.loginWithWebAuthn(selectedBiometricId);
-      setBiometricAuthStep('success');
-      setTimeout(() => {
-        setIsBiometricAuthModalOpen(false);
-        setCurrentUser(verifiedUser);
-        refreshAllLogs();
-      }, 1200);
-    } catch (e: any) {
-      setAuthError(e.message || "Failed biometric signature verification.");
-      setIsBiometricAuthModalOpen(false);
+      console.warn("Hardware biometric authentication could not be completed on this browser or device:", e);
+      setAuthError("Hardware biometric authentication is unavailable or was declined on this device. Please sign in with your email/password or School Code.");
     }
   };
 
@@ -2321,9 +2531,6 @@ function AppContent() {
         </p>
         <p>
           Your login request cannot be authorized from this web address. Please verify that you are accessing the portal from the official secured domain or contact the system administrator.
-        </p>
-        <p className="text-[11px] text-slate-400 mt-1">
-          💡 <strong>Alternative:</strong> If you are testing the system, you can sign in directly using your <strong>Email & Password</strong> credentials which require no domain authorizations.
         </p>
       </div>
     );
@@ -2925,10 +3132,13 @@ function AppContent() {
 
                   <button
                     type="button"
-                    onClick={handleSimulateAuthenticationSuccess}
-                    className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black rounded-xl transition cursor-pointer shadow-md tracking-wider uppercase font-mono animate-pulse"
+                    onClick={() => {
+                      setIsBiometricAuthModalOpen(false);
+                      setAuthError(null);
+                    }}
+                    className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl transition cursor-pointer shadow-md tracking-wider font-sans border border-slate-700"
                   >
-                    Apply Biometric signature
+                    Cancel / Use Password Login
                   </button>
                 </div>
               )}
@@ -3520,8 +3730,8 @@ function AppContent() {
               <span className="text-slate-200 block text-[9px] uppercase font-mono tracking-wider font-semibold">Logged-in User</span>
               <span className="font-bold text-slate-100 flex items-center justify-center sm:justify-end gap-1.5 mt-0.5">
                 <User size={13} className="text-amber-300 shrink-0" />
-                <span className="truncate max-w-[140px]" title={`${currentUser?.name} (${currentUser?.role})`}>
-                  {currentUser?.name} ({currentUser?.role})
+                <span className="truncate max-w-[160px]" title={`${displayUserName} (${currentUser?.role})`}>
+                  {displayUserName} ({currentUser?.role})
                 </span>
               </span>
             </div>
@@ -4312,6 +4522,7 @@ function AppContent() {
               assignedSubjects={assignedSubjects}
               assignedClass={assignedClasses[0] || 'None'}
               userRole={currentUser?.role}
+              teacherPermissions={teacherProfile?.permissions}
             />
           )}
 
@@ -4439,9 +4650,9 @@ function AppContent() {
       >
         {[
           { id: 'dashboard', label: 'Home', icon: LayoutDashboard },
-          { id: 'students', label: 'Students', icon: GraduationCap },
-          { id: 'attendance', label: 'Attendance', icon: CalendarCheck },
-          { id: 'assessments', label: 'Assess', icon: Award },
+          ...(currentUser?.role !== 'Teacher' || teacherModuleRoles.canAccessStudents ? [{ id: 'students', label: 'Students', icon: GraduationCap }] : []),
+          ...(currentUser?.role !== 'Teacher' || teacherModuleRoles.canAccessAttendance ? [{ id: 'attendance', label: 'Attendance', icon: CalendarCheck }] : []),
+          ...(currentUser?.role !== 'Teacher' || teacherModuleRoles.canAccessAssessments ? [{ id: 'assessments', label: 'Assess', icon: Award }] : []),
           ...(currentUser?.role !== 'Teacher' ? [{ id: 'finances', label: 'Finances', icon: Coins }] : []),
           { id: 'menu', label: 'More', icon: isMobileMenuOpen ? X : Menu, isMenuTrigger: true }
         ].map((item) => {
@@ -4845,10 +5056,10 @@ function AppContent() {
                   {currentUser && (
                     <div className="flex items-center gap-3 bg-white p-2.5 rounded-xl border border-slate-200 shadow-2xs">
                       <div className="w-8 h-8 rounded-full bg-amber-100 border border-amber-300 flex items-center justify-center font-black text-xs text-amber-800 shrink-0">
-                        {currentUser.name ? currentUser.name.charAt(0).toUpperCase() : 'U'}
+                        {displayUserName ? displayUserName.charAt(0).toUpperCase() : 'U'}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-xs font-bold text-slate-900 truncate">{currentUser.name}</p>
+                        <p className="text-xs font-bold text-slate-900 truncate">{displayUserName}</p>
                         <p className="text-[9.5px] text-slate-500 font-mono truncate">{currentUser.role} • {currentUser.email}</p>
                       </div>
                     </div>

@@ -96,7 +96,7 @@ function generateEmptyReport(year: AcademicYearType): EmisData {
     
     // School Context & Foundations
     locationType: 'Urban',
-    yearFounded: 2004,
+    yearFounded: new Date().getFullYear(),
     isSchoolFeedingBeneficiary: false,
     studentsFedDailyCount: 0,
 
@@ -127,7 +127,7 @@ function generateEmptyReport(year: AcademicYearType): EmisData {
     ghanaianLanguageTaught: 'None',
     hasInternetAccess: false,
     
-    targetCommunityPopulation: 350,
+    targetCommunityPopulation: 0,
     updatedAt: new Date().toISOString()
   };
 }
@@ -221,7 +221,7 @@ export default function EmisTab({ theme }: Props) {
 
     // Sourcing & Sanitisations Fallbacks
     if (sanitized.locationType === undefined) sanitized.locationType = 'Urban';
-    if (sanitized.yearFounded === undefined) sanitized.yearFounded = 2004;
+    if (sanitized.yearFounded === undefined) sanitized.yearFounded = new Date().getFullYear();
     if (sanitized.isSchoolFeedingBeneficiary === undefined) sanitized.isSchoolFeedingBeneficiary = false;
     if (sanitized.studentsFedDailyCount === undefined) sanitized.studentsFedDailyCount = 0;
     if (sanitized.hasSeparateStaffToilets === undefined) sanitized.hasSeparateStaffToilets = false;
@@ -2403,7 +2403,7 @@ export default function EmisTab({ theme }: Props) {
           <div className="space-y-1">
             <h3 className="text-[10px] font-black uppercase text-slate-950 tracking-wider">V. Infrastructure, Logistics & Auxiliaries</h3>
             <div className="border border-slate-950 p-2 text-[8.5px] space-y-1 leading-normal bg-slate-50/30">
-              <p>• <strong>Demographics & Foundations:</strong> Location Style: <strong className="text-slate-900">{report.locationType || 'Urban'}</strong> | Est. Year: <strong className="font-mono text-[9px]">{report.yearFounded || 2004}</strong> | GSFP Feeding Beneficiary: <strong className="text-slate-900">{report.isSchoolFeedingBeneficiary ? `Yes (${report.studentsFedDailyCount} fed daily)` : 'No'}</strong></p>
+              <p>• <strong>Demographics & Foundations:</strong> Location Style: <strong className="text-slate-900">{report.locationType || 'Urban'}</strong> | Est. Year: <strong className="font-mono text-[9px]">{report.yearFounded || 'N/A'}</strong> | GSFP Feeding Beneficiary: <strong className="text-slate-900">{report.isSchoolFeedingBeneficiary ? `Yes (${report.studentsFedDailyCount} fed daily)` : 'No'}</strong></p>
               <p>• <strong>Classroom Stockpile:</strong> Perm: <strong className="font-mono text-[9px]">{report.permanentClassrooms}</strong> blocks | Temp: <strong className="font-mono text-[9px]">{report.temporaryClassrooms}</strong> blocks | Under Tree: <strong className="font-mono text-[9px]">{report.classroomsUnderTrees}</strong> sites</p>
               <p>• <strong>Sanitation & WASH:</strong> Toilet Type: <strong className="text-slate-900">{report.toiletType}</strong> ({report.toiletBoothsBoys} Boys / {report.toiletBoothsGirls} Girls booths) | Staff toilets separate: <strong className="text-slate-900">{report.hasSeparateStaffToilets ? 'Yes' : 'No'}</strong> | Handwashing stations: <strong className="text-slate-900">{report.hasHandwashingStations ? 'Yes' : 'No'}</strong> | Drinking Water: <strong className="text-slate-900">{report.drinkingWaterSource}</strong></p>
               <p>• <strong>Safety & Perimeter:</strong> Protected Fencing: <strong className="text-slate-900">{report.isCompoundFenced ? 'Yes' : 'No'}</strong> | Assigned Patrol Watchmen: <strong className="text-slate-900">{report.hasSecurityGuard ? 'Yes' : 'No'}</strong> | Medical Sick Bay: <strong className="text-slate-900">{report.hasFunctionalSickBay ? 'Yes' : 'No'}</strong></p>

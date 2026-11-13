@@ -393,6 +393,7 @@ interface Props {
   assignedSubjects?: SubjectType[];
   userRole?: UserRole;
   teacherPermissions?: {
+    canAccessAssessments?: boolean;
     canEditGrades?: boolean;
     canApproveAttendance?: boolean;
     canExportReports?: boolean;
@@ -1109,8 +1110,8 @@ export default function AssessmentTab({
         errDetail = err.message || 'Server connection failed';
       }
     } else {
-      // Simulate delivery success for mocking
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      isRealSuccess = false;
+      errDetail = 'Twilio SMS Gateway is not enabled in settings. Please configure Twilio or dispatch via the "Native SMS App" button.';
     }
 
     if (!isRealSuccess) {
@@ -1531,11 +1532,17 @@ export default function AssessmentTab({
       return false;
     }
     DbController.saveAssessmentsSheet(activeWorksheet);
+    DbController.writeActivityLog(
+      'Gradesheet Saved',
+      `Saved gradesheet for ${selectedClass} (${selectedSubject || 'All Subjects'}) - ${activeWorksheet.length} student records.`,
+      'info'
+    );
     latestWorksheetRef.current = activeWorksheet;
     unsavedChangesRef.current = false;
     onManualSave();
     setUnsavedChanges(false);
-    setSaveFeedback('Gradesheet successfully saved!');
+    setSaveFeedback('Gradesheet successfully saved & synchronized to Cloud Firestore!');
+    triggerToast(`🎉 Gradesheet for ${selectedClass} (${selectedSubject || 'All Subjects'}) saved to Cloud Firestore!`, 'success');
     setTimeout(() => setSaveFeedback(''), 3500);
     return true;
   };
@@ -2746,6 +2753,21 @@ export default function AssessmentTab({
     });
     return SUBJECTS.filter(sub => subjectsSet.has(sub));
   }, [broadsheetData]);
+
+  if (userRole === 'Teacher' && teacherPermissions?.canAccessAssessments === false) {
+    return (
+      <div className="bg-rose-50/60 border border-rose-200 text-rose-900 p-8 rounded-2xl text-center space-y-4 max-w-xl mx-auto my-12 shadow-sm">
+        <ShieldAlert size={48} className="text-rose-500 mx-auto animate-pulse" />
+        <h3 className="font-bold text-lg">Academic Assessment Access Restricted</h3>
+        <p className="text-sm text-rose-700 leading-relaxed">
+          Your Headteacher has not assigned the <strong>Academic Assessment</strong> role to your staff account.
+        </p>
+        <p className="text-xs text-rose-600 font-mono">
+          Please contact your Headteacher to enable Academic Assessment under Teacher Permissions.
+        </p>
+      </div>
+    );
+  }
 
   const hasAnyAssignment = (assignedClasses.length > 0) || (assignedSubjects.length > 0) || (assignedClass && assignedClass !== 'None');
 

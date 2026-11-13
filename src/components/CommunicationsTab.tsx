@@ -398,7 +398,7 @@ export default function CommunicationsTab({ theme, students, isAdmin }: Props) {
           timestamp: new Date().toISOString(),
           studentId: 'test_handshake',
           studentName: 'Diagnostic Handshake',
-          guardianName: 'Sysadmin Sandbox',
+          guardianName: 'System Administrator',
           phoneNumber: testPhoneNumber,
           message: testSmsMessage,
           channel: 'Twilio API',
@@ -2762,11 +2762,11 @@ export default function CommunicationsTab({ theme, students, isAdmin }: Props) {
               )}
             </div>
 
-            {/* Column B: Sandbox SMS dispatch (Right 5-spans) */}
+            {/* Column B: Diagnostic SMS dispatch (Right 5-spans) */}
             <div className="lg:col-span-5 bg-slate-50 border border-slate-200 rounded-2xl p-5 space-y-4">
               <div className="pb-2 border-b border-slate-200">
                 <h4 className="text-[11px] font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-                  <Smartphone className="text-indigo-600" size={14} /> Handshake SMS Sandbox
+                  <Smartphone className="text-indigo-600" size={14} /> SMS Gateway Diagnostics
                 </h4>
                 <p className="text-[10px] text-slate-500 font-medium mt-0.5">
                   Send a real system test SMS to confirm final cellular route delivery on hand.

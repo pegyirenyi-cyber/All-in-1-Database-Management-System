@@ -53,6 +53,16 @@ export default function AdminDashboardTab({ theme, onNavigateTab }: Props) {
   const [pricingFeedback, setPricingFeedback] = useState<string | null>(null);
 
   useEffect(() => {
+    DbController.fetchRemotePlatformPricing().then((pricing) => {
+      if (pricing) {
+        setAdminPrice1Y(pricing.licensePrice1Year);
+        setAdminPrice2Y(pricing.licensePrice2Year);
+        setAdminPrice3Y(pricing.licensePrice3Year);
+        setAdminPrice5Y(pricing.licensePrice5Year);
+        setAdminSmsRate(pricing.smsRate);
+      }
+    }).catch(err => console.warn("Admin pricing fetch notice:", err));
+
     const handlePlatformPricingUpdated = (e: Event) => {
       const customEvent = e as CustomEvent;
       const newPricing = customEvent.detail || DbController.getPlatformPricing();
@@ -1308,7 +1318,7 @@ export default function AdminDashboardTab({ theme, onNavigateTab }: Props) {
                               <div className="flex items-center gap-1.5">
                                 <span className={`w-2 h-2 rounded-full ${subStatus.isLocked ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'}`} />
                                 <span className={`text-[10px] font-black uppercase tracking-wider ${subStatus.isLocked ? 'text-rose-600' : 'text-slate-800'}`}>
-                                  {subStatus.licenseType === 'unlimited' ? 'Unlimited' : subStatus.licenseType === 'activated' ? `${user.licensePeriod || 1}-Yr Subscription` : 'Unlicensed / Expired'}
+                                  {subStatus.licenseType === 'unlimited' ? 'Unlimited' : subStatus.licenseType === 'activated' ? `${subStatus.licensePeriod || user.licensePeriod || 1}-Yr Subscription` : 'Trial / Unlicensed'}
                                 </span>
                               </div>
                               <div className="text-[10px] font-mono">

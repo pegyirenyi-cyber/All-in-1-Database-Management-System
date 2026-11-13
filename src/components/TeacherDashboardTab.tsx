@@ -144,7 +144,7 @@ export default function TeacherDashboardTab({
     if (!note) return;
     const currentUser = DbController.getCurrentUser();
     const teacherKey = teacherProfile.staffId || teacherProfile.id || currentUser?.uid || 'teacher';
-    const teacherName = `${teacherProfile.firstName || ''} ${teacherProfile.lastName || ''}`.trim() || currentUser?.name || 'Class Teacher';
+    const teacherName = DbController.formatTeacherFullName(teacherProfile) || currentUser?.name || '';
     
     const existingAcks = note.acknowledgedBy || [];
     if (!existingAcks.some(a => a.teacherId === teacherKey)) {
@@ -312,13 +312,25 @@ export default function TeacherDashboardTab({
   };
 
   useEffect(() => {
-    const timer = setInterval(() => {
-      setTicker(prev => prev + 1);
-    }, 30000);
-    return () => clearInterval(timer);
+    const bump = () => setTicker(prev => prev + 1);
+    const timer = setInterval(bump, 5000);
+    window.addEventListener('users-updated', bump);
+    window.addEventListener('subscribers-timer-updated', bump);
+    window.addEventListener('school-system-sync', bump);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('users-updated', bump);
+      window.removeEventListener('subscribers-timer-updated', bump);
+      window.removeEventListener('school-system-sync', bump);
+    };
   }, []);
 
   const subStatus = useMemo(() => currentUser ? evaluateSubscription(currentUser) : null, [currentUser, ticker]);
+
+  const teacherPermissions = teacherProfile?.permissions;
+  const canAccessStudents = teacherPermissions?.canAccessStudents !== false;
+  const canAccessAttendance = teacherPermissions?.canAccessAttendance !== false;
+  const canAccessAssessments = teacherPermissions?.canAccessAssessments !== false;
 
   const assignedSubjects = teacherProfile.assignedSubjects || [];
 
@@ -526,7 +538,7 @@ export default function TeacherDashboardTab({
     // Task: Mark attendance (if today is a weekday and we are in term time)
     const today = new Date();
     const isWeekday = today.getDay() !== 0 && today.getDay() !== 6;
-    if (isWeekday) {
+    if (isWeekday && canAccessAttendance) {
       tasks.push({
         id: 'mark_attendance',
         title: 'Mark Today Attendance',
@@ -538,7 +550,7 @@ export default function TeacherDashboardTab({
     }
 
     // Task: Grading
-    if (pendingGradingCount > 0) {
+    if (pendingGradingCount > 0 && canAccessAssessments) {
       tasks.push({
         id: 'grading',
         title: 'Pending Student Assessments',
@@ -621,7 +633,7 @@ export default function TeacherDashboardTab({
       const newReflection: TeacherReflection = {
         id: `ref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
         teacherId: teacherProfile.id,
-        teacherName: `${teacherProfile.firstName} ${teacherProfile.lastName}`,
+        teacherName: DbController.formatTeacherFullName(teacherProfile),
         date: new Date().toISOString().split('T')[0],
         content: `Student: ${student.firstName} ${student.lastName} (${student.class}) - ${qaBehaviorContent}`,
         category: 'Behavior',
@@ -740,7 +752,7 @@ export default function TeacherDashboardTab({
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-xs font-black uppercase tracking-wider font-mono text-slate-800">
-                  Headteacher School Subscription Live Countdown
+                  Headteacher School Subscription ({subStatus.isTrial ? '7-Day Trial' : subStatus.licenseType === 'unlimited' ? 'Unlimited' : `${subStatus.licensePeriod || 1}-Year License`})
                 </span>
                 <span className={`text-xs px-3 py-1 rounded-xl font-black font-mono tracking-wider shadow-2xs ${
                   subStatus.isLocked
@@ -756,7 +768,7 @@ export default function TeacherDashboardTab({
             </div>
           </div>
           <div className="text-right text-xs font-mono font-bold text-slate-600 shrink-0 self-end md:self-auto bg-white/70 px-3.5 py-2 rounded-xl border border-slate-200/60">
-            <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">School Expiry Date</span>
+            <span className="text-[9px] uppercase font-bold text-slate-400 block font-sans">Headteacher Expiry Date</span>
             <span className="text-slate-900 font-black">{subStatus.expiryDate.toLocaleDateString()}</span>
           </div>
         </div>
@@ -796,16 +808,18 @@ export default function TeacherDashboardTab({
             </div>
           </div>
           
-          <button
-            onClick={() => onNavigate('attendance')}
-            className={`py-2 px-4 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-md shrink-0 ${
-              isPastCutoff 
-                ? 'bg-rose-600 hover:bg-rose-700 text-white animate-pulse' 
-                : 'bg-amber-500 hover:bg-amber-600 text-slate-900 font-extrabold'
-            }`}
-          >
-            Record Register Now <ArrowRight size={13} />
-          </button>
+          {canAccessAttendance && (
+            <button
+              onClick={() => onNavigate('attendance')}
+              className={`py-2 px-4 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-md shrink-0 ${
+                isPastCutoff 
+                  ? 'bg-rose-600 hover:bg-rose-700 text-white animate-pulse' 
+                  : 'bg-amber-500 hover:bg-amber-600 text-slate-900 font-extrabold'
+              }`}
+            >
+              Record Register Now <ArrowRight size={13} />
+            </button>
+          )}
         </motion.div>
       )}
 
@@ -998,7 +1012,7 @@ export default function TeacherDashboardTab({
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
                   <h2 className="text-2xl font-black font-display tracking-tight text-slate-900 leading-none">
-                    Welcome, <span className="text-indigo-600">{teacherProfile.firstName} {teacherProfile.lastName}</span>
+                    Welcome, <span className="text-indigo-600">{DbController.formatTeacherFullName(teacherProfile) || currentUser?.name}</span>
                   </h2>
                   {teacherProfile.staffId && (
                     <span className="bg-slate-100 text-slate-700 border border-slate-200 text-[10px] font-mono font-bold px-2 py-0.5 rounded">
@@ -1538,20 +1552,24 @@ export default function TeacherDashboardTab({
                       </div>
                       
                       <div className="flex gap-2">
-                        <button 
-                          onClick={() => onNavigate('attendance')}
-                          className="p-2 rounded-lg bg-white border border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-100 transition-colors"
-                          title="Attendance"
-                        >
-                          <CalendarCheck size={16} />
-                        </button>
-                        <button 
-                          onClick={() => onNavigate('assessments')}
-                          className="p-2 rounded-lg bg-white border border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-100 transition-colors"
-                          title="Assessments"
-                        >
-                          <ClipboardCheck size={16} />
-                        </button>
+                        {canAccessAttendance && (
+                          <button 
+                            onClick={() => onNavigate('attendance')}
+                            className="p-2 rounded-lg bg-white border border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-100 transition-colors cursor-pointer"
+                            title="Attendance"
+                          >
+                            <CalendarCheck size={16} />
+                          </button>
+                        )}
+                        {canAccessAssessments && (
+                          <button 
+                            onClick={() => onNavigate('assessments')}
+                            className="p-2 rounded-lg bg-white border border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-100 transition-colors cursor-pointer"
+                            title="Assessments"
+                          >
+                            <ClipboardCheck size={16} />
+                          </button>
+                        )}
                       </div>
                     </div>
                   </motion.div>
@@ -1623,7 +1641,11 @@ export default function TeacherDashboardTab({
                   <GraduationCap size={28} className="mx-auto text-slate-300" />
                   <p className="text-xs font-bold text-slate-700">No Assessment Data Logged Yet</p>
                   <p className="text-[11px] text-slate-500 max-w-sm mx-auto font-sans">
-                    Grade assessments under the <button onClick={() => onNavigate('assessments')} className="text-indigo-600 underline font-bold cursor-pointer">Marks Input Sheet</button> to generate live performance distributions.
+                    {canAccessAssessments ? (
+                      <>Grade assessments under the <button onClick={() => onNavigate('assessments')} className="text-indigo-600 underline font-bold cursor-pointer">Marks Input Sheet</button> to generate live performance distributions.</>
+                    ) : (
+                      <>Academic assessment grading will appear here once enabled for your role.</>
+                    )}
                   </p>
                 </div>
               ) : (
@@ -1901,14 +1923,17 @@ export default function TeacherDashboardTab({
     </motion.div>
 
     {/* Floating Quick Actions */}
+    {((canAccessAttendance && teacherPermissions?.canApproveAttendance !== false) ||
+      (canAccessAssessments && teacherPermissions?.canEditGrades !== false) ||
+      canAccessStudents) && (
     <div className="fixed bottom-4 right-4 sm:bottom-8 sm:right-8 z-50">
         <AnimatePresence>
           {isQuickActionsOpen && (
             <div className="absolute bottom-20 right-0 space-y-3 flex flex-col items-end">
               {[
-                { label: 'Set Attendance Flag', icon: CalendarCheck, color: 'bg-emerald-600', actionId: 'attendance' },
-                { label: 'Add Quick Grade', icon: GraduationCap, color: 'bg-amber-600', actionId: 'grade' },
-                { label: 'Behavioral Note', icon: MessageSquare, color: 'bg-indigo-600', actionId: 'behavior' }
+                ...(canAccessAttendance && teacherPermissions?.canApproveAttendance !== false ? [{ label: 'Set Attendance Flag', icon: CalendarCheck, color: 'bg-emerald-600', actionId: 'attendance' }] : []),
+                ...(canAccessAssessments && teacherPermissions?.canEditGrades !== false ? [{ label: 'Add Quick Grade', icon: GraduationCap, color: 'bg-amber-600', actionId: 'grade' }] : []),
+                ...(canAccessStudents ? [{ label: 'Behavioral Note', icon: MessageSquare, color: 'bg-indigo-600', actionId: 'behavior' }] : [])
               ].map((action, idx) => (
                 <motion.button
                   key={action.actionId}
@@ -1954,6 +1979,7 @@ export default function TeacherDashboardTab({
           )}
         </motion.button>
       </div>
+    )}
 
       {/* Close backdrop when menu is open */}
       {isQuickActionsOpen && (

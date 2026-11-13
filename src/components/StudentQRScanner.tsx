@@ -78,7 +78,7 @@ export default function StudentQRScanner({
       animationFrameRef.current = requestAnimationFrame(scanLoop);
     } catch (err: any) {
       console.warn("Camera access denied or failed for student scanner:", err);
-      setScanError("Unable to access camera. Use the Interactive Simulated Roster deck below to test scanning.");
+      setScanError("Unable to access camera. Please allow camera permissions or use the class roster below for manual attendance check-in.");
       setIsScanning(false);
     }
   };
@@ -209,7 +209,7 @@ export default function StudentQRScanner({
     animationFrameRef.current = requestAnimationFrame(scanLoop);
   };
 
-  const handleSimulateScan = (student: Student) => {
+  const handleManualRosterCheck = (student: Student) => {
     playBeep();
     handleScan(student.id);
   };
@@ -437,7 +437,7 @@ export default function StudentQRScanner({
                   <button
                     key={student.id}
                     disabled={isScannedInBatch}
-                    onClick={() => handleSimulateScan(student)}
+                    onClick={() => handleManualRosterCheck(student)}
                     className={`flex items-center gap-2 p-2 border rounded-xl text-left cursor-pointer transition-all active:scale-[0.98] group ${
                       isScannedInBatch 
                         ? 'bg-emerald-50/55 border-emerald-150 text-emerald-700 opacity-60 cursor-not-allowed' 

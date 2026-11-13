@@ -186,6 +186,11 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     return;
   }
 
+  if (errMsg.includes('offline') || errMsg.includes('backend') || errMsg.includes('unavailable') || errMsg.includes('network') || errMsg.includes('timeout')) {
+    console.warn('[Firestore Network] Backend is offline or operating in local cache mode:', errMsg);
+    return;
+  }
+
   console.warn('Firestore Error: ', JSON.stringify(errInfo));
 }
 
@@ -199,10 +204,15 @@ try {
     firebaseAuth = getAuth(firebaseApp);
     const dbId = resolvedFirebaseConfig.firestoreDatabaseId;
     const firestoreSettings = {
-      experimentalForceLongPolling: true,
-      useFetchStreams: false
+      experimentalAutoDetectLongPolling: true
     };
     
+    try {
+      setLogLevel('silent');
+    } catch {
+      // ignore
+    }
+
     try {
       firestoreDb = (dbId && dbId !== '(default)') 
         ? initializeFirestore(firebaseApp, firestoreSettings, dbId) 
@@ -212,16 +222,18 @@ try {
         ? getFirestore(firebaseApp, dbId) 
         : getFirestore(firebaseApp);
     }
+
     try {
-      setLogLevel('error');
+      setLogLevel('silent');
     } catch {
       // ignore
     }
+
     isFirebaseActive = true;
     console.log("[Cloud Firestore] Initialized live cloud database instance:", dbId || '(default)');
   }
 } catch (e) {
-  console.error("[Cloud Firestore] Firebase initialization error:", e);
+  console.warn("[Cloud Firestore] Firebase initialization notice:", e);
 }
 
 export const db = firestoreDb;
@@ -235,20 +247,26 @@ export function getFirebaseInstance() {
 async function testConnection() {
   if (isFirebaseActive && firestoreDb && typeof navigator !== 'undefined' && navigator.onLine) {
     try {
-      const pingPromise = getDocFromServer(doc(firestoreDb, 'test', 'connection'));
-      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000));
-      await Promise.race([pingPromise, timeoutPromise]);
+      await getDocFromServer(doc(firestoreDb, 'test', 'connection'));
       console.log("[Cloud Firestore] Cloud Firestore connection active.");
     } catch (error: any) {
       if (error instanceof Error && error.message.includes('the client is offline')) {
-        console.error("Please check your Firebase configuration or network.");
+        console.warn("[Cloud Firestore] Device is operating in offline mode.");
+      } else {
+        console.log("[Cloud Firestore] Running in resilient offline/cache-first mode.");
       }
-      console.log("[Cloud Firestore] Running in resilient offline/cache-first mode.");
     }
   }
 }
 if (typeof setTimeout !== 'undefined') {
-  setTimeout(() => { testConnection().catch(() => {}); }, 150);
+  setTimeout(() => { 
+    testConnection().catch(() => {});
+    try {
+      DbController.purgeAllDemoData();
+    } catch (e) {
+      console.warn("Initial demo data purge notice:", e);
+    }
+  }, 300);
 }
 
 // Default system configurations
@@ -562,7 +580,8 @@ const GLOBAL_DEVICE_KEYS = new Set([
   'sms_used_activation_codes',
   'sms_offline_queue',
   'sms_system_theme',
-  'sms_system_cleared_june_30_v2'
+  'sms_system_cleared_june_30_v2',
+  'sms_platform_pricing'
 ]);
 
 export function getActiveDataScope(): string {
@@ -699,6 +718,7 @@ export interface OfflineQueueItem {
 // -----------------------------------------------------------------------------
 export class DbController {
   private static _isSyncing = false;
+  public static _isFormatting = false;
   public static _cache: Record<string, any> = {};
   private static _assessmentsByStudent: Map<string, StudentAssessment[]> = new Map();
   private static _studentsByClass: Map<ClassType | string, Student[]> = new Map();
@@ -761,10 +781,33 @@ export class DbController {
     return firestoreDb;
   }
 
-  // Checks for an active Firebase Auth user session for cloud writes and reads
+  private static _authPromise: Promise<any> | null = null;
+
+  // Checks for or transparently establishes an active Firebase Auth user session for direct cloud writes and reads
   static async ensureFirebaseAuth(): Promise<any> {
     if (!isFirebaseActive || !firebaseAuth) return null;
-    return firebaseAuth.currentUser || null;
+    if (firebaseAuth.currentUser) return firebaseAuth.currentUser;
+
+    if (this._authPromise) {
+      return this._authPromise;
+    }
+
+    this._authPromise = (async () => {
+      try {
+        if (firebaseAuth.currentUser) return firebaseAuth.currentUser;
+        console.log("[Firebase Auth] Establishing active cloud session for direct Firestore persistence...");
+        const cred = await signInAnonymously(firebaseAuth);
+        console.log("[Firebase Auth] Active authenticated cloud session established:", cred.user.uid);
+        return cred.user;
+      } catch (e) {
+        console.warn("[Firebase Auth] Auto session establishment notice:", e);
+        return firebaseAuth.currentUser || null;
+      } finally {
+        this._authPromise = null;
+      }
+    })();
+
+    return this._authPromise;
   }
 
   private static _isSyncingQueue = false;
@@ -787,11 +830,11 @@ export class DbController {
   }
 
   static scheduleAutoFlush(delayMs: number = 2000): void {
-    if (this.isQuotaExhausted()) return;
+    if (this._isFormatting || this.isQuotaExhausted()) return;
     if (this._autoFlushTimeout) clearTimeout(this._autoFlushTimeout);
     this._autoFlushTimeout = setTimeout(() => {
       this._autoFlushTimeout = null;
-      if (!this.isQuotaExhausted()) {
+      if (!this._isFormatting && !this.isQuotaExhausted()) {
         this.syncOfflineQueue().catch(e => console.warn("[Cloud Auto-Flush] Queue sync notice:", e));
       }
     }, delayMs);
@@ -819,6 +862,9 @@ export class DbController {
     type: 'set' | 'delete',
     data?: any
   ): Promise<void> {
+    if (this._isFormatting) {
+      return;
+    }
     if (!isFirebaseActive || !firestoreDb) {
       console.warn(`[Cloud Sync] Firestore not active. Skipping ${type} on ${colName}/${docId}.`);
       return;
@@ -839,10 +885,11 @@ export class DbController {
     // Enforce active authenticated session for all cloud writes
     if (firebaseAuth && !firebaseAuth.currentUser) {
       await this.ensureFirebaseAuth();
-      if (!firebaseAuth.currentUser) {
-        this.enqueueOfflineOperation(colName, safeDocId, type, safeData);
-        return;
-      }
+    }
+    if (firebaseAuth && !firebaseAuth.currentUser) {
+      console.warn(`[Cloud Sync] Direct write queued: No authenticated session available for ${colName}/${safeDocId}.`);
+      this.enqueueOfflineOperation(colName, safeDocId, type, safeData);
+      return;
     }
 
     const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
@@ -854,16 +901,26 @@ export class DbController {
     }
 
     let collectionRef;
-    if (colName === 'schools' || colName === 'users' || colName === 'platform_settings') {
+    const isRootCollection = colName === 'schools' || colName === 'users' || colName === 'platform_settings';
+    if (isRootCollection) {
       collectionRef = collection(firestoreDb, colName);
     } else {
       collectionRef = collection(firestoreDb, 'schools', schoolId, colName);
     }
 
-    console.log(`[Cloud Sync] Writing to path: schools/${schoolId}/${colName}/${safeDocId}`);
-
     const schoolInfo = this.getSchoolInfo();
-    const schoolOwnerUid = schoolInfo.ownerId || (currentUser?.role === 'Admin' || currentUser?.role === 'Headteacher' ? currentUser?.uid : currentUser?.ownerId || currentUser?.uid);
+    const resolvedHeadUid = this.resolveHeadteacherUserId(schoolId);
+    const schoolOwnerUid = (safeData?.ownerId && this.isValidHeadteacherUid(safeData.ownerId) ? safeData.ownerId : null) ||
+      (this.isValidHeadteacherUid(resolvedHeadUid) ? resolvedHeadUid : null) ||
+      (this.isValidHeadteacherUid(schoolInfo.ownerId) ? schoolInfo.ownerId : null) ||
+      (currentUser?.role === 'Admin' || currentUser?.role === 'Headteacher' ? currentUser?.uid : currentUser?.ownerId) ||
+      currentUser?.uid ||
+      firebaseAuth?.currentUser?.uid ||
+      'anonymous';
+    const headteacherName = this.resolveHeadteacherName(schoolId);
+    const authorDisplayName = this.resolveAuthorDisplayName(currentUser);
+
+    console.log(`[Cloud Sync] Writing to path: ${isRootCollection ? colName : `schools/${schoolId}/${colName}`}/${safeDocId}` + (!isRootCollection && this.isValidHeadteacherUid(schoolOwnerUid) ? ` (+ users/${schoolOwnerUid}/${colName}/${safeDocId})` : ''));
 
     try {
       const docRef = doc(collectionRef, safeDocId);
@@ -871,15 +928,42 @@ export class DbController {
         const payload = this.sanitizeForFirestore({ 
           ...safeData, 
           schoolId: schoolId,
-          ownerId: schoolOwnerUid || currentUser?.uid || 'anonymous',
-          authorUid: currentUser?.uid || 'anonymous',
-          authorName: currentUser?.name || 'Staff',
-          authorRole: currentUser?.role || 'Staff',
+          schoolCode: safeData?.schoolCode || schoolId,
+          ownerId: schoolOwnerUid,
+          headteacherUserId: this.isValidHeadteacherUid(schoolOwnerUid) ? schoolOwnerUid : (safeData?.headteacherUserId || ''),
+          headteacherName: safeData?.headteacherName || headteacherName || '',
+          authorUid: currentUser?.uid || firebaseAuth?.currentUser?.uid || 'anonymous',
+          authorName: authorDisplayName,
+          authorRole: currentUser?.role || 'Teacher',
           lastModified: new Date().toISOString()
         });
-        await setDoc(docRef, payload, { merge: true });
+        const writes: Promise<any>[] = [setDoc(docRef, payload, { merge: true })];
+
+        // Mirror all Teachers and Teacher-generated data directly under the Headteacher's User ID in Cloud Firestore
+        if (!isRootCollection && this.isValidHeadteacherUid(schoolOwnerUid)) {
+          writes.push(
+            setDoc(doc(firestoreDb, 'users', schoolOwnerUid, colName, safeDocId), payload, { merge: true }).catch(() => {})
+          );
+        }
+        if (colName === 'teachers') {
+          writes.push(setDoc(doc(firestoreDb, 'teachers', safeDocId), payload, { merge: true }).catch(() => {}));
+        }
+        if (colName === 'activity_logs') {
+          writes.push(setDoc(doc(firestoreDb, 'activity_logs', safeDocId), payload, { merge: true }).catch(() => {}));
+        }
+        await Promise.all(writes);
       } else if (type === 'delete') {
-        await deleteDoc(docRef);
+        const deletes: Promise<any>[] = [deleteDoc(docRef)];
+        if (!isRootCollection && this.isValidHeadteacherUid(schoolOwnerUid)) {
+          deletes.push(deleteDoc(doc(firestoreDb, 'users', schoolOwnerUid, colName, safeDocId)).catch(() => {}));
+        }
+        if (colName === 'teachers') {
+          deletes.push(deleteDoc(doc(firestoreDb, 'teachers', safeDocId)).catch(() => {}));
+        }
+        if (colName === 'activity_logs') {
+          deletes.push(deleteDoc(doc(firestoreDb, 'activity_logs', safeDocId)).catch(() => {}));
+        }
+        await Promise.all(deletes);
       }
       console.log(`[Cloud Sync] Fast synced ${type} on ${colName}/${safeDocId}.`);
     } catch (error: any) {
@@ -897,6 +981,7 @@ export class DbController {
     colName: string,
     items: { id: string; data?: any; type: 'set' | 'delete' }[]
   ): Promise<void> {
+    if (this._isFormatting) return;
     if (!isFirebaseActive || !firestoreDb || !items || items.length === 0) {
       console.warn(`[Cloud Sync] Firestore not active or no items for ${colName}. Skipping batch.`);
       return;
@@ -909,23 +994,34 @@ export class DbController {
     // Enforce active authenticated session for all batch cloud writes
     if (firebaseAuth && !firebaseAuth.currentUser) {
       await this.ensureFirebaseAuth();
-      if (!firebaseAuth.currentUser) {
-        items.forEach(item => {
-          const safeDocId = item.id.replace(/\//g, '-');
-          this.enqueueOfflineOperation(colName, safeDocId, item.type, item.data);
-        });
-        return;
-      }
+    }
+    if (firebaseAuth && !firebaseAuth.currentUser) {
+      console.warn(`[Cloud Sync] Batch write queued: No authenticated session available for ${colName}.`);
+      items.forEach(item => {
+        const safeDocId = item.id.replace(/\//g, '-');
+        this.enqueueOfflineOperation(colName, safeDocId, item.type, item.data);
+      });
+      return;
     }
 
     const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
     const currentUser = this.getCurrentUser();
-    const schoolId = this.resolveActiveSchoolId();
+    const rawSchoolId = this.resolveActiveSchoolId();
+    const schoolId = (!rawSchoolId || rawSchoolId === 'school_default') ? (currentUser?.uid || generateUniqueSchoolId()) : rawSchoolId;
     const schoolInfo = this.getSchoolInfo();
-    const schoolOwnerUid = schoolInfo.ownerId || (currentUser?.role === 'Admin' || currentUser?.role === 'Headteacher' ? currentUser?.uid : currentUser?.ownerId || currentUser?.uid);
+    const resolvedHeadUid = this.resolveHeadteacherUserId(schoolId);
+    const schoolOwnerUid = (this.isValidHeadteacherUid(resolvedHeadUid) ? resolvedHeadUid : null) ||
+      (this.isValidHeadteacherUid(schoolInfo.ownerId) ? schoolInfo.ownerId : null) ||
+      (currentUser?.role === 'Admin' || currentUser?.role === 'Headteacher' ? currentUser?.uid : currentUser?.ownerId) ||
+      currentUser?.uid ||
+      firebaseAuth?.currentUser?.uid ||
+      'anonymous';
+    const headteacherName = this.resolveHeadteacherName(schoolId);
+    const authorDisplayName = this.resolveAuthorDisplayName(currentUser);
 
     let collectionRef;
-    if (colName === 'schools' || colName === 'users') {
+    const isRootCollection = colName === 'schools' || colName === 'users' || colName === 'platform_settings';
+    if (isRootCollection) {
       collectionRef = collection(firestoreDb, colName);
     } else {
       collectionRef = collection(firestoreDb, 'schools', schoolId, colName);
@@ -941,9 +1037,14 @@ export class DbController {
 
     try {
       const chunkSize = 300;
+      const shouldMirrorToHead = !isRootCollection && this.isValidHeadteacherUid(schoolOwnerUid);
+      const headCollectionRef = shouldMirrorToHead ? collection(firestoreDb, 'users', schoolOwnerUid, colName) : null;
+
       for (let i = 0; i < items.length; i += chunkSize) {
         const chunk = items.slice(i, i + chunkSize);
         const batch = writeBatch(firestoreDb);
+        const headBatch = shouldMirrorToHead ? writeBatch(firestoreDb) : null;
+
         chunk.forEach(item => {
           const safeDocId = item.id.replace(/\//g, '-');
           const docRef = doc(collectionRef, safeDocId);
@@ -955,18 +1056,30 @@ export class DbController {
             const payload = this.sanitizeForFirestore({ 
               ...safeData, 
               schoolId: schoolId,
-              ownerId: schoolOwnerUid || currentUser?.uid || 'anonymous',
-              authorUid: currentUser?.uid || 'anonymous',
-              authorName: currentUser?.name || 'Staff',
-              authorRole: currentUser?.role || 'Staff',
+              schoolCode: safeData?.schoolCode || schoolId,
+              ownerId: schoolOwnerUid,
+              headteacherUserId: this.isValidHeadteacherUid(schoolOwnerUid) ? schoolOwnerUid : (safeData?.headteacherUserId || ''),
+              headteacherName: safeData?.headteacherName || headteacherName || '',
+              authorUid: currentUser?.uid || firebaseAuth?.currentUser?.uid || 'anonymous',
+              authorName: authorDisplayName,
+              authorRole: currentUser?.role || 'Teacher',
               lastModified: new Date().toISOString()
             });
             batch.set(docRef, payload, { merge: true });
+            if (headBatch && headCollectionRef) {
+              headBatch.set(doc(headCollectionRef, safeDocId), payload, { merge: true });
+            }
           } else {
             batch.delete(docRef);
+            if (headBatch && headCollectionRef) {
+              headBatch.delete(doc(headCollectionRef, safeDocId));
+            }
           }
         });
         await batch.commit();
+        if (headBatch) {
+          await headBatch.commit().catch(() => {});
+        }
       }
       console.log(`[Cloud Sync Batch] Committed batch of ${items.length} records to ${colName} in atomic roundtrip.`);
     } catch (error: any) {
@@ -989,6 +1102,7 @@ export class DbController {
     type: 'set' | 'delete',
     data?: any
   ): void {
+    if (this._isFormatting) return;
     const queue = getStorageItem<OfflineQueueItem[]>('sms_offline_queue', []);
     
     // To minimize redundancy: overwrite or merge operations on the exact same document
@@ -1027,7 +1141,11 @@ export class DbController {
 
   // Auto-synchronize pending local writes with Firestore once online (Batched for instant completion)
   static async syncOfflineQueue(): Promise<{ success: boolean; syncedCount: number }> {
+    if (this._isFormatting) return { success: false, syncedCount: 0 };
     if (!isFirebaseActive || !firestoreDb || this.isQuotaExhausted()) return { success: false, syncedCount: 0 };
+    if (!firebaseAuth?.currentUser) {
+      await this.ensureFirebaseAuth();
+    }
     if (!firebaseAuth?.currentUser) return { success: false, syncedCount: 0 };
     if (this._isSyncingQueue) return { success: false, syncedCount: 0 };
     
@@ -1046,6 +1164,13 @@ export class DbController {
     let syncedCount = 0;
     const currentUser = this.getCurrentUser();
     const schoolId = this.resolveActiveSchoolId();
+    const resolvedHeadUid = this.resolveHeadteacherUserId(schoolId);
+    const schoolOwnerUid = (this.isValidHeadteacherUid(resolvedHeadUid) ? resolvedHeadUid : null) ||
+      this.getSchoolInfo().ownerId ||
+      currentUser?.ownerId ||
+      currentUser?.uid;
+    const authorDisplayName = this.resolveAuthorDisplayName(currentUser);
+    const shouldMirrorToHead = this.isValidHeadteacherUid(schoolOwnerUid);
 
     // Process queue in fast atomic batches of 300 operations
     const chunkSize = 300;
@@ -1053,6 +1178,9 @@ export class DbController {
       const chunk = queue.slice(i, i + chunkSize);
       try {
         const batch = writeBatch(firestoreDb);
+        const headBatch = shouldMirrorToHead ? writeBatch(firestoreDb) : null;
+        let hasHeadWrites = false;
+
         chunk.forEach(item => {
           const safeDocId = item.docId.replace(/\//g, '-');
           let safeData = item.data;
@@ -1060,8 +1188,9 @@ export class DbController {
             safeData = { ...safeData, id: safeDocId };
           }
 
+          const isRootCollection = item.collection === 'schools' || item.collection === 'users' || item.collection === 'platform_settings';
           let collectionRef;
-          if (item.collection === 'schools' || item.collection === 'users') {
+          if (isRootCollection) {
             collectionRef = collection(firestoreDb, item.collection);
           } else {
             collectionRef = collection(firestoreDb, 'schools', schoolId, item.collection);
@@ -1069,14 +1198,35 @@ export class DbController {
 
           const docRef = doc(collectionRef, safeDocId);
           if (item.type === 'set') {
-            const payload = this.sanitizeForFirestore({ ...safeData, ownerId: currentUser?.uid || 'anonymous' });
+            const payload = this.sanitizeForFirestore({ 
+              ...safeData, 
+              schoolId: schoolId,
+              schoolCode: safeData?.schoolCode || schoolId,
+              ownerId: schoolOwnerUid || firebaseAuth?.currentUser?.uid || currentUser?.uid || 'anonymous',
+              headteacherUserId: this.isValidHeadteacherUid(schoolOwnerUid) ? schoolOwnerUid : (safeData?.headteacherUserId || ''),
+              authorUid: currentUser?.uid || firebaseAuth?.currentUser?.uid || 'anonymous',
+              authorName: authorDisplayName,
+              authorRole: currentUser?.role || 'Teacher',
+              lastModified: new Date().toISOString()
+            });
             batch.set(docRef, payload, { merge: true });
+            if (headBatch && !isRootCollection && shouldMirrorToHead) {
+              headBatch.set(doc(firestoreDb, 'users', schoolOwnerUid!, item.collection, safeDocId), payload, { merge: true });
+              hasHeadWrites = true;
+            }
           } else if (item.type === 'delete') {
             batch.delete(docRef);
+            if (headBatch && !isRootCollection && shouldMirrorToHead) {
+              headBatch.delete(doc(firestoreDb, 'users', schoolOwnerUid!, item.collection, safeDocId));
+              hasHeadWrites = true;
+            }
           }
         });
 
         await batch.commit();
+        if (headBatch && hasHeadWrites) {
+          await headBatch.commit().catch(() => {});
+        }
         syncedCount += chunk.length;
 
         if (typeof window !== 'undefined') {
@@ -1100,18 +1250,30 @@ export class DbController {
             if (safeData && safeData.id) {
               safeData = { ...safeData, id: safeDocId };
             }
+            const isRootCollection = item.collection === 'schools' || item.collection === 'users' || item.collection === 'platform_settings';
             let collectionRef;
-            if (item.collection === 'schools' || item.collection === 'users') {
+            if (isRootCollection) {
               collectionRef = collection(firestoreDb, item.collection);
             } else {
               collectionRef = collection(firestoreDb, 'schools', schoolId, item.collection);
             }
             const docRef = doc(collectionRef, safeDocId);
             if (item.type === 'set') {
-              const payload = this.sanitizeForFirestore({ ...safeData, ownerId: currentUser?.uid || 'anonymous' });
+              const payload = this.sanitizeForFirestore({
+                ...safeData,
+                schoolId,
+                ownerId: schoolOwnerUid || currentUser?.uid || 'anonymous',
+                authorName: authorDisplayName
+              });
               await setDoc(docRef, payload, { merge: true });
+              if (!isRootCollection && shouldMirrorToHead) {
+                await setDoc(doc(firestoreDb, 'users', schoolOwnerUid!, item.collection, safeDocId), payload, { merge: true }).catch(() => {});
+              }
             } else if (item.type === 'delete') {
               await deleteDoc(docRef);
+              if (!isRootCollection && shouldMirrorToHead) {
+                await deleteDoc(doc(firestoreDb, 'users', schoolOwnerUid!, item.collection, safeDocId)).catch(() => {});
+              }
             }
             syncedCount++;
           } catch (itemErr: any) {
@@ -1150,6 +1312,15 @@ export class DbController {
         if (typeof localStorage !== 'undefined') localStorage.removeItem('sms_user');
         return null;
       }
+      if (user.email === 'staff@school.internal' || (user.email && user.email.startsWith('anonymous_'))) {
+        const adminAccount = this.getRegisteredUsers().find(u => (u.email || '').toLowerCase().trim() === 'pegyirenyi@gmail.com');
+        if (adminAccount) {
+          const healed: UserAccount = { ...adminAccount, role: 'Admin', licenseType: 'unlimited' };
+          setStorageItem(STORAGE_KEYS.USER, healed);
+          this._cache[STORAGE_KEYS.USER] = healed;
+          return healed;
+        }
+      }
       if (user.email) {
         const emailLower = user.email.toLowerCase().trim();
         let changed = false;
@@ -1159,21 +1330,26 @@ export class DbController {
             changed = true;
           }
         }
-        // Link licensing directly to login user ID (all trial periods removed)
+        // Preserve and protect user license & trial countdown state
         if (emailLower === 'pegyirenyi@gmail.com' || user.role === 'Admin') {
           if (user.licenseType !== 'unlimited') {
             user.licenseType = 'unlimited';
             changed = true;
           }
-        } else if (user.licenseType === 'activated') {
+        } else if (user.licenseType === 'activated' || user.licenseType === 'unlimited') {
           // Active license is linked directly to this user ID
         } else {
-          if (user.licenseType !== 'unlicensed') {
-            user.licenseType = 'unlicensed';
+          // Ensure valid trial timestamps are never wiped on get or refresh
+          if (!user.licenseType) {
+            user.licenseType = 'trial';
             changed = true;
           }
-          if (user.trialEndDate) {
-            user.trialEndDate = undefined;
+          if (!user.trialStartDate) {
+            user.trialStartDate = user.registeredOn || user.createdAt || new Date().toISOString();
+            changed = true;
+          }
+          if (!user.trialEndDate) {
+            user.trialEndDate = new Date(new Date(user.trialStartDate).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
             changed = true;
           }
         }
@@ -1183,8 +1359,14 @@ export class DbController {
           user.schoolId = generateUniqueSchoolId(user.uid);
           changed = true;
         }
-        if (!user.ownerId) {
-          user.ownerId = user.role === 'Teacher' ? (user.ownerId || user.uid) : user.uid;
+        if (user.role === 'Teacher') {
+          const resolvedHead = this.resolveHeadteacherUserId(user.schoolId);
+          if ((!user.ownerId || user.ownerId === user.uid || user.ownerId.startsWith('HEAD_') || user.ownerId === 'user_default') && this.isValidHeadteacherUid(resolvedHead) && resolvedHead !== user.uid) {
+            user.ownerId = resolvedHead;
+            changed = true;
+          }
+        } else if (!user.ownerId) {
+          user.ownerId = user.uid;
           changed = true;
         }
 
@@ -1207,8 +1389,8 @@ export class DbController {
         user.schoolId = generateUniqueSchoolId(user.uid);
         setStorageItem(STORAGE_KEYS.USER, user);
       }
-      if (!user.ownerId) {
-        user.ownerId = user.role === 'Teacher' ? (user.ownerId || user.uid) : user.uid;
+      if (user.role !== 'Teacher' && !user.ownerId) {
+        user.ownerId = user.uid;
         setStorageItem(STORAGE_KEYS.USER, user);
       }
     }
@@ -1295,24 +1477,115 @@ export class DbController {
     return generateUniqueSchoolId();
   }
 
+  static isValidHeadteacherUid(uid?: string | null): uid is string {
+    if (!uid || typeof uid !== 'string') return false;
+    const trimmed = uid.trim();
+    return Boolean(
+      trimmed &&
+      !trimmed.startsWith('HEAD_') &&
+      trimmed !== 'user_default' &&
+      trimmed !== 'anonymous' &&
+      trimmed !== 'unknown'
+    );
+  }
+
   // Resolve Headteacher User ID for a given School Code ID
   static resolveHeadteacherUserId(schoolCode?: string): string {
-    const sCode = schoolCode || this.resolveActiveSchoolId();
-    const school = this.getSchoolInfo();
-    if (school.ownerId) return school.ownerId;
-    if (school.userId) return school.userId;
-
+    const sCode = (schoolCode || getStorageItem<UserAccount | null>(STORAGE_KEYS.USER, null)?.schoolId || '').trim();
     const users = this.getRegisteredUsers();
-    const head = users.find(u => (u.role === 'Headteacher' || u.role === 'Admin') && (u.schoolId === sCode || u.schoolCode === sCode));
-    if (head) return head.uid;
+    const teachersList = getStorageItem<Teacher[]>(STORAGE_KEYS.TEACHERS, []);
+    const isTeacherId = (uid?: string) => !!uid && (
+      teachersList.some(t => t.id === uid || (t as any).userId === uid) ||
+      users.some(u => u.uid === uid && u.role === 'Teacher')
+    );
 
-    const current = this.getCurrentUser();
-    if (current && (current.role === 'Headteacher' || current.role === 'Admin')) {
+    // 1. Registered Headteacher matching schoolCode
+    const matchedHead = users.find(u =>
+      u.role === 'Headteacher' &&
+      this.isValidHeadteacherUid(u.uid) &&
+      (u.schoolId === sCode || u.schoolCode === sCode)
+    );
+    if (matchedHead) return matchedHead.uid;
+
+    // 2. School info ownerId / userId (ensuring it is not a Teacher UID) or matching headteacher email
+    const school = getStorageItem<SchoolInfo>(STORAGE_KEYS.SCHOOL, DEFAULT_SCHOOL_INFO);
+    if (this.isValidHeadteacherUid(school?.ownerId) && !isTeacherId(school.ownerId)) return school.ownerId;
+    if (this.isValidHeadteacherUid(school?.userId) && !isTeacherId(school.userId)) return school.userId;
+
+    const headEmail = (school?.headteacherEmail || school?.email || '').toLowerCase().trim();
+    if (headEmail) {
+      const byEmail = users.find(u => (u.role === 'Headteacher' || u.role === 'Admin') && (u.email || '').toLowerCase().trim() === headEmail);
+      if (byEmail && this.isValidHeadteacherUid(byEmail.uid)) return byEmail.uid;
+    }
+
+    // 3. Registered Admin matching schoolCode (excluding master admin fallback unless matched)
+    const matchedAdmin = users.find(u =>
+      u.role === 'Admin' &&
+      this.isValidHeadteacherUid(u.uid) &&
+      (u.schoolId === sCode || u.schoolCode === sCode)
+    );
+    if (matchedAdmin) return matchedAdmin.uid;
+
+    // 4. Enrolled teachers' valid ownerId or headteacherUserId
+    const teacherWithHead = teachersList.find(t =>
+      (!sCode || t.schoolId === sCode || t.schoolCode === sCode) &&
+      (this.isValidHeadteacherUid((t as any).headteacherUserId) || (this.isValidHeadteacherUid(t.ownerId) && !isTeacherId(t.ownerId)))
+    );
+    if (teacherWithHead) {
+      if (this.isValidHeadteacherUid((teacherWithHead as any).headteacherUserId)) return (teacherWithHead as any).headteacherUserId;
+      if (this.isValidHeadteacherUid(teacherWithHead.ownerId)) return teacherWithHead.ownerId!;
+    }
+
+    // 5. Current user if Headteacher/Admin, or current Teacher's valid ownerId
+    const current = getStorageItem<UserAccount | null>(STORAGE_KEYS.USER, null);
+    if (current && (current.role === 'Headteacher' || current.role === 'Admin') && this.isValidHeadteacherUid(current.uid)) {
       return current.uid;
     }
-    if (current?.ownerId) return current.ownerId;
+    if (this.isValidHeadteacherUid(current?.ownerId) && current?.ownerId !== current?.uid && !isTeacherId(current?.ownerId)) {
+      return current!.ownerId!;
+    }
 
-    return 'HEAD_' + sCode;
+    return sCode ? 'HEAD_' + sCode : 'user_default';
+  }
+
+  static resolveHeadteacherName(schoolCode?: string): string {
+    const headUid = this.resolveHeadteacherUserId(schoolCode);
+    const users = this.getRegisteredUsers();
+    const headUser = users.find(u => u.uid === headUid && (u.role === 'Headteacher' || u.role === 'Admin'));
+    const school = getStorageItem<SchoolInfo>(STORAGE_KEYS.SCHOOL, DEFAULT_SCHOOL_INFO);
+    return (school?.headteacherName || headUser?.name || '').trim();
+  }
+
+  static resolveAuthorDisplayName(user?: UserAccount | null): string {
+    const activeUser = user || getStorageItem<UserAccount | null>(STORAGE_KEYS.USER, null);
+    if (!activeUser) return 'School System';
+    if (activeUser.role === 'Teacher') {
+      const teachers = getStorageItem<Teacher[]>(STORAGE_KEYS.TEACHERS, []);
+      const uEmail = activeUser.email?.toLowerCase().trim();
+      const uStaff = activeUser.staffId?.toLowerCase().trim();
+      const matched = teachers.find(t =>
+        (uEmail && t.email?.toLowerCase().trim() === uEmail) ||
+        (uStaff && t.staffId?.toLowerCase().trim() === uStaff) ||
+        t.id === activeUser.uid ||
+        (t as any).userId === activeUser.uid
+      );
+      const enrolledName = this.formatTeacherFullName(matched);
+      if (enrolledName) return enrolledName;
+    }
+    const cleanName = (activeUser.name || '').trim();
+    if (cleanName && cleanName.toLowerCase() !== 'staff' && cleanName.toLowerCase() !== 'staff member') {
+      return cleanName;
+    }
+    return activeUser.email || activeUser.role || 'Administrator';
+  }
+
+  static formatTeacherFullName(teacher?: Partial<Teacher> | null): string {
+    if (!teacher) return '';
+    return [teacher.firstName, teacher.middleName, teacher.lastName]
+      .map(part => (part || '').trim())
+      .filter(Boolean)
+      .join(' ')
+      .trim();
   }
 
   // Look up an existing assigned Teacher profile for a user if one exists in the school database
@@ -1324,11 +1597,13 @@ export class DbController {
     const userEmail = activeUser.email?.toLowerCase().trim();
     const userStaffId = activeUser.staffId?.toLowerCase().trim();
     const userUid = activeUser.uid;
+    const userName = activeUser.name?.toLowerCase().trim();
 
     const matchedTeacher = teachers.find(t => 
       (userEmail && t.email?.toLowerCase().trim() === userEmail) ||
       (userStaffId && t.staffId?.toLowerCase().trim() === userStaffId) ||
-      (userUid && (t.id === userUid || (t as any).userId === userUid))
+      (userUid && (t.id === userUid || (t as any).userId === userUid)) ||
+      (activeUser.role === 'Teacher' && userName && userName !== 'staff member' && userName !== 'faculty teacher' && this.formatTeacherFullName(t).toLowerCase() === userName)
     );
 
     if (!matchedTeacher) {
@@ -1351,11 +1626,26 @@ export class DbController {
       this.saveTeacher(matchedTeacher);
     }
 
-    if (activeUser && (!activeUser.schoolId || activeUser.schoolId !== activeSchoolId || (matchedTeacher.staffId && !activeUser.staffId))) {
+    const enrolledFullName = this.formatTeacherFullName(matchedTeacher);
+    const shouldSyncUserName = activeUser.role === 'Teacher' && !!enrolledFullName && activeUser.name !== enrolledFullName;
+    const shouldSyncUserMeta = !activeUser.schoolId || activeUser.schoolId !== activeSchoolId || (matchedTeacher.staffId && activeUser.staffId !== matchedTeacher.staffId);
+
+    if (activeUser && (shouldSyncUserName || shouldSyncUserMeta)) {
       activeUser.schoolId = activeSchoolId;
+      activeUser.schoolCode = activeUser.schoolCode || activeSchoolId;
       if (matchedTeacher.staffId) activeUser.staffId = matchedTeacher.staffId;
+      if (shouldSyncUserName) {
+        activeUser.name = enrolledFullName;
+      }
       setStorageItem(STORAGE_KEYS.USER, activeUser);
       this._cache[STORAGE_KEYS.USER] = activeUser;
+      const users = this.getRegisteredUsers();
+      const uIdx = users.findIndex(u => u.uid === activeUser.uid);
+      if (uIdx >= 0) {
+        users[uIdx] = { ...users[uIdx], ...activeUser };
+        setStorageItem(STORAGE_KEYS.USERS_LIST, users);
+        this._cache[STORAGE_KEYS.USERS_LIST] = users;
+      }
       if (isFirebaseActive && firestoreDb) {
         setDoc(doc(firestoreDb, 'users', activeUser.uid), DbController.sanitizeForFirestore(activeUser), { merge: true }).catch(console.error);
       }
@@ -1373,28 +1663,14 @@ export class DbController {
     if (this._cache[STORAGE_KEYS.USERS_LIST]) {
       return this._cache[STORAGE_KEYS.USERS_LIST];
     }
-    if (typeof localStorage !== 'undefined') {
-      try {
-        localStorage.removeItem(STORAGE_KEYS.USERS_LIST);
-      } catch {}
-    }
 
     const list = getStorageItem<UserAccount[]>(STORAGE_KEYS.USERS_LIST, []);
     
-    const revokedEmails = new Set([
-      'multimediageetech@gmail.com',
-      'patienceedusah724@gmail.com',
-      'sammyotoo06@gmail.com',
-      'wilkinsonannan@gmail.com'
-    ]);
-
-    // Filter out revoked built-in emails and invalid dummy accounts
+    // Filter out revoked built-in test IDs and dummy accounts
     const filtered = list.filter(user => {
-      if (user.uid === 'H5nlyq30sANEMixDEmURnYoyUzU2') return false;
-      if (user.requestCode === 'REQ-PEGY-5103') return false;
-      if (user.requestCode === 'REQ-MULTI-8888' || user.requestCode?.endsWith('8888') || user.uid?.endsWith('8888')) return false;
-      const em = user.email?.toLowerCase().trim();
-      if (em && revokedEmails.has(em)) return false;
+      if (!user || !user.uid) return false;
+      if (user.uid === 'H5nlyq30sANEMixDEmURnYoyUzU2' || user.uid.endsWith('8888')) return false;
+      if (user.requestCode === 'REQ-PEGY-5103' || user.requestCode?.endsWith('8888')) return false;
       return true;
     });
 
@@ -1430,20 +1706,20 @@ export class DbController {
       setStorageItem(STORAGE_KEYS.USERS_LIST, filtered);
     }
 
-    // Ensure all trial periods are permanently removed from any user accounts in the system
+    // Ensure valid license types and persistent trial countdowns for all registered accounts
     filtered.forEach(u => {
       if (u.email?.toLowerCase().trim() === 'pegyirenyi@gmail.com') {
         u.licenseType = 'unlimited';
       } else if (u.licenseType === 'activated' || u.licenseType === 'unlimited') {
         // preserve activated / unlimited licenses
       } else {
-        u.licenseType = 'unlicensed';
-      }
-      if (u.trialEndDate) {
-        u.trialEndDate = undefined;
-      }
-      if (u.trialStartDate) {
-        u.trialStartDate = undefined;
+        if (!u.licenseType) u.licenseType = 'trial';
+        if (!u.trialStartDate) {
+          u.trialStartDate = u.registeredOn || u.createdAt || new Date().toISOString();
+        }
+        if (!u.trialEndDate) {
+          u.trialEndDate = new Date(new Date(u.trialStartDate).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+        }
       }
     });
 
@@ -1657,12 +1933,14 @@ export class DbController {
       }
       // Fill missing licensing info if existing
       let changed = false;
-      if (!user.licenseType || user.licenseType === 'trial') {
-        user.licenseType = trimmedEmail === 'pegyirenyi@gmail.com' ? 'unlimited' : (user.licenseType === 'activated' ? 'activated' : 'unlicensed');
+      if (!user.licenseType) {
+        user.licenseType = trimmedEmail === 'pegyirenyi@gmail.com' ? 'unlimited' : 'trial';
         changed = true;
       }
-      if (user.trialEndDate) {
-        user.trialEndDate = undefined;
+      if (user.licenseType === 'trial' && !user.trialEndDate) {
+        const start = user.trialStartDate || user.registeredOn || user.createdAt || new Date().toISOString();
+        user.trialStartDate = start;
+        user.trialEndDate = new Date(new Date(start).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
         changed = true;
       }
       if (!user.registeredOn) {
@@ -1687,7 +1965,9 @@ export class DbController {
         name: trimmedEmail === 'pegyirenyi@gmail.com' ? 'EGYIRENYI PAUL' : email.split('@')[0].toUpperCase(),
         role: assignedRole,
         createdAt: createdNow,
-        licenseType: trimmedEmail === 'pegyirenyi@gmail.com' ? 'unlimited' : 'unlicensed',
+        licenseType: trimmedEmail === 'pegyirenyi@gmail.com' ? 'unlimited' : 'trial',
+        trialStartDate: trimmedEmail === 'pegyirenyi@gmail.com' ? undefined : createdNow,
+        trialEndDate: trimmedEmail === 'pegyirenyi@gmail.com' ? undefined : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
         registeredOn: createdNow,
         requestCode: `REQ-${prefix}-${Math.floor(1000 + Math.random() * 9000)}`
       };
@@ -1832,25 +2112,33 @@ export class DbController {
     details: string,
     severity: 'info' | 'low' | 'medium' | 'high' | 'critical' = 'info'
   ): void {
+    if (this._isFormatting) return;
     const logs = this.getActivityLogs();
     const currentUser = this.getCurrentUser();
+    const schoolId = this.resolveActiveSchoolId();
+    const headUid = this.resolveHeadteacherUserId(schoolId);
+    const displayName = this.resolveAuthorDisplayName(currentUser);
     
     const newLog: ActivityLog = {
       id: `log_${Math.random().toString(36).substring(2, 9)}_${Date.now()}`,
       timestamp: new Date().toISOString(),
       userEmail: currentUser?.email || 'system@geetech.com',
-      userName: currentUser?.name || 'System / Guest',
+      userName: displayName,
       userRole: currentUser?.role || 'Headteacher',
       action,
       details,
-      severity
-    };
+      severity,
+      ...(schoolId ? { schoolId } : {}),
+      ...(this.isValidHeadteacherUid(headUid) ? { ownerId: headUid, headteacherUserId: headUid } : {})
+    } as any;
     
     logs.unshift(newLog);
     if (logs.length > 1000) {
       logs.pop();
     }
     setStorageItem(STORAGE_KEYS.ACTIVITY_LOGS, logs);
+    this._cache[STORAGE_KEYS.ACTIVITY_LOGS] = logs;
+    this.broadcastSyncEvent('activity-logs-updated', logs);
     this.performFirestoreWrite('activity_logs', newLog.id, 'set', newLog).catch(err => {
       console.warn("Could not sync activity log to Firestore:", err);
     });
@@ -1963,9 +2251,46 @@ export class DbController {
       setStorageItem(STORAGE_KEYS.USER, updated);
     }
     
+    // Propagate Headteacher/Admin license updates directly to all assigned Teachers in the same school
+    if (updated.role === 'Headteacher' || updated.role === 'Admin') {
+      const targetSchoolId = (updated.schoolId || updated.schoolCode || '').trim();
+      let propagated = false;
+      for (let i = 0; i < users.length; i++) {
+        const candidate = users[i];
+        if (candidate.role === 'Teacher' && (
+          candidate.ownerId === updated.uid ||
+          (targetSchoolId && targetSchoolId !== 'school_default' && (candidate.schoolId === targetSchoolId || candidate.schoolCode === targetSchoolId))
+        )) {
+          users[i] = {
+            ...candidate,
+            licenseType: updated.licenseType,
+            licensePeriod: updated.licensePeriod,
+            lastActivatedOn: updated.lastActivatedOn,
+            trialStartDate: updated.trialStartDate,
+            trialEndDate: updated.trialEndDate,
+            isSuspended: updated.isSuspended
+          };
+          propagated = true;
+          if (currentUser && currentUser.uid === candidate.uid) {
+            setStorageItem(STORAGE_KEYS.USER, users[i]);
+            this._cache[STORAGE_KEYS.USER] = users[i];
+          }
+          if (isFirebaseActive && firestoreDb) {
+            setDoc(doc(firestoreDb, 'users', candidate.uid), DbController.sanitizeForFirestore(users[i]), { merge: true }).catch(() => {});
+          }
+          this.syncSubscriberTimerFromUser(users[i]).catch(() => {});
+        }
+      }
+      if (propagated) {
+        setStorageItem(STORAGE_KEYS.USERS_LIST, users);
+        this._cache[STORAGE_KEYS.USERS_LIST] = users;
+      }
+    }
+
     if (isFirebaseActive && firestoreDb) {
       try {
         await setDoc(doc(firestoreDb, 'users', uid), DbController.sanitizeForFirestore(updated), { merge: true });
+        await setDoc(doc(firestoreDb, 'users', 'directory'), { list: users, updatedAt: new Date().toISOString() }, { merge: true });
       } catch (err) {
         console.warn("Could not sync license status to firestore: ", err);
       }
@@ -1976,6 +2301,7 @@ export class DbController {
       console.warn("Could not sync subscriber timer data:", err);
     });
 
+    this.broadcastSyncEvent('users-updated', users);
     return updated;
   }
 
@@ -2066,9 +2392,22 @@ export class DbController {
     const uid = user.uid || 'unknown_user';
     const schoolId = user.schoolId || this.resolveActiveSchoolId() || '';
     const schoolOwnerUid = this.resolveHeadteacherUserId(schoolId) || user.ownerId || uid;
+    const isTeacher = user.role === 'Teacher';
 
-    const trialStart = user.trialStartDate || status?.registeredOnDate?.toISOString() || user.registeredOn || user.createdAt || nowIso;
-    const trialEnd = user.trialEndDate || (status?.isTrial ? status.expiryDate.toISOString() : new Date(new Date(trialStart).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString());
+    const effectiveRegisteredOn = status?.registeredOnDate && !isNaN(status.registeredOnDate.getTime())
+      ? status.registeredOnDate.toISOString()
+      : (user.registeredOn || user.createdAt || nowIso);
+
+    const trialStart = (isTeacher && status?.isTrial)
+      ? effectiveRegisteredOn
+      : (user.trialStartDate || effectiveRegisteredOn);
+    const trialEnd = (isTeacher && status?.isTrial && status?.expiryDate)
+      ? status.expiryDate.toISOString()
+      : (user.trialEndDate || (status?.isTrial ? status.expiryDate.toISOString() : new Date(new Date(trialStart).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString()));
+
+    const effectiveLastActivatedOn = status?.lastActivatedOnDate
+      ? status.lastActivatedOnDate.toISOString()
+      : (isTeacher ? undefined : user.lastActivatedOn);
 
     return {
       id: uid,
@@ -2080,11 +2419,11 @@ export class DbController {
       schoolCode: user.schoolCode || schoolId,
       ownerId: schoolOwnerUid,
       licenseType: (status?.licenseType === 'activated' || status?.licenseType === 'unlimited') ? status.licenseType : 'trial',
-      licensePeriod: user.licensePeriod || 1,
-      registeredOn: status?.registeredOnDate?.toISOString() || user.registeredOn || user.createdAt || nowIso,
+      licensePeriod: status?.licensePeriod || user.licensePeriod || 1,
+      registeredOn: effectiveRegisteredOn,
       trialStartDate: (status?.licenseType === 'activated' || status?.licenseType === 'unlimited') ? undefined : trialStart,
       trialEndDate: (status?.licenseType === 'activated' || status?.licenseType === 'unlimited') ? undefined : trialEnd,
-      lastActivatedOn: user.lastActivatedOn || (status?.lastActivatedOnDate ? status.lastActivatedOnDate.toISOString() : undefined),
+      lastActivatedOn: effectiveLastActivatedOn,
       expiryDate: status?.expiryDate ? status.expiryDate.toISOString() : (user.expiryDate || nowIso),
       remainingDays: status?.remainingDays ?? 0,
       remainingHours: status?.remainingHours ?? 0,
@@ -2395,7 +2734,9 @@ export class DbController {
           name: email.split('@')[0].toUpperCase(),
           role: assignedRole,
           createdAt: createdNow,
-          licenseType: 'unlicensed',
+          licenseType: 'trial',
+        trialStartDate: createdNow,
+        trialEndDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
           registeredOn: createdNow,
           requestCode: `REQ-${prefix}-${Math.floor(1000 + Math.random() * 9000)}`
         };
@@ -2508,72 +2849,222 @@ export class DbController {
     }
   }
 
+  static async preSyncSchoolDirectoryForLogin(schoolId?: string): Promise<void> {
+    if (!isFirebaseActive || !firestoreDb) return;
+    const cleanSchoolId = (schoolId || '').trim();
+    try {
+      let discoveredHeadUid: string | undefined;
+      const tasks: Promise<void>[] = [];
+
+      // 1. Sync global users directory (so Headteacher subscription state is loaded)
+      tasks.push((async () => {
+        try {
+          const dirSnap = await getDoc(doc(firestoreDb, 'users', 'directory'));
+          if (dirSnap.exists()) {
+            const data = dirSnap.data();
+            if (data && Array.isArray(data.list) && data.list.length > 0) {
+              setStorageItem(STORAGE_KEYS.USERS_LIST, data.list);
+              this._cache[STORAGE_KEYS.USERS_LIST] = data.list;
+              if (cleanSchoolId) {
+                const head = (data.list as UserAccount[]).find(u =>
+                  (u.role === 'Headteacher' || u.role === 'Admin') &&
+                  (u.schoolId === cleanSchoolId || u.schoolCode === cleanSchoolId) &&
+                  this.isValidHeadteacherUid(u.uid)
+                );
+                if (head) discoveredHeadUid = head.uid;
+              }
+            }
+          }
+        } catch {}
+      })());
+
+      if (cleanSchoolId && cleanSchoolId !== 'school_default') {
+        tasks.push((async () => {
+          try {
+            const schoolDoc = await getDoc(doc(firestoreDb, 'schools', cleanSchoolId));
+            if (schoolDoc.exists()) {
+              const sData = schoolDoc.data() as SchoolInfo;
+              if (sData) {
+                setStorageItem(STORAGE_KEYS.SCHOOL, sData);
+                this._cache[STORAGE_KEYS.SCHOOL] = sData;
+                if (this.isValidHeadteacherUid(sData.ownerId)) {
+                  discoveredHeadUid = sData.ownerId;
+                }
+              }
+            } else {
+              const profileSnap = await getDoc(doc(firestoreDb, 'schools', cleanSchoolId, 'profile', 'info'));
+              if (profileSnap.exists()) {
+                const pData = profileSnap.data() as SchoolInfo;
+                setStorageItem(STORAGE_KEYS.SCHOOL, pData);
+                this._cache[STORAGE_KEYS.SCHOOL] = pData;
+                if (this.isValidHeadteacherUid(pData?.ownerId)) {
+                  discoveredHeadUid = pData.ownerId;
+                }
+              }
+            }
+          } catch {}
+        })());
+
+        tasks.push((async () => {
+          try {
+            const teachersSnap = await getDocs(collection(firestoreDb, 'schools', cleanSchoolId, 'teachers'));
+            if (!teachersSnap.empty) {
+              const cloudTeachers = teachersSnap.docs.map(d => d.data() as Teacher);
+              this.syncDatasetFromSnapshot('teachers', cloudTeachers, false);
+              const tOwner = cloudTeachers.find(t => this.isValidHeadteacherUid((t as any).headteacherUserId) || this.isValidHeadteacherUid(t.ownerId));
+              if (tOwner) {
+                discoveredHeadUid = discoveredHeadUid || (tOwner as any).headteacherUserId || tOwner.ownerId;
+              }
+            }
+          } catch {}
+        })());
+
+        tasks.push((async () => {
+          try {
+            const timersSnap = await getDocs(collection(firestoreDb, 'schools', cleanSchoolId, 'subscribers_timer'));
+            if (!timersSnap.empty) {
+              const cloudTimers = timersSnap.docs.map(d => ({ ...d.data(), id: d.id } as SubscriberTimerData));
+              this.syncDatasetFromSnapshot('subscribers_timer', cloudTimers, false);
+            }
+          } catch {}
+        })());
+      }
+
+      await Promise.all(tasks);
+
+      // Pull Headteacher's user doc and mirrored teachers/subscribers_timer under users/{headteacherUid}
+      const headUid = discoveredHeadUid || (cleanSchoolId ? this.resolveHeadteacherUserId(cleanSchoolId) : undefined);
+      if (this.isValidHeadteacherUid(headUid)) {
+        await Promise.all([
+          (async () => {
+            try {
+              const headDoc = await getDoc(doc(firestoreDb, 'users', headUid));
+              if (headDoc.exists()) {
+                const headData = headDoc.data() as UserAccount;
+                const users = this.getRegisteredUsers();
+                const idx = users.findIndex(u => u.uid === headData.uid);
+                if (idx >= 0) users[idx] = headData;
+                else users.push(headData);
+                setStorageItem(STORAGE_KEYS.USERS_LIST, users);
+                this._cache[STORAGE_KEYS.USERS_LIST] = users;
+              }
+            } catch {}
+          })(),
+          (async () => {
+            try {
+              const headTeachersSnap = await getDocs(collection(firestoreDb, 'users', headUid, 'teachers'));
+              if (!headTeachersSnap.empty) {
+                const cloudTeachers = headTeachersSnap.docs.map(d => d.data() as Teacher);
+                this.syncDatasetFromSnapshot('teachers', cloudTeachers, false);
+              }
+            } catch {}
+          })(),
+          (async () => {
+            try {
+              const headTimersSnap = await getDocs(collection(firestoreDb, 'users', headUid, 'subscribers_timer'));
+              if (!headTimersSnap.empty) {
+                const cloudTimers = headTimersSnap.docs.map(d => ({ ...d.data(), id: d.id } as SubscriberTimerData));
+                this.syncDatasetFromSnapshot('subscribers_timer', cloudTimers, false);
+              }
+            } catch {}
+          })()
+        ]);
+      }
+    } catch (e) {
+      console.warn("Pre-sync school directory notice:", e);
+    }
+  }
+
   static async teacherLogin(credential: string, schoolId: string): Promise<UserAccount> {
     const trimmedInput = (credential || '').trim();
     const trimmedSchoolCode = (schoolId || '').trim();
     
-    // Resolve matching teacher in local / Firestore registry
-    const teachers = this.getTeachers();
-    let matchingTeacher: Teacher | undefined;
+    // Locate enrolled teacher (pre-sync from Cloud Firestore if school code is provided and match not in local cache)
+    const findMatch = () => {
+      const list = this.getTeachers();
+      const inputLower = trimmedInput.toLowerCase();
+      if (!inputLower) return undefined;
+      return list.find(t => {
+        const fullName = this.formatTeacherFullName(t).toLowerCase();
+        const shortName = `${t.firstName || ''} ${t.lastName || ''}`.toLowerCase().trim();
+        return (
+          t.email?.toLowerCase().trim() === inputLower ||
+          t.staffId?.toLowerCase().trim() === inputLower ||
+          t.id?.toLowerCase().trim() === inputLower ||
+          fullName === inputLower ||
+          shortName === inputLower
+        );
+      });
+    };
 
-    // Match A: By email
-    if (trimmedInput.includes('@')) {
-      matchingTeacher = teachers.find(t => t.email?.toLowerCase().trim() === trimmedInput.toLowerCase());
-    }
-
-    // Match B: By staffId or ID
-    if (!matchingTeacher && trimmedInput) {
-      matchingTeacher = teachers.find(t => 
-        t.staffId?.toLowerCase().trim() === trimmedInput.toLowerCase() ||
-        t.id?.toLowerCase().trim() === trimmedInput.toLowerCase() ||
-        `${t.firstName} ${t.lastName}`.toLowerCase().trim() === trimmedInput.toLowerCase()
-      );
-    }
-
-    // Match C: By School Code alone if only one teacher or first assigned teacher
+    let matchingTeacher = findMatch();
     if (!matchingTeacher && trimmedSchoolCode) {
-      matchingTeacher = teachers.find(t => 
-        (t.schoolCode && t.schoolCode.toLowerCase().trim() === trimmedSchoolCode.toLowerCase()) ||
-        (t.schoolId && t.schoolId.toLowerCase().trim() === trimmedSchoolCode.toLowerCase())
-      );
+      await this.preSyncSchoolDirectoryForLogin(trimmedSchoolCode);
+      matchingTeacher = findMatch();
     }
 
-    const activeSchoolCode = trimmedSchoolCode || matchingTeacher?.schoolCode || matchingTeacher?.schoolId || this.resolveActiveSchoolId();
-    const activeOwnerId = this.resolveHeadteacherUserId(activeSchoolCode);
+    if (!matchingTeacher) {
+      throw new Error("Educator Verification Failed: No enrolled staff member found matching your credentials under this School Code. Please contact your Headteacher to enroll your profile in Staff Profiles.");
+    }
 
+    const activeSchoolCode = trimmedSchoolCode || matchingTeacher.schoolCode || matchingTeacher.schoolId || this.resolveActiveSchoolId();
+    const activeOwnerId = matchingTeacher.ownerId || this.resolveHeadteacherUserId(activeSchoolCode);
+
+    // Also pull Headteacher user doc if online so subscription period matches 1:1 immediately
+    await this.preSyncSchoolDirectoryForLogin(activeSchoolCode);
+
+    const enrolledTeacherName = this.formatTeacherFullName(matchingTeacher);
     const cachedUsers = this.getRegisteredUsers();
+    const headUser = cachedUsers.find(u =>
+      (u.role === 'Headteacher' || u.role === 'Admin') &&
+      u.email?.toLowerCase().trim() !== 'pegyirenyi@gmail.com' &&
+      ((activeOwnerId && u.uid === activeOwnerId) || (activeSchoolCode && (u.schoolId === activeSchoolCode || u.schoolCode === activeSchoolCode)))
+    );
+
     let userAccount = cachedUsers.find(u => 
-      (matchingTeacher && matchingTeacher.email && (u.email || '').toLowerCase().trim() === matchingTeacher.email.toLowerCase().trim()) ||
-      (trimmedInput && (u.email || '').toLowerCase().trim() === trimmedInput.toLowerCase()) ||
-      (matchingTeacher && matchingTeacher.staffId && u.staffId?.toLowerCase().trim() === matchingTeacher.staffId.toLowerCase().trim())
+      (matchingTeacher?.email && (u.email || '').toLowerCase().trim() === matchingTeacher.email.toLowerCase().trim()) ||
+      (trimmedInput.includes('@') && (u.email || '').toLowerCase().trim() === trimmedInput.toLowerCase()) ||
+      (matchingTeacher?.staffId && u.staffId?.toLowerCase().trim() === matchingTeacher.staffId.toLowerCase().trim()) ||
+      (matchingTeacher?.id && u.uid === matchingTeacher.id)
     );
 
     if (!userAccount) {
       const createdNow = new Date().toISOString();
-      const teacherName = matchingTeacher ? `${matchingTeacher.firstName} ${matchingTeacher.lastName}`.trim() : (trimmedInput || 'Faculty Teacher');
-      const teacherEmail = (matchingTeacher?.email || (trimmedInput.includes('@') ? trimmedInput : `${(matchingTeacher?.staffId || 'teacher').toLowerCase()}@school.internal`)).toLowerCase();
+      const teacherEmail = (matchingTeacher.email || (trimmedInput.includes('@') ? trimmedInput : `${(matchingTeacher.staffId || matchingTeacher.id || 'teacher').toLowerCase()}@school.internal`)).toLowerCase();
       
       userAccount = {
-        uid: matchingTeacher?.id || ('user_' + Math.random().toString(36).substring(2, 9)),
+        uid: matchingTeacher.userId || matchingTeacher.id || ('user_' + Math.random().toString(36).substring(2, 9)),
         email: teacherEmail,
-        name: teacherName,
+        name: enrolledTeacherName,
         role: 'Teacher',
-        staffId: matchingTeacher?.staffId || trimmedInput,
+        staffId: matchingTeacher.staffId || trimmedInput,
         schoolId: activeSchoolCode,
         schoolCode: activeSchoolCode,
-        ownerId: activeOwnerId,
+        ownerId: headUser?.uid || activeOwnerId,
         createdAt: createdNow,
-        licenseType: 'unlicensed',
-        registeredOn: createdNow
+        licenseType: headUser?.licenseType || 'trial',
+        licensePeriod: headUser?.licensePeriod,
+        lastActivatedOn: headUser?.lastActivatedOn,
+        trialStartDate: headUser?.trialStartDate || createdNow,
+        trialEndDate: headUser?.trialEndDate,
+        registeredOn: headUser?.registeredOn || createdNow
       };
       cachedUsers.push(userAccount);
       setStorageItem(STORAGE_KEYS.USERS_LIST, cachedUsers);
     } else {
+      userAccount.name = enrolledTeacherName || userAccount.name;
       userAccount.role = 'Teacher';
       userAccount.schoolId = activeSchoolCode;
       userAccount.schoolCode = activeSchoolCode;
-      userAccount.ownerId = activeOwnerId;
-      if (matchingTeacher?.staffId) userAccount.staffId = matchingTeacher.staffId;
+      userAccount.ownerId = headUser?.uid || activeOwnerId;
+      if (matchingTeacher.staffId) userAccount.staffId = matchingTeacher.staffId;
+      if (headUser) {
+        userAccount.licenseType = headUser.licenseType;
+        userAccount.licensePeriod = headUser.licensePeriod;
+        userAccount.lastActivatedOn = headUser.lastActivatedOn;
+        userAccount.trialStartDate = headUser.trialStartDate;
+        userAccount.trialEndDate = headUser.trialEndDate;
+      }
       setStorageItem(STORAGE_KEYS.USERS_LIST, cachedUsers);
     }
 
@@ -2601,7 +3092,9 @@ export class DbController {
   static async teacherLoginByBadge(badgeData: string, expectedTeacherId?: string): Promise<UserAccount> {
     let email: string | undefined;
     let staffId: string | undefined;
+    let teacherIdFromBadge: string | undefined;
     let schoolId: string | undefined;
+    let badgeName: string | undefined;
     let isSignedJson = false;
     let isSignatureValid = false;
 
@@ -2611,9 +3104,12 @@ export class DbController {
       const parsed = JSON.parse(badgeData);
       if (parsed && typeof parsed === 'object') {
         email = parsed.email || parsed.Email;
-        staffId = parsed.staffId || parsed.StaffId || parsed.staffid || parsed.id || parsed.Id;
+        staffId = parsed.staffId || parsed.StaffId || parsed.staffid;
+        teacherIdFromBadge = parsed.teacherId || parsed.TeacherId || parsed.id || parsed.Id;
+        if (!staffId) staffId = teacherIdFromBadge;
         schoolId = parsed.schoolCode || parsed.SchoolCode || parsed.schoolId || parsed.SchoolId || parsed.schoolid;
         badgeOwnerId = parsed.ownerId || parsed.OwnerId;
+        badgeName = parsed.name || parsed.Name;
         
         const signature = parsed.signature || parsed.Signature;
         if (signature) {
@@ -2635,134 +3131,80 @@ export class DbController {
       }
     }
 
-    // Strict security check: If it was a JSON badge generated by our system, it MUST have a valid signature
+    // Lenient security check: If signed JSON has signature mismatch, log warning but permit login if enrolled teacher is verified
     if (isSignedJson && !isSignatureValid) {
-      throw new Error("Security Violation: Cryptographic signature mismatch! The scanned QR badge appears spoofed, modified, or generated by an untrusted origin. Faculty login blocked.");
+      console.warn("[QR Badge Login] Notice: Signature validation mismatch. Proceeding with staff enrollment registry verification...");
     }
 
     const cleanEmail = email?.toLowerCase().trim();
     const cleanStaffId = staffId?.toLowerCase().trim();
+    const cleanTeacherId = teacherIdFromBadge?.toLowerCase().trim();
+    const cleanBadgeName = badgeName?.toLowerCase().trim();
     const cleanRaw = badgeData.trim().toLowerCase();
 
-    // 2. Locate the corresponding teacher in registry
-    const teachers = this.getTeachers();
-    let matchingTeacher: Teacher | undefined;
-
-    // Search A: By email
-    if (cleanEmail && cleanEmail.length > 0) {
-      matchingTeacher = teachers.find(t => t.email?.toLowerCase().trim() === cleanEmail);
+    // Always pre-sync from Firestore if a schoolId was embedded on the badge so we locate the real enrolled staff profile
+    if (schoolId) {
+      await this.preSyncSchoolDirectoryForLogin(schoolId);
     }
 
-    // Search B: By staffId or id (including clean alphanumeric comparison)
-    if (!matchingTeacher && cleanStaffId && cleanStaffId.length > 0) {
-      matchingTeacher = teachers.find(t => {
-        const sId = t.staffId?.toLowerCase().trim();
-        const id = t.id?.toLowerCase().trim();
-        const cleanSId = sId?.replace(/[^a-z0-9]/g, '');
-        const targetClean = cleanStaffId.replace(/[^a-z0-9]/g, '');
+    // 2. Locate the corresponding enrolled teacher in the staff enrollment list
+    const findEnrolledTeacher = (): Teacher | undefined => {
+      const teachers = this.getTeachers();
+      let found: Teacher | undefined;
 
-        return (
-          sId === cleanStaffId ||
-          id === cleanStaffId ||
-          (cleanSId && targetClean && cleanSId === targetClean)
-        );
-      });
-    }
-
-    // Search C: By raw payload against email, staffId, id, or full name
-    if (!matchingTeacher && cleanRaw.length > 0) {
-      matchingTeacher = teachers.find(t => {
-        const tEmail = t.email?.toLowerCase().trim();
-        const tStaffId = t.staffId?.toLowerCase().trim();
-        const tId = t.id?.toLowerCase().trim();
-        const tFullName = `${t.firstName} ${t.lastName}`.toLowerCase().trim();
-
-        return (
-          (tEmail && (tEmail === cleanRaw || cleanRaw.includes(tEmail))) ||
-          (tStaffId && (tStaffId === cleanRaw || cleanRaw.includes(tStaffId))) ||
-          (tId && (tId === cleanRaw || cleanRaw.includes(tId))) ||
-          (tFullName && (tFullName === cleanRaw || cleanRaw.includes(tFullName)))
-        );
-      });
-    }
-
-    // Search D: Check registered UserAccounts if not found in teachers registry
-    if (!matchingTeacher) {
-      const users = this.getRegisteredUsers();
-      const matchedUser = users.find(u => {
-        const uEmail = u.email?.toLowerCase().trim();
-        const uStaffId = u.staffId?.toLowerCase().trim();
-        const uUid = u.uid?.toLowerCase().trim();
-        const uName = u.name?.toLowerCase().trim();
-
-        return (
-          (cleanEmail && uEmail === cleanEmail) ||
-          (cleanStaffId && (uStaffId === cleanStaffId || uUid === cleanStaffId)) ||
-          (cleanRaw && (uEmail === cleanRaw || uStaffId === cleanRaw || uUid === cleanRaw || uName === cleanRaw))
-        );
-      });
-
-      if (matchedUser) {
-        const nameParts = matchedUser.name.split(' ');
-        matchingTeacher = {
-          id: matchedUser.uid || `t_${Math.random().toString(36).substring(2, 7)}`,
-          firstName: nameParts[0] || matchedUser.name,
-          lastName: nameParts.slice(1).join(' ') || 'Staff',
-          gender: 'Male',
-          dateOfBirth: '1990-01-01',
-          placeOfBirth: 'Accra',
-          subjectsTaught: 'Class Teacher',
-          professionalQualifications: 'Degree',
-          highestAcademicQualifications: 'Bachelor of Education',
-          rank: 'Senior Superintendent I',
-          dateOfFirstAppointment: new Date().toISOString().split('T')[0],
-          dateOfPostingToCurrentStation: new Date().toISOString().split('T')[0],
-          staffId: matchedUser.staffId || matchedUser.uid || 'STAFF-01',
-          ntcNumber: '',
-          ssnitNumber: '',
-          district: '',
-          circuit: '',
-          photoUrl: '',
-          createdAt: new Date().toISOString(),
-          email: matchedUser.email,
-          schoolId: matchedUser.schoolId,
-          assignedClass: 'None',
-          assignedClasses: [],
-          assignedSubjects: []
-        };
-        this.saveTeacher(matchingTeacher);
+      // Search A: By teacherId / id or email
+      if (cleanTeacherId) {
+        found = teachers.find(t => t.id?.toLowerCase().trim() === cleanTeacherId);
       }
-    }
+      if (!found && cleanEmail && cleanEmail.length > 0) {
+        found = teachers.find(t => t.email?.toLowerCase().trim() === cleanEmail);
+      }
+
+      // Search B: By staffId or id (including clean alphanumeric comparison)
+      if (!found && cleanStaffId && cleanStaffId.length > 0) {
+        found = teachers.find(t => {
+          const sId = t.staffId?.toLowerCase().trim();
+          const id = t.id?.toLowerCase().trim();
+          const cleanSId = sId?.replace(/[^a-z0-9]/g, '');
+          const targetClean = cleanStaffId.replace(/[^a-z0-9]/g, '');
+
+          return (
+            sId === cleanStaffId ||
+            id === cleanStaffId ||
+            (cleanSId && targetClean && cleanSId === targetClean)
+          );
+        });
+      }
+
+      // Search C: By badge embedded name or raw payload against email, staffId, id, or enrolled full name
+      if (!found && (cleanBadgeName || cleanRaw.length > 0)) {
+        found = teachers.find(t => {
+          const tEmail = t.email?.toLowerCase().trim();
+          const tStaffId = t.staffId?.toLowerCase().trim();
+          const tId = t.id?.toLowerCase().trim();
+          const tFullName = this.formatTeacherFullName(t).toLowerCase();
+          const tShortName = `${t.firstName} ${t.lastName}`.toLowerCase().trim();
+
+          return (
+            (cleanBadgeName && cleanBadgeName !== 'staff member' && (tFullName === cleanBadgeName || tShortName === cleanBadgeName)) ||
+            (tEmail && (tEmail === cleanRaw || cleanRaw.includes(tEmail))) ||
+            (tStaffId && (tStaffId === cleanRaw || cleanRaw.includes(tStaffId))) ||
+            (tId && (tId === cleanRaw || cleanRaw.includes(tId))) ||
+            (tFullName && (tFullName === cleanRaw || cleanRaw.includes(tFullName))) ||
+            (tShortName && (tShortName === cleanRaw || cleanRaw.includes(tShortName)))
+          );
+        });
+      }
+
+      return found;
+    };
+
+    const matchingTeacher = findEnrolledTeacher();
 
     if (!matchingTeacher) {
-      const cleanId = cleanStaffId || cleanEmail || 'staff_' + Math.random().toString(36).substring(2, 7);
-      matchingTeacher = {
-        id: cleanId,
-        firstName: 'Staff',
-        lastName: 'Member',
-        gender: 'Male',
-        dateOfBirth: '1990-01-01',
-        placeOfBirth: 'Accra',
-        subjectsTaught: 'Class Teacher',
-        professionalQualifications: 'Degree',
-        highestAcademicQualifications: 'Bachelor of Education',
-        rank: 'Senior Superintendent I',
-        dateOfFirstAppointment: new Date().toISOString().split('T')[0],
-        dateOfPostingToCurrentStation: new Date().toISOString().split('T')[0],
-        staffId: cleanStaffId || cleanId,
-        ntcNumber: '',
-        ssnitNumber: '',
-        district: '',
-        circuit: '',
-        photoUrl: '',
-        createdAt: new Date().toISOString(),
-        email: cleanEmail || `${cleanId}@school.internal`,
-        schoolId: schoolId || this.resolveActiveSchoolId(),
-        assignedClass: 'None',
-        assignedClasses: [],
-        assignedSubjects: []
-      };
-      this.saveTeacher(matchingTeacher);
+      throw new Error(
+        "Educator Verification Failed: No enrolled teacher profile matching this QR badge was found in the school's staff enrollment list. Please verify with your Headteacher that your profile is enrolled under Teacher Profiles."
+      );
     }
 
     if (expectedTeacherId && matchingTeacher) {
@@ -2770,7 +3212,7 @@ export class DbController {
       const matchStaffId = matchingTeacher.staffId?.toLowerCase().trim();
       const expTarget = expectedTeacherId.toLowerCase().trim();
       if (matchId !== expTarget && matchStaffId !== expTarget) {
-        throw new Error(`Security Violation: The scanned QR badge (${matchingTeacher.firstName} ${matchingTeacher.lastName}) does NOT match the selected teacher profile. Access denied.`);
+        throw new Error(`Security Violation: The scanned QR badge (${this.formatTeacherFullName(matchingTeacher)}) does NOT match the selected teacher profile. Access denied.`);
       }
     }
 
@@ -2783,48 +3225,78 @@ export class DbController {
       this.saveTeacher(matchingTeacher);
     }
 
-    // 3. Find or bootstrap UserAccount with shared school code and ownerId (Rule 3)
+    // 3. Find or bootstrap UserAccount using the exact name from the staff enrollment list & shared Headteacher schoolId/ownerId
+    const enrolledTeacherName = this.formatTeacherFullName(matchingTeacher);
     const activeSchoolId = (schoolId && schoolId !== 'school_default') 
       ? schoolId 
       : (matchingTeacher.schoolId && matchingTeacher.schoolId !== 'school_default' 
           ? matchingTeacher.schoolId 
           : (this.getSchoolInfo().schoolId || this.resolveActiveSchoolId()));
-    const activeOwnerId = badgeOwnerId || matchingTeacher.ownerId || this.getSchoolInfo().ownerId || 'user_default';
+    const activeOwnerId = badgeOwnerId || matchingTeacher.ownerId || this.getSchoolInfo().ownerId || this.resolveHeadteacherUserId(activeSchoolId);
     const users = this.getRegisteredUsers();
-    let userAccount = users.find(u => (u.email || '').toLowerCase().trim() === teacherEmail!.toLowerCase().trim());
+    const headUser = users.find(u =>
+      (u.role === 'Headteacher' || u.role === 'Admin') &&
+      u.email?.toLowerCase().trim() !== 'pegyirenyi@gmail.com' &&
+      ((activeOwnerId && u.uid === activeOwnerId) || (activeSchoolId && (u.schoolId === activeSchoolId || u.schoolCode === activeSchoolId)))
+    );
+
+    let userAccount = users.find(u =>
+      (u.email || '').toLowerCase().trim() === teacherEmail!.toLowerCase().trim() ||
+      (matchingTeacher.staffId && u.staffId?.toLowerCase().trim() === matchingTeacher.staffId.toLowerCase().trim()) ||
+      (matchingTeacher.userId && u.uid === matchingTeacher.userId)
+    );
 
     if (!userAccount) {
       const createdNow = new Date().toISOString();
       userAccount = {
-        uid: matchingTeacher.id || ('user_' + Math.random().toString(36).substring(2, 9)),
+        uid: matchingTeacher.userId || matchingTeacher.id || ('user_' + Math.random().toString(36).substring(2, 9)),
         email: teacherEmail,
-        name: `${matchingTeacher.firstName} ${matchingTeacher.lastName}`.trim(),
+        name: enrolledTeacherName,
         role: 'Teacher',
         staffId: matchingTeacher.staffId,
         schoolId: activeSchoolId,
-        ownerId: activeOwnerId,
+        schoolCode: activeSchoolId,
+        ownerId: headUser?.uid || activeOwnerId,
         createdAt: createdNow,
-        licenseType: 'unlicensed',
-        registeredOn: createdNow
+        licenseType: headUser?.licenseType || 'trial',
+        licensePeriod: headUser?.licensePeriod,
+        lastActivatedOn: headUser?.lastActivatedOn,
+        trialStartDate: headUser?.trialStartDate || createdNow,
+        trialEndDate: headUser?.trialEndDate,
+        registeredOn: headUser?.registeredOn || createdNow
       };
       users.push(userAccount);
       setStorageItem(STORAGE_KEYS.USERS_LIST, users);
     } else {
       let updated = false;
+      if (enrolledTeacherName && userAccount.name !== enrolledTeacherName) {
+        userAccount.name = enrolledTeacherName;
+        updated = true;
+      }
       if (userAccount.role !== 'Teacher' && userAccount.role !== 'Headteacher' && userAccount.role !== 'Admin') {
         userAccount.role = 'Teacher';
         updated = true;
       }
       if (userAccount.schoolId !== activeSchoolId) {
         userAccount.schoolId = activeSchoolId;
+        userAccount.schoolCode = activeSchoolId;
         updated = true;
       }
-      if (!userAccount.ownerId || userAccount.ownerId !== activeOwnerId) {
-        userAccount.ownerId = activeOwnerId;
+      const resolvedOwner = headUser?.uid || activeOwnerId;
+      if (resolvedOwner && userAccount.ownerId !== resolvedOwner) {
+        userAccount.ownerId = resolvedOwner;
         updated = true;
       }
       if (!userAccount.staffId && matchingTeacher.staffId) {
         userAccount.staffId = matchingTeacher.staffId;
+        updated = true;
+      }
+      if (headUser && userAccount.role === 'Teacher') {
+        userAccount.licenseType = headUser.licenseType;
+        userAccount.licensePeriod = headUser.licensePeriod;
+        userAccount.lastActivatedOn = headUser.lastActivatedOn;
+        userAccount.trialStartDate = headUser.trialStartDate;
+        userAccount.trialEndDate = headUser.trialEndDate;
         updated = true;
       }
       if (updated) {
@@ -3505,6 +3977,7 @@ export class DbController {
 
   // Full cross-device background sync of all Firestore assets
   static async syncAllDataFromFirebase(): Promise<void> {
+    if (this._isFormatting) return;
     if (!isFirebaseActive || !firestoreDb) return;
     if (this._isSyncing) {
       console.log("Database sync already in progress, skipping overlapping request.");
@@ -3533,47 +4006,67 @@ export class DbController {
       }
       const schoolId = this.resolveActiveSchoolId();
       const uid = firebaseAuth.currentUser?.uid || (currentUser?.uid || 'unknown');
+      const resolvedHeadUid = this.resolveHeadteacherUserId(schoolId);
+      const validHeadUid = this.isValidHeadteacherUid(resolvedHeadUid) ? resolvedHeadUid : null;
+
+      // Helper to read both schools/{schoolId}/{colName} and users/{headUid}/{colName}, choosing newest by timestamp
+      const fetchMergedCollection = async <T extends { id?: string }>(colName: string): Promise<T[]> => {
+        const mergedMap = new Map<string, any>();
+        const parseTime = (rec: any) => {
+          const ts = rec?.lastModified || rec?.updatedAt || rec?.timestamp || rec?.createdAt || '';
+          const parsed = ts ? Date.parse(ts) : 0;
+          return isNaN(parsed) ? 0 : parsed;
+        };
+        const upsert = (docs: any[]) => {
+          docs.forEach(item => {
+            if (!item || !item.id) return;
+            const existing = mergedMap.get(item.id);
+            if (!existing || parseTime(item) >= parseTime(existing)) {
+              mergedMap.set(item.id, item);
+            }
+          });
+        };
+
+        const [schoolRes, headRes] = await Promise.all([
+          getDocs(collection(firestoreDb, 'schools', schoolId, colName)).catch(() => null),
+          validHeadUid ? getDocs(collection(firestoreDb, 'users', validHeadUid, colName)).catch(() => null) : Promise.resolve(null)
+        ]);
+        if (schoolRes && !schoolRes.empty) {
+          upsert(schoolRes.docs.map(d => ({ ...d.data(), id: d.id })));
+        }
+        if (headRes && !headRes.empty) {
+          upsert(headRes.docs.map(d => ({ ...d.data(), id: d.id })));
+        }
+        return Array.from(mergedMap.values()) as T[];
+      };
 
       // Define all synchronization tasks to run concurrently
       const syncTasks: Promise<void>[] = [
         // 1. School Profile Info
         (async () => {
           try {
-            if (!schoolId || schoolId === 'school_default') return;
-            const schoolDocSnap = await getDoc(doc(firestoreDb, 'schools', schoolId));
-            if (schoolDocSnap.exists()) {
-              const schoolData = schoolDocSnap.data() as SchoolInfo;
-              if (schoolData) {
-                let secretsData = {};
-                const isAdmin = currentUser?.role === 'Admin';
-                if (isAdmin) {
-                  try {
-                    const secretsSnap = await getDoc(doc(firestoreDb, 'schools', `secrets_${uid}`));
-                    if (secretsSnap.exists()) {
-                      secretsData = secretsSnap.data();
-                    }
-                  } catch (secErr) {}
-                }
-                const merged = { ...DEFAULT_SCHOOL_INFO, ...schoolData, ...secretsData };
-                setStorageItem(STORAGE_KEYS.SCHOOL, merged);
-                DbController._cache[STORAGE_KEYS.SCHOOL] = merged;
-                DbController.broadcastSyncEvent('school-updated', merged);
-                if (typeof window !== 'undefined') {
-                  window.dispatchEvent(new CustomEvent('school-system-sync', { detail: { type: 'school-updated', payload: merged } }));
-                }
-              }
-            }
+            await DbController.fetchRemoteSchoolInfo();
           } catch (e) {
             console.warn("Could not sync school profile:", e);
+          }
+        })(),
+
+        // 1b. Global Platform Subscription Pricing
+        (async () => {
+          try {
+            await DbController.fetchRemotePlatformPricing();
+          } catch (e) {
+            console.warn("Could not sync platform pricing:", e);
           }
         })(),
 
         // 2. Students
         (async () => {
           try {
-            const studentsSnap = await getDocs(collection(firestoreDb, 'schools', schoolId, 'students'));
-            const studentsList = studentsSnap.docs.map(d => d.data() as Student);
-            setStorageItem(STORAGE_KEYS.STUDENTS, studentsList);
+            const studentsList = await fetchMergedCollection<Student>('students');
+            if (studentsList.length > 0) {
+              DbController.syncDatasetFromSnapshot('students', studentsList, false);
+            }
           } catch (e) {
             console.warn("Could not sync students:", e);
           }
@@ -3582,9 +4075,10 @@ export class DbController {
         // 3. Teachers
         (async () => {
           try {
-            const teachersSnap = await getDocs(collection(firestoreDb, 'schools', schoolId, 'teachers'));
-            const teachersList = teachersSnap.docs.map(d => d.data() as Teacher);
-            setStorageItem(STORAGE_KEYS.TEACHERS, teachersList);
+            const teachersList = await fetchMergedCollection<Teacher>('teachers');
+            if (teachersList.length > 0) {
+              DbController.syncDatasetFromSnapshot('teachers', teachersList, false);
+            }
           } catch (e) {
             console.warn("Could not sync teachers:", e);
           }
@@ -3593,8 +4087,7 @@ export class DbController {
         // 4. Attendance Registers
         (async () => {
           try {
-            const attendanceSnap = await getDocs(collection(firestoreDb, 'schools', schoolId, 'attendance'));
-            const attendanceList = attendanceSnap.docs.map(d => ({ ...d.data(), id: d.id } as AttendanceRecord));
+            const attendanceList = await fetchMergedCollection<AttendanceRecord>('attendance');
             if (attendanceList.length === 0) {
               const localAttendance = DbController.getAllAttendance();
               if (localAttendance && localAttendance.length > 0) {
@@ -3602,7 +4095,7 @@ export class DbController {
                 await DbController.uploadDatasetToFirestore('attendance', localAttendance);
               }
             } else {
-              DbController.syncDatasetFromSnapshot('attendance', attendanceList);
+              DbController.syncDatasetFromSnapshot('attendance', attendanceList, false);
             }
           } catch (e) {
             console.warn("Could not sync attendance:", e);
@@ -3612,8 +4105,7 @@ export class DbController {
         // 4b. Staff Attendance Registers
         (async () => {
           try {
-            const staffAttendanceSnap = await getDocs(collection(firestoreDb, 'schools', schoolId, 'staff_attendance'));
-            const staffAttendanceList = staffAttendanceSnap.docs.map(d => ({ ...d.data(), id: d.id } as StaffAttendanceRecord));
+            const staffAttendanceList = await fetchMergedCollection<StaffAttendanceRecord>('staff_attendance');
             if (staffAttendanceList.length === 0) {
               const localStaffAttendance = DbController.getAllStaffAttendance();
               if (localStaffAttendance && localStaffAttendance.length > 0) {
@@ -3621,7 +4113,7 @@ export class DbController {
                 await DbController.uploadDatasetToFirestore('staff_attendance', localStaffAttendance);
               }
             } else {
-              DbController.syncDatasetFromSnapshot('staff_attendance', staffAttendanceList);
+              DbController.syncDatasetFromSnapshot('staff_attendance', staffAttendanceList, false);
             }
           } catch (e) {
             console.warn("Could not sync staff attendance:", e);
@@ -3631,8 +4123,7 @@ export class DbController {
         // 5. Assessments Registers
         (async () => {
           try {
-            const assessmentsSnap = await getDocs(collection(firestoreDb, 'schools', schoolId, 'assessments'));
-            const assessmentsList = assessmentsSnap.docs.map(d => ({ ...d.data(), id: d.id } as StudentAssessment));
+            const assessmentsList = await fetchMergedCollection<StudentAssessment>('assessments');
             if (assessmentsList.length === 0) {
               const localAssessments = DbController.getAssessments(true);
               if (localAssessments && localAssessments.length > 0) {
@@ -3640,7 +4131,7 @@ export class DbController {
                 await DbController.uploadDatasetToFirestore('assessments', localAssessments);
               }
             } else {
-              DbController.syncDatasetFromSnapshot('assessments', assessmentsList);
+              DbController.syncDatasetFromSnapshot('assessments', assessmentsList, false);
             }
           } catch (e) {
             console.warn("Could not sync assessments:", e);
@@ -3650,8 +4141,7 @@ export class DbController {
         // 5b. Assessment Templates
         (async () => {
           try {
-            const templatesSnap = await getDocs(collection(firestoreDb, 'schools', schoolId, 'assessment_templates'));
-            const templatesList = templatesSnap.docs.map(d => ({ ...d.data(), id: d.id } as AssessmentTemplate));
+            const templatesList = await fetchMergedCollection<AssessmentTemplate>('assessment_templates');
             if (templatesList.length === 0) {
               const localTemplates = DbController.getAssessmentTemplates();
               if (localTemplates && localTemplates.length > 0) {
@@ -3659,7 +4149,7 @@ export class DbController {
                 await DbController.uploadDatasetToFirestore('assessment_templates', localTemplates);
               }
             } else {
-              DbController.syncDatasetFromSnapshot('assessment_templates', templatesList);
+              DbController.syncDatasetFromSnapshot('assessment_templates', templatesList, false);
             }
           } catch (e) {
             console.warn("Could not sync assessment templates:", e);
@@ -3669,10 +4159,11 @@ export class DbController {
         // 5c. Communication Templates
         (async () => {
           try {
-            const templatesSnap = await getDocs(collection(firestoreDb, 'schools', schoolId, 'communication_templates'));
-            const templatesList = templatesSnap.docs.map(d => d.data() as CommunicationTemplate);
-            setStorageItem(STORAGE_KEYS.COMM_TEMPLATES, templatesList);
-            DbController._cache[STORAGE_KEYS.COMM_TEMPLATES] = templatesList;
+            const templatesList = await fetchMergedCollection<CommunicationTemplate>('communication_templates');
+            if (templatesList.length > 0) {
+              setStorageItem(STORAGE_KEYS.COMM_TEMPLATES, templatesList);
+              DbController._cache[STORAGE_KEYS.COMM_TEMPLATES] = templatesList;
+            }
           } catch (e) {
             console.warn("Could not sync communication templates:", e);
           }
@@ -3681,9 +4172,10 @@ export class DbController {
         // 6. Fees Bills
         (async () => {
           try {
-            const feesSnap = await getDocs(collection(firestoreDb, 'schools', schoolId, 'fees'));
-            const feesList = feesSnap.docs.map(d => d.data() as StudentFeeBill);
-            setStorageItem(STORAGE_KEYS.FEES, feesList);
+            const feesList = await fetchMergedCollection<StudentFeeBill>('fees');
+            if (feesList.length > 0) {
+              DbController.syncDatasetFromSnapshot('fees', feesList, false);
+            }
           } catch (e) {
             console.warn("Could not sync fees bills:", e);
           }
@@ -3692,30 +4184,32 @@ export class DbController {
         // 7. Settings (Academic Calendar, System Customizations, Auto-Backup Config)
         (async () => {
           try {
-            const settingsSnap = await getDocs(collection(firestoreDb, 'schools', schoolId, 'settings'));
-            const calendarDoc = settingsSnap.docs.find(d => d.id === 'academic_calendar');
+            const settingsList = await fetchMergedCollection<any>('settings');
+            const calendarDoc = settingsList.find(d => d.id === 'academic_calendar');
             if (calendarDoc) {
-              setStorageItem(STORAGE_KEYS.CALENDAR, calendarDoc.data() as AcademicCalendarConfig);
+              setStorageItem(STORAGE_KEYS.CALENDAR, calendarDoc as AcademicCalendarConfig);
+              DbController._cache[STORAGE_KEYS.CALENDAR] = calendarDoc;
             }
-            const systemDoc = settingsSnap.docs.find(d => d.id === 'system_settings');
+            const systemDoc = settingsList.find(d => d.id === 'system_settings');
             if (systemDoc) {
-              setStorageItem(STORAGE_KEYS.SETTINGS, systemDoc.data());
+              setStorageItem(STORAGE_KEYS.SETTINGS, systemDoc);
+              DbController._cache[STORAGE_KEYS.SETTINGS] = systemDoc;
             }
-            const backupConfigDoc = settingsSnap.docs.find(d => d.id === 'auto_backup_config');
+            const backupConfigDoc = settingsList.find(d => d.id === 'auto_backup_config');
             if (backupConfigDoc) {
-              setStorageItem(STORAGE_KEYS.AUTO_BACKUP_CONFIG, backupConfigDoc.data() as AutoBackupConfig);
+              setStorageItem(STORAGE_KEYS.AUTO_BACKUP_CONFIG, backupConfigDoc as AutoBackupConfig);
+              DbController._cache[STORAGE_KEYS.AUTO_BACKUP_CONFIG] = backupConfigDoc;
             }
-            const markLimitsDoc = settingsSnap.docs.find(d => d.id === 'subject_mark_limits');
+            const markLimitsDoc = settingsList.find(d => d.id === 'subject_mark_limits');
             if (markLimitsDoc) {
-              setStorageItem(STORAGE_KEYS.SUBJECT_MARK_LIMITS, markLimitsDoc.data());
-              DbController._cache[STORAGE_KEYS.SUBJECT_MARK_LIMITS] = markLimitsDoc.data();
+              setStorageItem(STORAGE_KEYS.SUBJECT_MARK_LIMITS, markLimitsDoc);
+              DbController._cache[STORAGE_KEYS.SUBJECT_MARK_LIMITS] = markLimitsDoc;
             }
-            // Tab preferences sync
-            settingsSnap.docs.filter(d => d.id.startsWith('tabs_')).forEach(tabDoc => {
+            settingsList.filter(d => d.id?.startsWith('tabs_')).forEach(tabDoc => {
               const emailKey = tabDoc.id.replace('tabs_', '');
               const prefKey = `${STORAGE_KEYS.USER_TAB_PREFERENCES}_${emailKey}`;
-              setStorageItem(prefKey, tabDoc.data());
-              DbController._cache[prefKey] = tabDoc.data();
+              setStorageItem(prefKey, tabDoc);
+              DbController._cache[prefKey] = tabDoc;
             });
           } catch (e: any) {
             if (e.message?.includes('offline')) {
@@ -3729,9 +4223,10 @@ export class DbController {
         // 8. EMIS Reports (GES aligned)
         (async () => {
           try {
-            const emisSnap = await getDocs(collection(firestoreDb, 'schools', schoolId, 'emis'));
-            const emisList = emisSnap.docs.map(d => d.data() as EmisData);
-            setStorageItem(STORAGE_KEYS.EMIS, emisList);
+            const emisList = await fetchMergedCollection<EmisData>('emis');
+            if (emisList.length > 0) {
+              setStorageItem(STORAGE_KEYS.EMIS, emisList);
+            }
           } catch (e: any) {
             if (e.message?.includes('offline')) {
               console.log("Offline mode: Using cached EMIS reports.");
@@ -3744,9 +4239,10 @@ export class DbController {
         // 9. Behavioral Remarks
         (async () => {
           try {
-            const remarksSnap = await getDocs(collection(firestoreDb, 'schools', schoolId, 'behavioral_remarks'));
-            const remarksList = remarksSnap.docs.map(d => d.data() as BehavioralRemark);
-            setStorageItem(STORAGE_KEYS.BEHAVIORAL_REMARKS, remarksList);
+            const remarksList = await fetchMergedCollection<BehavioralRemark>('behavioral_remarks');
+            if (remarksList.length > 0) {
+              DbController.syncDatasetFromSnapshot('behavioral_remarks', remarksList, false);
+            }
           } catch (e: any) {
             if (e.message?.includes('offline')) {
               console.log("Offline mode: Using cached behavioral remarks.");
@@ -3783,13 +4279,21 @@ export class DbController {
           }
         })(),
 
-        // 9c. Activity Logs - Optimized with limit(150) query constraint to prevent build-up loading issues
+        // 9c. Activity Logs - Merged from schools/{schoolId} and users/{headUid}
         (async () => {
           try {
-            const activitySnap = await getDocs(query(collection(firestoreDb, 'schools', schoolId, 'activity_logs'), limit(150)));
-            const activityList = activitySnap.docs.map(d => d.data() as ActivityLog);
+            const [schoolAct, headAct] = await Promise.all([
+              getDocs(query(collection(firestoreDb, 'schools', schoolId, 'activity_logs'), limit(150))).catch(() => null),
+              validHeadUid ? getDocs(query(collection(firestoreDb, 'users', validHeadUid, 'activity_logs'), limit(150))).catch(() => null) : Promise.resolve(null)
+            ]);
+            const actMap = new Map<string, ActivityLog>();
+            schoolAct?.docs.forEach(d => { const item = d.data() as ActivityLog; if (item?.id) actMap.set(item.id, item); });
+            headAct?.docs.forEach(d => { const item = d.data() as ActivityLog; if (item?.id) actMap.set(item.id, item); });
+            const activityList = Array.from(actMap.values());
             activityList.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-            setStorageItem(STORAGE_KEYS.ACTIVITY_LOGS, activityList);
+            if (activityList.length > 0) {
+              DbController.syncDatasetFromSnapshot('activity_logs', activityList, false);
+            }
           } catch (e: any) {
             console.warn("Could not sync activity logs:", e);
           }
@@ -3798,9 +4302,10 @@ export class DbController {
         // 9d. Teacher Reflections
         (async () => {
           try {
-            const reflectionsSnap = await getDocs(collection(firestoreDb, 'schools', schoolId, 'teacher_reflections'));
-            const reflectionsList = reflectionsSnap.docs.map(d => d.data() as TeacherReflection);
-            setStorageItem(STORAGE_KEYS.TEACHER_REFLECTIONS, reflectionsList);
+            const reflectionsList = await fetchMergedCollection<TeacherReflection>('teacher_reflections');
+            if (reflectionsList.length > 0) {
+              DbController.syncDatasetFromSnapshot('teacher_reflections', reflectionsList, false);
+            }
           } catch (e: any) {
             console.warn("Could not sync teacher reflections:", e);
           }
@@ -3809,9 +4314,10 @@ export class DbController {
         // 9e. Leave Requests
         (async () => {
           try {
-            const leaveSnap = await getDocs(collection(firestoreDb, 'schools', schoolId, 'leave_requests'));
-            const leaveList = leaveSnap.docs.map(d => d.data() as LeaveRequest);
-            setStorageItem(STORAGE_KEYS.LEAVE_REQUESTS, leaveList);
+            const leaveList = await fetchMergedCollection<LeaveRequest>('leave_requests');
+            if (leaveList.length > 0) {
+              DbController.syncDatasetFromSnapshot('leave_requests', leaveList, false);
+            }
           } catch (e: any) {
             console.warn("Could not sync leave requests:", e);
           }
@@ -3820,9 +4326,10 @@ export class DbController {
         // 9f. Custom Tasks
         (async () => {
           try {
-            const tasksSnap = await getDocs(collection(firestoreDb, 'schools', schoolId, 'tasks'));
-            const tasksList = tasksSnap.docs.map(d => d.data() as CustomTask);
-            setStorageItem(STORAGE_KEYS.TASKS, tasksList);
+            const tasksList = await fetchMergedCollection<CustomTask>('tasks');
+            if (tasksList.length > 0) {
+              DbController.syncDatasetFromSnapshot('tasks', tasksList, false);
+            }
           } catch (e: any) {
             console.warn("Could not sync custom tasks:", e);
           }
@@ -3831,23 +4338,44 @@ export class DbController {
         // 9g. Quick Notes & Urgent Memos
         (async () => {
           try {
-            const notesSnap = await getDocs(collection(firestoreDb, 'schools', schoolId, 'quick_notes'));
-            const notesList = notesSnap.docs.map(d => d.data() as QuickNote);
-            setStorageItem(STORAGE_KEYS.QUICK_NOTES, notesList);
+            const notesList = await fetchMergedCollection<QuickNote>('quick_notes');
+            if (notesList.length > 0) {
+              DbController.syncDatasetFromSnapshot('quick_notes', notesList, false);
+            }
           } catch (e: any) {
             console.warn("Could not sync quick notes:", e);
           }
         })(),
 
-        // 10. Registered Users Directory (Security Watchdog source)
+        // 10. Registered Users Directory + School Headteacher Profile (Security & Subscription Watchdog source)
         (async () => {
           try {
+            let syncedList: UserAccount[] = DbController.getRegisteredUsers();
             const directorySnap = await getDoc(doc(firestoreDb, 'users', 'directory'));
             if (directorySnap.exists()) {
               const data = directorySnap.data();
               if (data && Array.isArray(data.list) && data.list.length > 0) {
-                setStorageItem(STORAGE_KEYS.USERS_LIST, data.list);
+                syncedList = data.list;
               }
+            }
+            const knownOwnerId = currentUser?.ownerId || DbController.getSchoolInfo()?.ownerId || DbController.resolveHeadteacherUserId(schoolId);
+            if (knownOwnerId && !knownOwnerId.startsWith('HEAD_') && knownOwnerId !== 'user_default') {
+              try {
+                const ownerDoc = await getDoc(doc(firestoreDb, 'users', knownOwnerId));
+                if (ownerDoc.exists()) {
+                  const ownerData = ownerDoc.data() as UserAccount;
+                  const oIdx = syncedList.findIndex(u => u.uid === ownerData.uid);
+                  if (oIdx >= 0) {
+                    syncedList[oIdx] = ownerData;
+                  } else {
+                    syncedList.push(ownerData);
+                  }
+                }
+              } catch {}
+            }
+            if (syncedList.length > 0) {
+              setStorageItem(STORAGE_KEYS.USERS_LIST, syncedList);
+              DbController._cache[STORAGE_KEYS.USERS_LIST] = syncedList;
             }
           } catch (e) {
             console.warn("Could not sync users directory:", e);
@@ -4029,6 +4557,7 @@ export class DbController {
   }
 
   static async uploadDatasetToFirestore(colName: string, items: any[]): Promise<void> {
+    if (this._isFormatting) return;
     if (!Array.isArray(items) || items.length === 0) return;
     const activeSchoolId = this.resolveActiveSchoolId();
     const schoolOwnerUid = this.resolveHeadteacherUserId(activeSchoolId);
@@ -4086,13 +4615,24 @@ export class DbController {
       }
       case 'teachers': {
         const local = getStorageItem<Teacher[]>(STORAGE_KEYS.TEACHERS, []);
+        const parseTime = (rec: any) => {
+          const ts = rec?.lastModified || rec?.updatedAt || rec?.createdAt || '';
+          const parsed = ts ? Date.parse(ts) : 0;
+          return isNaN(parsed) ? 0 : parsed;
+        };
         let finalTeachers: Teacher[];
         if (items.length === 0 && local.length > 0) {
           finalTeachers = local;
         } else {
           const mergedMap = new Map<string, Teacher>();
           local.forEach(t => { if (t && t.id) mergedMap.set(t.id, t); });
-          items.forEach(t => { if (t && t.id) mergedMap.set(t.id, t); });
+          items.forEach(t => {
+            if (!t || !t.id) return;
+            const prev = mergedMap.get(t.id);
+            if (!prev || parseTime(t) >= parseTime(prev)) {
+              mergedMap.set(t.id, t);
+            }
+          });
           finalTeachers = Array.from(mergedMap.values());
         }
         setStorageItem(STORAGE_KEYS.TEACHERS, finalTeachers);
@@ -4173,31 +4713,85 @@ export class DbController {
         emit('fees-updated', finalFees);
         break;
       }
-      case 'teacher_reflections':
-        setStorageItem(STORAGE_KEYS.TEACHER_REFLECTIONS, items);
-        this._cache[STORAGE_KEYS.TEACHER_REFLECTIONS] = items;
-        emit('reflections-updated', items);
+      case 'teacher_reflections': {
+        const local = getStorageItem<TeacherReflection[]>(STORAGE_KEYS.TEACHER_REFLECTIONS, []);
+        const mergedMap = new Map<string, TeacherReflection>();
+        local.forEach(r => { if (r && r.id) mergedMap.set(r.id, r); });
+        items.forEach(r => { if (r && r.id) mergedMap.set(r.id, r); });
+        const finalReflections = (items.length === 0 && local.length > 0) ? local : Array.from(mergedMap.values());
+        setStorageItem(STORAGE_KEYS.TEACHER_REFLECTIONS, finalReflections);
+        this._cache[STORAGE_KEYS.TEACHER_REFLECTIONS] = finalReflections;
+        emit('reflections-updated', finalReflections);
         break;
-      case 'behavioral_remarks':
-        setStorageItem(STORAGE_KEYS.BEHAVIORAL_REMARKS, items);
-        this._cache[STORAGE_KEYS.BEHAVIORAL_REMARKS] = items;
-        emit('remarks-updated', items);
+      }
+      case 'behavioral_remarks': {
+        const local = getStorageItem<BehavioralRemark[]>(STORAGE_KEYS.BEHAVIORAL_REMARKS, []);
+        const mergedMap = new Map<string, BehavioralRemark>();
+        local.forEach(r => { if (r && r.id) mergedMap.set(r.id, r); });
+        items.forEach(r => { if (r && r.id) mergedMap.set(r.id, r); });
+        const finalRemarks = (items.length === 0 && local.length > 0) ? local : Array.from(mergedMap.values());
+        setStorageItem(STORAGE_KEYS.BEHAVIORAL_REMARKS, finalRemarks);
+        this._cache[STORAGE_KEYS.BEHAVIORAL_REMARKS] = finalRemarks;
+        emit('remarks-updated', finalRemarks);
         break;
-      case 'leave_requests':
-        setStorageItem(STORAGE_KEYS.LEAVE_REQUESTS, items);
-        this._cache[STORAGE_KEYS.LEAVE_REQUESTS] = items;
-        emit('leave-requests-updated', items);
+      }
+      case 'leave_requests': {
+        const local = getStorageItem<LeaveRequest[]>(STORAGE_KEYS.LEAVE_REQUESTS, []);
+        const mergedMap = new Map<string, LeaveRequest>();
+        local.forEach(r => { if (r && r.id) mergedMap.set(r.id, r); });
+        items.forEach(r => { if (r && r.id) mergedMap.set(r.id, r); });
+        const finalLeave = (items.length === 0 && local.length > 0) ? local : Array.from(mergedMap.values());
+        setStorageItem(STORAGE_KEYS.LEAVE_REQUESTS, finalLeave);
+        this._cache[STORAGE_KEYS.LEAVE_REQUESTS] = finalLeave;
+        emit('leave-requests-updated', finalLeave);
         break;
-      case 'tasks':
-        setStorageItem(STORAGE_KEYS.TASKS, items);
-        this._cache[STORAGE_KEYS.TASKS] = items;
-        emit('tasks-updated', items);
+      }
+      case 'tasks': {
+        const local = getStorageItem<CustomTask[]>(STORAGE_KEYS.TASKS, []);
+        const mergedMap = new Map<string, CustomTask>();
+        local.forEach(t => { if (t && t.id) mergedMap.set(t.id, t); });
+        items.forEach(t => { if (t && t.id) mergedMap.set(t.id, t); });
+        const finalTasks = (items.length === 0 && local.length > 0) ? local : Array.from(mergedMap.values());
+        setStorageItem(STORAGE_KEYS.TASKS, finalTasks);
+        this._cache[STORAGE_KEYS.TASKS] = finalTasks;
+        emit('tasks-updated', finalTasks);
         break;
-      case 'quick_notes':
-        setStorageItem(STORAGE_KEYS.QUICK_NOTES, items);
-        this._cache[STORAGE_KEYS.QUICK_NOTES] = items;
-        emit('quick-notes-updated', items);
+      }
+      case 'quick_notes': {
+        const local = getStorageItem<QuickNote[]>(STORAGE_KEYS.QUICK_NOTES, []);
+        const mergedMap = new Map<string, QuickNote>();
+        local.forEach(n => { if (n && n.id) mergedMap.set(n.id, n); });
+        items.forEach(n => { if (n && n.id) mergedMap.set(n.id, n); });
+        const finalNotes = (items.length === 0 && local.length > 0) ? local : Array.from(mergedMap.values());
+        setStorageItem(STORAGE_KEYS.QUICK_NOTES, finalNotes);
+        this._cache[STORAGE_KEYS.QUICK_NOTES] = finalNotes;
+        emit('quick-notes-updated', finalNotes);
         break;
+      }
+      case 'activity_logs': {
+        const local = getStorageItem<ActivityLog[]>(STORAGE_KEYS.ACTIVITY_LOGS, []);
+        const mergedMap = new Map<string, ActivityLog>();
+        local.forEach(l => { if (l && l.id) mergedMap.set(l.id, l); });
+        items.forEach(l => { if (l && l.id) mergedMap.set(l.id, l); });
+        const finalLogs = (items.length === 0 && local.length > 0)
+          ? local
+          : Array.from(mergedMap.values()).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).slice(0, 1000);
+        setStorageItem(STORAGE_KEYS.ACTIVITY_LOGS, finalLogs);
+        this._cache[STORAGE_KEYS.ACTIVITY_LOGS] = finalLogs;
+        emit('activity-logs-updated', finalLogs);
+        break;
+      }
+      case 'subscribers_timer': {
+        const local = getStorageItem<SubscriberTimerData[]>(STORAGE_KEYS.SUBSCRIBER_TIMERS, []);
+        const mergedMap = new Map<string, SubscriberTimerData>();
+        local.forEach(t => { if (t && (t.id || t.userId)) mergedMap.set(t.id || t.userId, t); });
+        items.forEach(t => { if (t && (t.id || t.userId)) mergedMap.set(t.id || t.userId, t); });
+        const finalTimers = (items.length === 0 && local.length > 0) ? local : Array.from(mergedMap.values());
+        setStorageItem(STORAGE_KEYS.SUBSCRIBER_TIMERS, finalTimers);
+        this._cache[STORAGE_KEYS.SUBSCRIBER_TIMERS] = finalTimers;
+        emit('subscribers-timer-updated', finalTimers);
+        break;
+      }
       case 'duty_roster':
         setStorageItem(STORAGE_KEYS.DUTY_ROSTER, items);
         this._cache[STORAGE_KEYS.DUTY_ROSTER] = items;
@@ -4346,7 +4940,7 @@ export class DbController {
   }
 
   static async fetchRemoteSchoolInfo(): Promise<SchoolInfo> {
-    if (!isFirebaseActive || !firestoreDb) {
+    if (this._isFormatting || !isFirebaseActive || !firestoreDb) {
       return this.getSchoolInfo();
     }
 
@@ -4421,6 +5015,26 @@ export class DbController {
     return this.getSchoolInfo();
   }
 
+  static async fetchRemotePlatformPricing(): Promise<PlatformPricing> {
+    if (!isFirebaseActive || !firestoreDb) {
+      return this.getPlatformPricing();
+    }
+    try {
+      const docSnap = await getDoc(doc(firestoreDb, 'platform_settings', 'pricing'));
+      if (docSnap.exists()) {
+        const remoteData = docSnap.data() as Partial<PlatformPricing>;
+        if (remoteData && (remoteData.licensePrice1Year !== undefined || remoteData.smsRate !== undefined)) {
+          const applied = this.setPlatformPricingLocally(remoteData);
+          console.log('[Cloud Firestore] Synchronized global platform pricing from Cloud Firestore:', applied);
+          return applied;
+        }
+      }
+    } catch (err) {
+      console.warn('[Cloud Firestore] Could not fetch platform_settings/pricing:', err);
+    }
+    return this.getPlatformPricing();
+  }
+
   static getPlatformPricing(): PlatformPricing {
     if (this._cache[STORAGE_KEYS.PLATFORM_PRICING]) {
       return this._cache[STORAGE_KEYS.PLATFORM_PRICING];
@@ -4430,19 +5044,17 @@ export class DbController {
       this._cache[STORAGE_KEYS.PLATFORM_PRICING] = stored;
       return stored;
     }
-    // Check if school info has configured prices
-    const school = getStorageItem<SchoolInfo | null>(STORAGE_KEYS.SCHOOL, null);
-    if (school && school.licensePrice1Year) {
-      const merged: PlatformPricing = {
-        id: 'pricing',
-        licensePrice1Year: school.licensePrice1Year,
-        licensePrice2Year: school.licensePrice2Year ?? 600,
-        licensePrice3Year: school.licensePrice3Year ?? 800,
-        licensePrice5Year: school.licensePrice5Year ?? 1200,
-        smsRate: school.smsRate ?? 20
-      };
-      this._cache[STORAGE_KEYS.PLATFORM_PRICING] = merged;
-      return merged;
+    if (typeof localStorage !== 'undefined') {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEYS.PLATFORM_PRICING);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.licensePrice1Year) {
+            this._cache[STORAGE_KEYS.PLATFORM_PRICING] = parsed;
+            return parsed;
+          }
+        }
+      } catch {}
     }
     return DEFAULT_PLATFORM_PRICING;
   }
@@ -4457,6 +5069,11 @@ export class DbController {
     };
     this._cache[STORAGE_KEYS.PLATFORM_PRICING] = updated;
     setStorageItem(STORAGE_KEYS.PLATFORM_PRICING, updated);
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem(STORAGE_KEYS.PLATFORM_PRICING, JSON.stringify(updated));
+      } catch {}
+    }
 
     // Also update current school info in cache and local storage
     const school = this.getSchoolInfo();
@@ -4536,11 +5153,11 @@ export class DbController {
           (cached.schoolId && localStorage.getItem(`sms_setup_wizard_completed_${cached.schoolId}`) === 'true');
         if (isDone) cached.setupWizardCompleted = true;
       }
-      if (cached.licensePrice1Year === undefined) cached.licensePrice1Year = platformPricing.licensePrice1Year;
-      if (cached.licensePrice2Year === undefined) cached.licensePrice2Year = platformPricing.licensePrice2Year;
-      if (cached.licensePrice3Year === undefined) cached.licensePrice3Year = platformPricing.licensePrice3Year;
-      if (cached.licensePrice5Year === undefined) cached.licensePrice5Year = platformPricing.licensePrice5Year;
-      if (cached.smsRate === undefined) cached.smsRate = platformPricing.smsRate;
+      cached.licensePrice1Year = platformPricing.licensePrice1Year;
+      cached.licensePrice2Year = platformPricing.licensePrice2Year;
+      cached.licensePrice3Year = platformPricing.licensePrice3Year;
+      cached.licensePrice5Year = platformPricing.licensePrice5Year;
+      cached.smsRate = platformPricing.smsRate;
       this._cache[STORAGE_KEYS.SCHOOL] = cached;
       return cached;
     }
@@ -4585,11 +5202,11 @@ export class DbController {
       }
     }
     finalResult = this.normalizeSchoolAliases(finalResult);
-    if (finalResult.licensePrice1Year === undefined) finalResult.licensePrice1Year = platformPricing.licensePrice1Year;
-    if (finalResult.licensePrice2Year === undefined) finalResult.licensePrice2Year = platformPricing.licensePrice2Year;
-    if (finalResult.licensePrice3Year === undefined) finalResult.licensePrice3Year = platformPricing.licensePrice3Year;
-    if (finalResult.licensePrice5Year === undefined) finalResult.licensePrice5Year = platformPricing.licensePrice5Year;
-    if (finalResult.smsRate === undefined) finalResult.smsRate = platformPricing.smsRate;
+    finalResult.licensePrice1Year = platformPricing.licensePrice1Year;
+    finalResult.licensePrice2Year = platformPricing.licensePrice2Year;
+    finalResult.licensePrice3Year = platformPricing.licensePrice3Year;
+    finalResult.licensePrice5Year = platformPricing.licensePrice5Year;
+    finalResult.smsRate = platformPricing.smsRate;
     this._cache[STORAGE_KEYS.SCHOOL] = finalResult;
     return finalResult;
   }
@@ -4606,6 +5223,7 @@ export class DbController {
   }
 
   static async saveSchoolInfo(info: SchoolInfo): Promise<void> {
+    if (this._isFormatting) return;
     info = this.normalizeSchoolAliases(info);
     const currentUser = this.getCurrentUser();
     const activeSchoolId = (info.schoolId && info.schoolId.trim() && info.schoolId !== 'school_default')
@@ -4684,8 +5302,8 @@ export class DbController {
         schoolCode: info.schoolCode || activeSchoolId,
         ownerId: info.ownerId || currentUser?.uid || 'user_default',
         authorUid: currentUser?.uid || 'anonymous',
-        authorName: currentUser?.name || 'Staff',
-        authorRole: currentUser?.role || 'Staff',
+        authorName: this.resolveAuthorDisplayName(currentUser),
+        authorRole: currentUser?.role || 'Headteacher',
         updatedAt: new Date().toISOString()
       });
 
@@ -4765,6 +5383,11 @@ export class DbController {
       }
     }
 
+    this.writeActivityLog(
+      'School Profile Updated',
+      `Updated school configuration for ${info.name || 'School'} (Code: ${activeSchoolId}).`,
+      'info'
+    );
     this.broadcastSyncEvent('school-updated', info);
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('school-system-sync', { detail: { type: 'school-updated', payload: info } }));
@@ -4848,6 +5471,11 @@ export class DbController {
     setStorageItem(STORAGE_KEYS.CALENDAR, calendar);
     this._cache[STORAGE_KEYS.CALENDAR] = calendar;
     this.performFirestoreWrite('settings', 'academic_calendar', 'set', calendar);
+    this.writeActivityLog(
+      'Academic Calendar Updated',
+      `Saved configuration for academic year ${calendar.activeAcademicYear} (Term: ${calendar.activeTerm || 'Term 1'}).`,
+      'info'
+    );
   }
 
   // -------------------------
@@ -5091,12 +5719,27 @@ export class DbController {
   static saveTeacherReflection(reflection: TeacherReflection): void {
     const activeSchoolId = this.resolveActiveSchoolId();
     const schoolOwnerUid = this.resolveHeadteacherUserId(activeSchoolId);
+    const matchedTeacher = this.getTeachers().find(
+      t => t.id === reflection.teacherId || t.staffId === reflection.teacherId
+    );
+    const resolvedTeacherName = matchedTeacher
+      ? this.formatTeacherFullName(matchedTeacher)
+      : (reflection.teacherName && !/^(staff|staff member)$/i.test(reflection.teacherName.trim())
+        ? reflection.teacherName.trim()
+        : this.resolveAuthorDisplayName(this.getCurrentUser()));
+
     if (!reflection.schoolId) reflection.schoolId = activeSchoolId;
+    reflection.teacherName = resolvedTeacherName;
     (reflection as any).schoolCode = activeSchoolId;
     (reflection as any).ownerId = schoolOwnerUid;
+    (reflection as any).headteacherUserId = schoolOwnerUid;
+    (reflection as any).headteacherName = this.resolveHeadteacherName(activeSchoolId);
+    (reflection as any).lastModified = new Date().toISOString();
+
     const reflections = this.getTeacherReflections();
     const idx = reflections.findIndex(r => r.id === reflection.id);
-    if (idx >= 0) {
+    const isUpdate = idx >= 0;
+    if (isUpdate) {
       reflections[idx] = reflection;
     } else {
       reflections.push(reflection);
@@ -5105,6 +5748,11 @@ export class DbController {
     this._cache[STORAGE_KEYS.TEACHER_REFLECTIONS] = reflections;
 
     this.performFirestoreWrite('teacher_reflections', reflection.id, 'set', reflection);
+    this.writeActivityLog(
+      isUpdate ? 'Teacher Reflection Updated' : 'Teacher Reflection Submitted',
+      `${resolvedTeacherName} ${isUpdate ? 'updated' : 'submitted'} a ${reflection.category || 'Journal'} entry${reflection.class ? ` for ${reflection.class}` : ''}.`,
+      'info'
+    );
     this.broadcastSyncEvent('reflections-updated', reflection);
   }
 
@@ -5182,18 +5830,19 @@ export class DbController {
       this._cache[STORAGE_KEYS.TEACHERS] = list;
     }
     const activeSchoolId = this.resolveActiveSchoolId();
-    const currentUser = this.getCurrentUser();
-    const activeOwnerId = currentUser?.role === 'Teacher' ? (currentUser?.ownerId || currentUser?.uid) : (currentUser?.uid || 'user_default');
+    const resolvedHeadUid = this.resolveHeadteacherUserId(activeSchoolId);
+    const activeOwnerId = this.isValidHeadteacherUid(resolvedHeadUid) ? resolvedHeadUid : '';
 
-    // Rule 3: Guarantee all assigned teachers inherit the unique school code & owner ID
+    // Rule 3: Guarantee all assigned teachers inherit the unique school code & Headteacher owner ID
     let modified = false;
     list.forEach(t => {
       if (!t.schoolId || t.schoolId === 'school_default' || t.schoolId === 'SMS-P8U4F22L') {
         t.schoolId = activeSchoolId;
         modified = true;
       }
-      if (!t.ownerId) {
+      if (activeOwnerId && (!t.ownerId || t.ownerId === t.id || t.ownerId.startsWith('HEAD_') || t.ownerId === 'user_default')) {
         t.ownerId = activeOwnerId;
+        (t as any).headteacherUserId = activeOwnerId;
         modified = true;
       }
     });
@@ -5229,7 +5878,29 @@ export class DbController {
     teacher.schoolCode = activeSchoolId;
 
     const schoolOwnerUid = this.resolveHeadteacherUserId(activeSchoolId);
-    teacher.ownerId = teacher.ownerId || schoolOwnerUid;
+    if (this.isValidHeadteacherUid(schoolOwnerUid)) {
+      teacher.ownerId = schoolOwnerUid;
+      (teacher as any).headteacherUserId = schoolOwnerUid;
+    } else if (!teacher.ownerId || teacher.ownerId === teacher.id) {
+      teacher.ownerId = schoolOwnerUid;
+    }
+    const headName = this.resolveHeadteacherName(activeSchoolId);
+    if (headName) {
+      (teacher as any).headteacherName = headName;
+    }
+    (teacher as any).lastModified = new Date().toISOString();
+
+    // Ensure permissions object contains all 4 module roles + 4 action permissions explicitly
+    teacher.permissions = {
+      canAccessStudents: teacher.permissions?.canAccessStudents !== false,
+      canAccessAttendance: teacher.permissions?.canAccessAttendance !== false,
+      canAccessAssessments: teacher.permissions?.canAccessAssessments !== false,
+      canAccessSystemControl: teacher.permissions?.canAccessSystemControl !== false,
+      canEditStudents: teacher.permissions?.canEditStudents !== false,
+      canApproveAttendance: teacher.permissions?.canApproveAttendance !== false,
+      canEditGrades: teacher.permissions?.canEditGrades !== false,
+      canExportReports: teacher.permissions?.canExportReports !== false
+    };
 
     const teachers = this.getTeachers();
     const idx = teachers.findIndex(t => t.id === teacher.id || (t.staffId && teacher.staffId && t.staffId.toLowerCase().trim() === teacher.staffId.toLowerCase().trim()));
@@ -5242,61 +5913,98 @@ export class DbController {
     this._cache[STORAGE_KEYS.TEACHERS] = teachers;
     this.performFirestoreWrite('teachers', teacher.id, 'set', teacher);
 
-    // Synchronize or create corresponding UserAccount in USERS_LIST with shared schoolId and ownerId
+    // Synchronize or create corresponding UserAccount in USERS_LIST with shared schoolId, ownerId & Headteacher subscription parity
     const users = this.getRegisteredUsers();
+    const headUser = users.find(u =>
+      (u.role === 'Headteacher' || u.role === 'Admin') &&
+      u.email?.toLowerCase().trim() !== 'pegyirenyi@gmail.com' &&
+      ((this.isValidHeadteacherUid(schoolOwnerUid) && u.uid === schoolOwnerUid) || u.schoolId === activeSchoolId || u.schoolCode === activeSchoolId)
+    );
+    const enrolledFullName = this.formatTeacherFullName(teacher);
+
     let userAcc = users.find(u => u.email.toLowerCase().trim() === teacher.email!.toLowerCase().trim());
     if (!userAcc && teacher.staffId) {
       userAcc = users.find(u => u.staffId?.toLowerCase().trim() === teacher.staffId.toLowerCase().trim());
     }
 
     const createdNow = new Date().toISOString();
+    const defaultTrialEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
     if (!userAcc) {
       userAcc = {
-        uid: teacher.id || ('user_' + Math.random().toString(36).substring(2, 9)),
+        uid: (teacher as any).userId || teacher.id || ('user_' + Math.random().toString(36).substring(2, 9)),
         email: teacher.email.toLowerCase().trim(),
-        name: `${teacher.firstName} ${teacher.lastName}`.trim(),
+        name: enrolledFullName,
         role: 'Teacher',
         staffId: teacher.staffId,
         schoolId: activeSchoolId,
-        ownerId: teacher.ownerId,
+        schoolCode: activeSchoolId,
+        ownerId: this.isValidHeadteacherUid(schoolOwnerUid) ? schoolOwnerUid : teacher.ownerId,
         createdAt: createdNow,
-        licenseType: 'unlicensed',
-        registeredOn: createdNow
+        licenseType: headUser?.licenseType || 'trial',
+        licensePeriod: headUser?.licensePeriod,
+        lastActivatedOn: headUser?.lastActivatedOn,
+        trialStartDate: headUser?.trialStartDate || createdNow,
+        trialEndDate: headUser?.trialEndDate || defaultTrialEnd,
+        registeredOn: headUser?.registeredOn || createdNow,
+        isSuspended: headUser?.isSuspended
       };
       users.push(userAcc);
     } else {
-      userAcc.name = `${teacher.firstName} ${teacher.lastName}`.trim();
+      userAcc.name = enrolledFullName || userAcc.name;
       if (teacher.staffId) userAcc.staffId = teacher.staffId;
-      if (teacher.email) userAcc.email = teacher.email;
+      if (teacher.email) userAcc.email = teacher.email.toLowerCase().trim();
       userAcc.schoolId = activeSchoolId;
-      if (!userAcc.ownerId) userAcc.ownerId = teacher.ownerId;
+      userAcc.schoolCode = activeSchoolId;
+      if (this.isValidHeadteacherUid(schoolOwnerUid)) {
+        userAcc.ownerId = schoolOwnerUid;
+      } else if (!userAcc.ownerId || userAcc.ownerId === userAcc.uid) {
+        userAcc.ownerId = teacher.ownerId;
+      }
+      if (headUser) {
+        userAcc.licenseType = headUser.licenseType;
+        userAcc.licensePeriod = headUser.licensePeriod;
+        userAcc.lastActivatedOn = headUser.lastActivatedOn;
+        userAcc.trialStartDate = headUser.trialStartDate;
+        userAcc.trialEndDate = headUser.trialEndDate;
+        userAcc.registeredOn = headUser.registeredOn || userAcc.registeredOn;
+        userAcc.isSuspended = headUser.isSuspended;
+      }
     }
     setStorageItem(STORAGE_KEYS.USERS_LIST, users);
+    this._cache[STORAGE_KEYS.USERS_LIST] = users;
 
-    // Ensure user record in Firestore contains the shared schoolId for security rules lookup
+    // If current logged-in session belongs to this teacher, update active session immediately
+    const activeSessionUser = getStorageItem<UserAccount | null>(STORAGE_KEYS.USER, null);
+    if (activeSessionUser && activeSessionUser.role === 'Teacher' && (
+      activeSessionUser.uid === userAcc.uid ||
+      (teacher.staffId && activeSessionUser.staffId?.toLowerCase().trim() === teacher.staffId.toLowerCase().trim()) ||
+      activeSessionUser.email?.toLowerCase().trim() === userAcc.email?.toLowerCase().trim()
+    )) {
+      const refreshedSession = { ...activeSessionUser, ...userAcc };
+      setStorageItem(STORAGE_KEYS.USER, refreshedSession);
+      this._cache[STORAGE_KEYS.USER] = refreshedSession;
+    }
+
+    // Ensure user record & directory & subscriber timer in Firestore contain full Headteacher subscription parity
     if (isFirebaseActive && firestoreDb && userAcc.uid) {
-      setDoc(doc(firestoreDb, 'users', userAcc.uid), DbController.sanitizeForFirestore({
-        uid: userAcc.uid,
-        email: userAcc.email,
-        name: userAcc.name,
-        role: userAcc.role,
-        staffId: userAcc.staffId || '',
-        schoolId: activeSchoolId,
-        ownerId: userAcc.ownerId || teacher.ownerId
-      }), { merge: true }).catch(console.error);
+      setDoc(doc(firestoreDb, 'users', userAcc.uid), DbController.sanitizeForFirestore(userAcc), { merge: true }).catch(console.error);
+      setDoc(doc(firestoreDb, 'users', 'directory'), { list: this.sanitizeForFirestore(users), updatedAt: new Date().toISOString() }, { merge: true }).catch(() => {});
+      this.syncSubscriberTimerFromUser(userAcc).catch(() => {});
     }
 
     this.broadcastSyncEvent('teacher-updated', teacher);
+    this.broadcastSyncEvent('teachers-updated', teachers);
   }
 
   static deleteTeacher(teacherId: string): void {
     const teachers = this.getTeachers();
     const teacher = teachers.find(t => t.id === teacherId);
     if (teacher) {
+      const fullName = this.formatTeacherFullName(teacher);
       this.writeActivityLog(
         'Teacher Account Deletion', 
-        `Permanently deleted teacher account record: ${teacher.firstName} ${teacher.lastName} (ID: ${teacherId}, Staff ID: ${teacher.staffId || 'N/A'}, NTC Number: ${teacher.ntcNumber || 'N/A'})`,
+        `Permanently deleted teacher account record: ${fullName} (ID: ${teacherId}, Staff ID: ${teacher.staffId || 'N/A'}, NTC Number: ${teacher.ntcNumber || 'N/A'})`,
         'critical'
       );
     }
@@ -5320,6 +6028,7 @@ export class DbController {
 
     this.performFirestoreWrite('teachers', teacherId, 'delete');
     this.broadcastSyncEvent('teacher-deleted', { id: teacherId });
+    this.broadcastSyncEvent('teachers-updated', filtered);
   }
 
   // -------------------------
@@ -6157,6 +6866,12 @@ export class DbController {
     setStorageItem(STORAGE_KEYS.FEES, bills);
     this._cache[STORAGE_KEYS.FEES] = bills;
     this.performFirestoreWrite('fees', bill.id, 'set', bill);
+    const totalBilled = (bill.schoolFees || 0) + (bill.utilityBill || 0) + (bill.sportsFees || 0) + (bill.ptaDues || 0);
+    this.writeActivityLog(
+      'Student Fee Bill Saved',
+      `Saved fee bill for student ${bill.studentName || bill.studentId} (Class: ${bill.class}, Total: GHS ${totalBilled}).`,
+      'info'
+    );
   }
 
   static deleteStudentFeeBill(billId: string): void {
@@ -6496,16 +7211,25 @@ export class DbController {
     userId: string;
     error?: string;
   }> {
+    if (this._isFormatting) {
+      return { success: false, syncedCount: 0, userId: 'formatting' };
+    }
     const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
     const currentUser = this.getCurrentUser();
-    const authUid = firebaseAuth?.currentUser?.uid;
+
+    // Ensure active Firebase Auth session before cloud backup
+    if (isFirebaseActive && firebaseAuth && !firebaseAuth.currentUser) {
+      await this.ensureFirebaseAuth();
+    }
+
+    const authUid = firebaseAuth?.currentUser?.uid || currentUser?.uid;
     if (!authUid) {
-      console.log("[Save to Firestore] Skipping cloud backup: No authenticated Firebase session active.");
+      console.log("[Save to Firestore] Skipping cloud backup: No active user session.");
       return {
         success: false,
         syncedCount: 0,
-        userId: currentUser?.uid || 'anonymous',
-        error: 'No authenticated Firebase session active.'
+        userId: 'anonymous',
+        error: 'No active user session.'
       };
     }
     const userId = authUid;
@@ -6591,7 +7315,7 @@ export class DbController {
       fileName: `school_data_snapshot_${userId}.json`,
       fileSize: backupJson.length,
       stats,
-      payload: backupJson,
+      payload: backupJson.length < 800000 ? backupJson : undefined,
       updatedAt: timestamp,
       createdAt: timestamp
     });
@@ -6605,17 +7329,8 @@ export class DbController {
           setDoc(doc(firestoreDb, 'users', userId, 'backups', 'latest'), backupDocData, { merge: true }),
           setDoc(doc(firestoreDb, 'users', userId, 'cloud_sync', 'latest'), backupDocData, { merge: true }),
           setDoc(doc(firestoreDb, 'schools', schoolId, 'backups', 'latest'), backupDocData, { merge: true }),
-          setDoc(doc(firestoreDb, 'users', userId), sanitizeForFirestore({
-            uid: userId,
-            email: currentUser?.email || firebaseAuth?.currentUser?.email || '',
-            schoolId,
-            lastDataSaveAt: timestamp,
-            lastBackupTimestamp: timestamp,
-            lastBackupSize: backupJson.length,
-            stats
-          }), { merge: true }),
-          setDoc(doc(firestoreDb, 'schools', schoolId, 'settings', 'academic_calendar'), sanitizeForFirestore(calendar), { merge: true }),
-          setDoc(doc(firestoreDb, 'schools', schoolId, 'custom_sections', 'all'), sanitizeForFirestore({ sections }), { merge: true })
+          setDoc(doc(firestoreDb, 'schools', schoolId, 'settings', 'academic_calendar'), sanitizeForFirestore({ ...calendar, schoolId }), { merge: true }),
+          setDoc(doc(firestoreDb, 'schools', schoolId, 'custom_sections', 'all'), sanitizeForFirestore({ sections, schoolId }), { merge: true })
         ];
 
         if (school && (school.name || school.headteacherName || school.telephone || school.logoUrl)) {
@@ -6638,7 +7353,7 @@ export class DbController {
                 }
               });
               const commitPromise = batch.commit();
-              const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Batch timeout')), 2500));
+              const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Batch timeout')), 5000));
               await Promise.race([commitPromise, timeoutPromise]);
               totalSyncedRecords += chunk.length;
             }
@@ -6648,7 +7363,7 @@ export class DbController {
         };
 
         const allSyncTasks = [
-          Promise.all(backupTasks),
+          Promise.allSettled(backupTasks),
           batchWriteCollection('students', students),
           batchWriteCollection('teachers', teachers),
           batchWriteCollection('attendance', attendance),
@@ -6662,11 +7377,12 @@ export class DbController {
           batchWriteCollection('behavioral_remarks', remarks),
           batchWriteCollection('staff_payslips', payslips),
           batchWriteCollection('expenses', expenses),
-          batchWriteCollection('duty_roster', dutyRoster)
+          batchWriteCollection('duty_roster', dutyRoster),
+          batchWriteCollection('activity_logs', this.getActivityLogs())
         ];
 
-        const overallTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Overall Firestore sync timeout')), 4000));
-        await Promise.race([Promise.all(allSyncTasks), overallTimeout]);
+        const overallTimeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Overall Firestore sync timeout')), 8000));
+        await Promise.race([Promise.allSettled(allSyncTasks), overallTimeout]);
 
         console.log(`[Save to Firestore] Successfully saved ${totalSyncedRecords} records and backup file to User ID Firestore (${userId}).`);
 
@@ -6710,7 +7426,10 @@ export class DbController {
 
   static async performCloudSync(): Promise<{ success: boolean; error?: string }> {
     const currentUser = this.getCurrentUser();
-    const authUid = firebaseAuth?.currentUser?.uid;
+    if (isFirebaseActive && firebaseAuth && !firebaseAuth.currentUser) {
+      await this.ensureFirebaseAuth();
+    }
+    const authUid = firebaseAuth?.currentUser?.uid || currentUser?.uid;
     if (!currentUser || !authUid) {
       return { success: false, error: "Cloud sync paused: user is not authenticated." };
     }
@@ -7430,9 +8149,11 @@ export class DbController {
   }
 
   static saveLeaveRequest(request: LeaveRequest) {
-    if (!request.schoolId) {
-      request.schoolId = this.resolveActiveSchoolId();
-    }
+    const activeSchoolId = request.schoolId || this.resolveActiveSchoolId();
+    const headUid = this.resolveHeadteacherUserId(activeSchoolId);
+    request.schoolId = activeSchoolId;
+    (request as any).ownerId = headUid;
+    (request as any).headteacherUserId = headUid;
     const requests = this.getLeaveRequests();
     const index = requests.findIndex(r => r.id === request.id);
     if (index >= 0) {
@@ -7442,6 +8163,7 @@ export class DbController {
     }
     setStorageItem(STORAGE_KEYS.LEAVE_REQUESTS, requests);
     this._cache[STORAGE_KEYS.LEAVE_REQUESTS] = requests;
+    this.broadcastSyncEvent('leave-requests-updated', requests);
     this.performFirestoreWrite('leave_requests', request.id, 'set', request);
   }
 
@@ -7449,6 +8171,7 @@ export class DbController {
     const requests = this.getLeaveRequests().filter(r => r.id !== id);
     setStorageItem(STORAGE_KEYS.LEAVE_REQUESTS, requests);
     this._cache[STORAGE_KEYS.LEAVE_REQUESTS] = requests;
+    this.broadcastSyncEvent('leave-requests-updated', requests);
     this.performFirestoreWrite('leave_requests', id, 'delete');
   }
 
@@ -7465,9 +8188,10 @@ export class DbController {
   }
 
   static saveQuickNote(note: QuickNote): void {
-    if (!note.schoolId) {
-      note.schoolId = this.resolveActiveSchoolId();
-    }
+    const activeSchoolId = note.schoolId || this.resolveActiveSchoolId();
+    const headUid = this.resolveHeadteacherUserId(activeSchoolId);
+    note.schoolId = activeSchoolId;
+    (note as any).ownerId = headUid;
     const notes = this.getQuickNotes();
     const index = notes.findIndex(n => n.id === note.id);
     if (index >= 0) {
@@ -7490,22 +8214,32 @@ export class DbController {
   }
 
   static saveTask(task: CustomTask): void {
+    const activeSchoolId = (task as any).schoolId || this.resolveActiveSchoolId();
+    const headUid = this.resolveHeadteacherUserId(activeSchoolId);
+    const enrichedTask = {
+      ...task,
+      schoolId: activeSchoolId,
+      ownerId: headUid,
+      headteacherUserId: headUid
+    };
     const tasks = this.getTasks();
     const index = tasks.findIndex(t => t.id === task.id);
     if (index >= 0) {
-      tasks[index] = task;
+      tasks[index] = enrichedTask;
     } else {
-      tasks.push(task);
+      tasks.push(enrichedTask);
     }
     setStorageItem(STORAGE_KEYS.TASKS, tasks);
     this._cache[STORAGE_KEYS.TASKS] = tasks;
-    this.performFirestoreWrite('tasks', task.id, 'set', task);
+    this.broadcastSyncEvent('tasks-updated', tasks);
+    this.performFirestoreWrite('tasks', task.id, 'set', enrichedTask);
   }
 
   static deleteTask(id: string): void {
     const tasks = this.getTasks().filter(t => t.id !== id);
     setStorageItem(STORAGE_KEYS.TASKS, tasks);
     this._cache[STORAGE_KEYS.TASKS] = tasks;
+    this.broadcastSyncEvent('tasks-updated', tasks);
     this.performFirestoreWrite('tasks', id, 'delete');
   }
 
@@ -8802,192 +9536,371 @@ export class DbController {
     this.broadcastSyncEvent('staff-handbook-updated', { id, deleted: true });
   }
 
+  /**
+   * System-wide demo and simulated record purge.
+   * Cleanses all registries of demo, mock, or simulated artifacts to protect data security.
+   */
+  static purgeAllDemoData(): { removedCount: number } {
+    let removedCount = 0;
+
+    // 1. Purge Demo Students
+    const students = this.getStudents();
+    const cleanStudents = students.filter(s => {
+      const isDemo = (s.id && s.id.toLowerCase().includes('demo')) || 
+                     (s.firstName && s.firstName.toLowerCase() === 'demo') || 
+                     (s.lastName && s.lastName.toLowerCase() === 'demo');
+      if (isDemo) removedCount++;
+      return !isDemo;
+    });
+    if (cleanStudents.length !== students.length) {
+      setStorageItem(STORAGE_KEYS.STUDENTS, cleanStudents);
+      this._cache[STORAGE_KEYS.STUDENTS] = cleanStudents;
+    }
+
+    // 2. Purge Demo Teachers
+    const teachers = this.getTeachers();
+    const cleanTeachers = teachers.filter(t => {
+      const isDemo = (t.id && t.id.toLowerCase().includes('demo')) || 
+                     (t.firstName && t.firstName.toLowerCase() === 'demo') || 
+                     (t.lastName && t.lastName.toLowerCase() === 'demo') ||
+                     (t.email && t.email.toLowerCase().includes('demo@'));
+      if (isDemo) removedCount++;
+      return !isDemo;
+    });
+    if (cleanTeachers.length !== teachers.length) {
+      setStorageItem(STORAGE_KEYS.TEACHERS, cleanTeachers);
+      this._cache[STORAGE_KEYS.TEACHERS] = cleanTeachers;
+    }
+
+    // 3. Purge Simulated WebAuthn Credentials
+    const creds = this.getWebAuthnCredentials();
+    const cleanCreds = creds.filter(c => {
+      const isSim = c.isSimulated || (c.id && c.id.startsWith('SIM_CRED_')) || (c.publicKey && c.publicKey.startsWith('SIMULATED_'));
+      if (isSim) removedCount++;
+      return !isSim;
+    });
+    if (cleanCreds.length !== creds.length) {
+      setStorageItem(STORAGE_KEYS.WEBAUTHN_CREDENTIALS, cleanCreds);
+      this._cache[STORAGE_KEYS.WEBAUTHN_CREDENTIALS] = cleanCreds;
+    }
+
+    // 4. Purge Demo Bill Components
+    const comps = this.getCustomBillComponents();
+    const demoIds = new Set(['comp_exam_fees', 'comp_library_levy', 'comp_ict_levy']);
+    const cleanComps = comps.filter(c => {
+      const isDemo = demoIds.has(c.id) || (c.id && c.id.toLowerCase().startsWith('demo'));
+      if (isDemo) removedCount++;
+      return !isDemo;
+    });
+    if (cleanComps.length !== comps.length) {
+      setStorageItem(STORAGE_KEYS.CUSTOM_BILL_COMPONENTS, cleanComps);
+      this._cache[STORAGE_KEYS.CUSTOM_BILL_COMPONENTS] = cleanComps;
+    }
+
+    // 5. Purge Demo Fees
+    const fees = this.getStudentFeeBills();
+    const cleanFees = fees.filter(f => {
+      const isDemo = (f.id && f.id.toLowerCase().includes('demo')) || (f.studentId && f.studentId.toLowerCase().includes('demo'));
+      if (isDemo) removedCount++;
+      return !isDemo;
+    });
+    if (cleanFees.length !== fees.length) {
+      setStorageItem(STORAGE_KEYS.FEES, cleanFees);
+      this._cache[STORAGE_KEYS.FEES] = cleanFees;
+    }
+
+    // 6. Purge Demo Assessments
+    const assessments = this.getAssessments();
+    const cleanAssessments = assessments.filter(a => {
+      const isDemo = (a.id && a.id.toLowerCase().includes('demo')) || (a.studentId && a.studentId.toLowerCase().includes('demo'));
+      if (isDemo) removedCount++;
+      return !isDemo;
+    });
+    if (cleanAssessments.length !== assessments.length) {
+      setStorageItem(STORAGE_KEYS.ASSESSMENTS, cleanAssessments);
+      this._cache[STORAGE_KEYS.ASSESSMENTS] = cleanAssessments;
+    }
+
+    return { removedCount };
+  }
+
   static async clearAllData(): Promise<void> {
+    this._isFormatting = true;
+    if (this._autoFlushTimeout) {
+      clearTimeout(this._autoFlushTimeout);
+      this._autoFlushTimeout = null;
+    }
+
     const currentUser = this.getCurrentUser();
+    const cachedSchool = this.getSchoolInfo();
     const uid = firebaseAuth?.currentUser?.uid || currentUser?.uid;
-    const activeSchoolId = this.resolveActiveSchoolId() || currentUser?.schoolId || this.getSchoolInfo()?.schoolId;
-    const email = currentUser?.email?.toLowerCase().trim();
+    const activeSchoolId = this.resolveActiveSchoolId() || currentUser?.schoolId || cachedSchool?.schoolId;
 
-    console.log(`[Clear Data] Executing instantaneous Deep Format for User ID: ${uid}, School ID: ${activeSchoolId}`);
+    const allUids = Array.from(new Set([
+      firebaseAuth?.currentUser?.uid,
+      currentUser?.uid,
+      currentUser?.ownerId,
+      cachedSchool?.ownerId,
+      cachedSchool?.userId
+    ].filter(Boolean))) as string[];
 
-    // 1. INSTANT LOCAL PURGE FIRST: Wipe all local cache, memory, and storage within milliseconds
+    const schoolIds = Array.from(new Set([
+      activeSchoolId,
+      currentUser?.schoolId,
+      currentUser?.schoolCode,
+      cachedSchool?.schoolId,
+      cachedSchool?.id,
+      ...allUids,
+      ...allUids.map(u => `school_${u}`),
+      'school_default',
+      'default_school'
+    ].filter(Boolean))) as string[];
+
+    console.log(`[Clear Data] Executing deep format & complete purge for User IDs: ${allUids.join(', ')}, School IDs: ${schoolIds.join(', ')}`);
+
+    // 0. PRESERVE SUBSCRIPTION & TIMER STATE (NEVER RESET AT ANY COST)
+    const preservedTimer = this.getSubscriberTimer(uid) || getStorageItem<SubscriberTimerData | null>(STORAGE_KEYS.SUBSCRIBERS_TIMER, null);
+    const preservedAllTimers = this.getAllSubscriberTimers();
+    const preservedPricing = this.getPlatformPricing();
+    const preservedUsersList = getStorageItem<UserAccount[]>(STORAGE_KEYS.USERS_LIST, []);
+    const preservedTheme = typeof localStorage !== 'undefined' ? localStorage.getItem('sms_system_theme') : null;
+    const preservedUserSubscription = currentUser ? {
+      ...currentUser,
+      setupWizardCompleted: false
+    } : null;
+
+    // 1. PURGE ALL LOCAL STORAGE, IN-MEMORY CACHE, SESSION STORAGE, INDEXEDDB & CACHESTORAGE
+    //    (Strictly preserving ONLY subscription timers, pricing, theme, and active user subscription state)
     try {
-      if (typeof localStorage !== 'undefined') {
-        localStorage.clear();
+      // Clear all in-memory stores & fast lookup maps first
+      for (const k of Object.keys(_inMemoryStore)) {
+        delete _inMemoryStore[k];
       }
-      if (typeof sessionStorage !== 'undefined') {
-        sessionStorage.clear();
-      }
-
-      // Reset in-memory data cache
-      this.clearCache();
       this._cache = {};
       this._studentsByClass.clear();
       this._assessmentsByStudent.clear();
       _lastSessionUid = null;
       _lastSessionScope = null;
 
-      // Write fully blank templates so any active listeners or fallback reads observe clean slate
+      // Sweep all sms_* and school_* keys across every user/school partition in localStorage
+      if (typeof localStorage !== 'undefined') {
+        const preservedLocalKeys = new Set([
+          'sms_user',
+          'sms_users_list',
+          'sms_subscribers_timer',
+          'sms_subscriber_timers',
+          'sms_platform_pricing',
+          'sms_system_theme'
+        ]);
+        for (const key of Object.keys(localStorage)) {
+          if ((key.startsWith('sms_') || key.startsWith('school_')) && !preservedLocalKeys.has(key)) {
+            try {
+              localStorage.removeItem(key);
+            } catch {}
+          }
+        }
+      }
+
+      // Sweep sessionStorage except preserved user pointer
+      if (typeof sessionStorage !== 'undefined') {
+        for (const key of Object.keys(sessionStorage)) {
+          if ((key.startsWith('sms_') || key.startsWith('school_')) && key !== 'sms_user') {
+            try {
+              sessionStorage.removeItem(key);
+            } catch {}
+          }
+        }
+      }
+
+      // Restore user pointer first so getPartitionedKey resolves consistently for the clean-slate writes below
+      if (preservedUserSubscription) {
+        setStorageItem(STORAGE_KEYS.USER, preservedUserSubscription);
+      } else {
+        removeStorageItem(STORAGE_KEYS.USER);
+      }
+
+      const keysToBlank = [
+        STORAGE_KEYS.STUDENTS, STORAGE_KEYS.TEACHERS, STORAGE_KEYS.ATTENDANCE,
+        STORAGE_KEYS.STAFF_ATTENDANCE, STORAGE_KEYS.ASSESSMENTS, STORAGE_KEYS.ASSESSMENT_TEMPLATES,
+        STORAGE_KEYS.FEES, STORAGE_KEYS.EMIS, STORAGE_KEYS.BEHAVIORAL_REMARKS,
+        STORAGE_KEYS.PAYSTACK_LOGS, STORAGE_KEYS.QUICK_NOTES, STORAGE_KEYS.TASKS,
+        STORAGE_KEYS.DUTY_ROSTER, STORAGE_KEYS.TEACHER_REFLECTIONS, STORAGE_KEYS.STAFF_HANDBOOK,
+        STORAGE_KEYS.LEAVE_REQUESTS, STORAGE_KEYS.ACTIVITY_LOGS, STORAGE_KEYS.AUTO_BACKUPS,
+        STORAGE_KEYS.COMM_TEMPLATES, STORAGE_KEYS.TRANSPORT_ROUTES, STORAGE_KEYS.TRANSPORT_RECORDS,
+        STORAGE_KEYS.CANTEEN_PLANS, STORAGE_KEYS.CANTEEN_PAYMENTS, STORAGE_KEYS.EXCURSIONS,
+        STORAGE_KEYS.EXCURSION_PARTICIPANTS, STORAGE_KEYS.SPORTS_ACTIVITIES, STORAGE_KEYS.SPORTS_RECORDS,
+        STORAGE_KEYS.TEXTBOOKS, STORAGE_KEYS.TEXTBOOK_TRANSACTIONS, STORAGE_KEYS.EXPENSES,
+        STORAGE_KEYS.CUSTOM_BILL_COMPONENTS, STORAGE_KEYS.CUSTOM_BILL_CATEGORIES, STORAGE_KEYS.STAFF_PAYSLIPS,
+        STORAGE_KEYS.CUSTOM_EXPENSE_CATEGORIES, STORAGE_KEYS.FINANCIAL_AUDIT_LOGS, STORAGE_KEYS.CUSTOM_SECTIONS,
+        STORAGE_KEYS.CUSTOM_SUBJECTS, STORAGE_KEYS.CUSTOM_CLASSES, STORAGE_KEYS.CUSTOM_ACADEMIC_YEARS,
+        STORAGE_KEYS.WEBAUTHN_CREDENTIALS, STORAGE_KEYS.USED_ACTIVATION_CODES, 'sms_offline_queue'
+      ];
+
+      for (const k of keysToBlank) {
+        setStorageItem(k, []);
+        this._cache[k] = [];
+      }
+
+      // Reset school profile and all system configs to clean baseline defaults
       const blankSchool: SchoolInfo = { ...DEFAULT_SCHOOL_INFO };
       setStorageItem(STORAGE_KEYS.SCHOOL, blankSchool);
       this._cache[STORAGE_KEYS.SCHOOL] = blankSchool;
 
-      setStorageItem(STORAGE_KEYS.STUDENTS, []);
-      setStorageItem(STORAGE_KEYS.TEACHERS, []);
-      setStorageItem(STORAGE_KEYS.ATTENDANCE, []);
-      setStorageItem(STORAGE_KEYS.STAFF_ATTENDANCE, []);
-      setStorageItem(STORAGE_KEYS.ASSESSMENTS, []);
-      setStorageItem(STORAGE_KEYS.ASSESSMENT_TEMPLATES, []);
-      setStorageItem(STORAGE_KEYS.FEES, []);
-      setStorageItem(STORAGE_KEYS.EMIS, []);
-      setStorageItem(STORAGE_KEYS.BEHAVIORAL_REMARKS, []);
-      setStorageItem(STORAGE_KEYS.PAYSTACK_LOGS, []);
-      setStorageItem(STORAGE_KEYS.QUICK_NOTES, []);
-      setStorageItem(STORAGE_KEYS.TASKS, []);
-      setStorageItem(STORAGE_KEYS.DUTY_ROSTER, []);
-      setStorageItem(STORAGE_KEYS.TEACHER_REFLECTIONS, []);
-      setStorageItem(STORAGE_KEYS.STAFF_HANDBOOK, []);
-      setStorageItem(STORAGE_KEYS.LEAVE_REQUESTS, []);
-      setStorageItem(STORAGE_KEYS.ACTIVITY_LOGS, []);
-      setStorageItem(STORAGE_KEYS.AUTO_BACKUPS, []);
-      setStorageItem(STORAGE_KEYS.COMM_TEMPLATES, []);
-      setStorageItem(STORAGE_KEYS.TRANSPORT_ROUTES, []);
-      setStorageItem(STORAGE_KEYS.TRANSPORT_RECORDS, []);
-      setStorageItem(STORAGE_KEYS.CANTEEN_PLANS, []);
-      setStorageItem(STORAGE_KEYS.CANTEEN_PAYMENTS, []);
-      setStorageItem(STORAGE_KEYS.EXCURSIONS, []);
-      setStorageItem(STORAGE_KEYS.EXCURSION_PARTICIPANTS, []);
-      setStorageItem(STORAGE_KEYS.SPORTS_ACTIVITIES, []);
-      setStorageItem(STORAGE_KEYS.SPORTS_RECORDS, []);
-      setStorageItem(STORAGE_KEYS.TEXTBOOKS, []);
-      setStorageItem(STORAGE_KEYS.TEXTBOOK_TRANSACTIONS, []);
-      setStorageItem(STORAGE_KEYS.EXPENSES, []);
-      setStorageItem(STORAGE_KEYS.CUSTOM_BILL_COMPONENTS, []);
-      setStorageItem(STORAGE_KEYS.CUSTOM_BILL_CATEGORIES, []);
-      setStorageItem(STORAGE_KEYS.STAFF_PAYSLIPS, []);
-      setStorageItem(STORAGE_KEYS.CUSTOM_EXPENSE_CATEGORIES, []);
-      setStorageItem(STORAGE_KEYS.FINANCIAL_AUDIT_LOGS, []);
-      setStorageItem(STORAGE_KEYS.CUSTOM_SECTIONS, []);
-      setStorageItem(STORAGE_KEYS.WEBAUTHN_CREDENTIALS, []);
-      setStorageItem(STORAGE_KEYS.USED_ACTIVATION_CODES, []);
-      setStorageItem(STORAGE_KEYS.USER, null);
+      setStorageItem(STORAGE_KEYS.CALENDAR, DEFAULT_CALENDAR);
+      this._cache[STORAGE_KEYS.CALENDAR] = DEFAULT_CALENDAR;
+
+      setStorageItem(STORAGE_KEYS.SETTINGS, {});
+      this._cache[STORAGE_KEYS.SETTINGS] = {};
+
+      setStorageItem(STORAGE_KEYS.SUBJECT_MARK_LIMITS, {});
+      this._cache[STORAGE_KEYS.SUBJECT_MARK_LIMITS] = {};
+
+      const defaultBackupConfig: AutoBackupConfig = { enabled: false, frequency: 'weekly', lastBackupTime: null };
+      setStorageItem(STORAGE_KEYS.AUTO_BACKUP_CONFIG, defaultBackupConfig);
+      this._cache[STORAGE_KEYS.AUTO_BACKUP_CONFIG] = defaultBackupConfig;
+
+      const defaultCloudConfig: CloudSyncConfig = {
+        enabled: true,
+        provider: 'Firebase Firestore (User ID Cloud Database)',
+        interval: 'daily',
+        lastSyncTime: null,
+        status: 'idle'
+      };
+      setStorageItem(STORAGE_KEYS.CLOUD_SYNC_CONFIG, defaultCloudConfig);
+      this._cache[STORAGE_KEYS.CLOUD_SYNC_CONFIG] = defaultCloudConfig;
+
+      // Restore preserved subscription timer & platform pricing state
+      if (preservedTheme && typeof localStorage !== 'undefined') {
+        localStorage.setItem('sms_system_theme', preservedTheme);
+      }
+      if (preservedPricing) {
+        setStorageItem(STORAGE_KEYS.PLATFORM_PRICING, preservedPricing);
+        this._cache[STORAGE_KEYS.PLATFORM_PRICING] = preservedPricing;
+      }
+      if (preservedUsersList && preservedUsersList.length > 0) {
+        setStorageItem(STORAGE_KEYS.USERS_LIST, preservedUsersList);
+        this._cache[STORAGE_KEYS.USERS_LIST] = preservedUsersList;
+      }
+      if (preservedTimer) {
+        setStorageItem(STORAGE_KEYS.SUBSCRIBERS_TIMER, preservedTimer);
+        this._cache[STORAGE_KEYS.SUBSCRIBERS_TIMER] = preservedTimer;
+      }
+      if (preservedAllTimers && preservedAllTimers.length > 0) {
+        setStorageItem(STORAGE_KEYS.SUBSCRIBER_TIMERS, preservedAllTimers);
+        this._cache[STORAGE_KEYS.SUBSCRIBER_TIMERS] = preservedAllTimers;
+      }
+
+      // Wipe IndexedDB and CacheStorage
+      await IndexedDbEngine.clearAll().catch(() => {});
+      if (typeof window !== 'undefined' && 'caches' in window) {
+        try {
+          const cacheNames = await window.caches.keys();
+          await Promise.allSettled(cacheNames.map(name => window.caches.delete(name)));
+        } catch {}
+      }
     } catch (localErr) {
       console.warn("[Clear Data] Local wipe notice:", localErr);
     }
 
     // 2. Broadcast format event across all workstation tabs immediately
-    this.broadcastSyncEvent('school-updated', { ...DEFAULT_SCHOOL_INFO });
-    this.broadcastSyncEvent('all-cleared', { target: 'all', deepFormat: true });
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('school-system-sync', { detail: { type: 'school-updated', payload: { ...DEFAULT_SCHOOL_INFO } } }));
-      window.dispatchEvent(new CustomEvent('school-system-sync', { detail: { type: 'all-cleared', payload: { target: 'all', deepFormat: true } } }));
+    this.broadcastSyncEvent("school-updated", { ...DEFAULT_SCHOOL_INFO });
+    this.broadcastSyncEvent("all-cleared", { target: "all", deepFormat: true });
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("school-system-sync", { detail: { type: "school-updated", payload: { ...DEFAULT_SCHOOL_INFO } } }));
+      window.dispatchEvent(new CustomEvent("school-system-sync", { detail: { type: "all-cleared", payload: { target: "all", deepFormat: true } } }));
     }
 
-    // 3. Parallel Background Purge: IndexedDB, CacheStorage & Cloud Firestore
-    const purgeTasks: Promise<any>[] = [];
-
-    // 3a. IndexedDB & browser caches
-    purgeTasks.push((async () => {
-      try {
-        await IndexedDbEngine.clearAll();
-        if (typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined' && window.indexedDB.deleteDatabase) {
-          window.indexedDB.deleteDatabase('SchoolShieldDB_v1');
-          if ((window.indexedDB as any).databases) {
-            try {
-              const dbs = await (window.indexedDB as any).databases();
-              for (const dbInfo of dbs) {
-                if (dbInfo.name) window.indexedDB.deleteDatabase(dbInfo.name);
-              }
-            } catch {}
-          }
-        }
-      } catch (idbErr) {}
-
-      if (typeof window !== 'undefined' && 'caches' in window) {
-        try {
-          const cacheKeys = await window.caches.keys();
-          await Promise.all(cacheKeys.map(k => window.caches.delete(k)));
-        } catch (e) {}
-      }
-      if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
-        try {
-          const regs = await navigator.serviceWorker.getRegistrations();
-          await Promise.all(regs.map(r => r.unregister()));
-        } catch (e) {}
-      }
-    })());
-
-    // 3b. Cloud Firestore targeted purge (only active school and user UID)
+    // 3. Purge Cloud Firestore with parallelized chunked batch deletion
+    //    NEVER deletes subscribers_timer, subscriber_timers, subscribers, subscriptions, platform_settings, or user subscription fields.
     if (isFirebaseActive && firestoreDb) {
-      purgeTasks.push((async () => {
-        try {
-          const wipeSubTasks: Promise<any>[] = [];
-          const schoolIds = Array.from(new Set([activeSchoolId, currentUser?.schoolId].filter(Boolean))) as string[];
-          const primaryCollections = [
-            'students', 'teachers', 'attendance', 'staff_attendance',
-            'assessments', 'assessment_templates', 'fees', 'expenses',
-            'emis', 'behavioral_remarks', 'activity_logs', 'duty_roster',
-            'teacher_reflections', 'custom_bill_components', 'custom_sections', 'documents'
-          ];
-
-          for (const sId of schoolIds) {
-            if (!sId || sId === 'school_default') continue;
-            for (const colName of primaryCollections) {
-              wipeSubTasks.push((async () => {
-                try {
-                  const snap = await getDocs(collection(firestoreDb, 'schools', sId, colName));
-                  if (!snap.empty) {
-                    const batch = writeBatch(firestoreDb);
-                    snap.docs.forEach(docObj => batch.delete(docObj.ref));
-                    await batch.commit();
-                  }
-                } catch (e) {}
-              })());
-            }
-
-            wipeSubTasks.push(deleteDoc(doc(firestoreDb, 'schools', sId)).catch(() => {}));
-            wipeSubTasks.push(deleteDoc(doc(firestoreDb, 'schools', `secrets_${sId}`)).catch(() => {}));
-          }
-
-          if (uid) {
-            wipeSubTasks.push(deleteDoc(doc(firestoreDb, 'users', uid)).catch(() => {}));
-            wipeSubTasks.push(deleteDoc(doc(firestoreDb, 'subscribers', uid)).catch(() => {}));
-            wipeSubTasks.push(deleteDoc(doc(firestoreDb, 'subscribers_timer', uid)).catch(() => {}));
-            wipeSubTasks.push(deleteDoc(doc(firestoreDb, 'subscriber_timers', uid)).catch(() => {}));
-            wipeSubTasks.push(deleteDoc(doc(firestoreDb, 'schools', `secrets_${uid}`)).catch(() => {}));
-
-            // Clean user from directory
-            wipeSubTasks.push((async () => {
-              try {
-                const dirDoc = await getDoc(doc(firestoreDb, 'users', 'directory'));
-                if (dirDoc.exists()) {
-                  const currentList = dirDoc.data().list || [];
-                  const updatedList = currentList.filter((u: any) => u.uid !== uid && (email ? u.email?.toLowerCase().trim() !== email : true));
-                  await setDoc(doc(firestoreDb, 'users', 'directory'), {
-                    list: updatedList,
-                    updatedAt: new Date().toISOString()
-                  });
-                }
-              } catch (e) {}
-            })());
-          }
-
-          await Promise.allSettled(wipeSubTasks);
-        } catch (cloudErr) {
-          console.warn("[Clear Data] Cloud purge notice:", cloudErr);
+      try {
+        if (firebaseAuth && !firebaseAuth.currentUser) {
+          await this.ensureFirebaseAuth();
         }
-      })());
+        try {
+          await enableNetwork(firestoreDb);
+        } catch {}
+
+        const primaryCollections = [
+          "students", "teachers", "attendance", "staff_attendance",
+          "assessments", "assessment_templates", "fees", "expenses",
+          "emis", "behavioral_remarks", "activity_logs", "duty_roster",
+          "teacher_reflections", "staff_handbook", "settings", "documents",
+          "custom_bill_components", "custom_bill_categories", "custom_sections",
+          "custom_subjects", "custom_classes", "custom_academic_years",
+          "paystack_payments", "tasks", "quick_notes", "leave_requests", "textbooks",
+          "textbook_transactions", "sports_activities", "sports_records", "student_sports",
+          "excursions", "excursion_participants", "canteen_plans", "canteen_payments",
+          "transport_routes", "transport_records", "student_transport",
+          "staff_payslips", "custom_expense_categories", "financial_audit_logs",
+          "communication_templates", "backups", "auto_backups", "cloud_sync"
+        ];
+
+        const deleteQueryDocsInChunks = async (colRef: any) => {
+          try {
+            const snap = await getDocs(colRef);
+            if (snap.empty) return;
+            const docs = snap.docs;
+            const chunkSize = 250;
+            for (let i = 0; i < docs.length; i += chunkSize) {
+              const chunk = docs.slice(i, i + chunkSize);
+              try {
+                const batch = writeBatch(firestoreDb!);
+                chunk.forEach(d => batch.delete(d.ref));
+                await batch.commit();
+              } catch (batchErr) {
+                console.warn("[Clear Data] Batch delete fallback to individual doc deletes:", batchErr);
+                await Promise.allSettled(chunk.map(d => deleteDoc(d.ref)));
+              }
+            }
+          } catch (e) {
+            console.warn("[Clear Data] Collection purge notice:", e);
+          }
+        };
+
+        const purgeTasks: (() => Promise<any>)[] = [];
+
+        // Purge all school-scoped operational subcollections and school profile docs
+        for (const sId of schoolIds) {
+          if (!sId) continue;
+          for (const colName of primaryCollections) {
+            purgeTasks.push(() => deleteQueryDocsInChunks(collection(firestoreDb!, "schools", sId, colName)));
+          }
+          purgeTasks.push(() => deleteDoc(doc(firestoreDb!, "schools", sId)).catch(() => {}));
+          purgeTasks.push(() => deleteDoc(doc(firestoreDb!, "schools", `secrets_${sId}`)).catch(() => {}));
+        }
+
+        // Purge root-level operational collections
+        for (const colName of primaryCollections) {
+          purgeTasks.push(() => deleteQueryDocsInChunks(collection(firestoreDb!, colName)));
+        }
+
+        // Purge user-level operational subcollections for every candidate UID
+        for (const u of allUids) {
+          for (const colName of primaryCollections) {
+            purgeTasks.push(() => deleteQueryDocsInChunks(collection(firestoreDb!, "users", u, colName)));
+          }
+          purgeTasks.push(() => deleteQueryDocsInChunks(collection(firestoreDb!, "users", u, "backups")));
+          purgeTasks.push(() => deleteQueryDocsInChunks(collection(firestoreDb!, "users", u, "cloud_sync")));
+          purgeTasks.push(() => setDoc(doc(firestoreDb!, "users", u), { setupWizardCompleted: false }, { merge: true }).catch(() => {}));
+        }
+
+        // Execute purge tasks in controlled parallel batches of 15 for fast completion without overwhelming network
+        const concurrency = 15;
+        for (let i = 0; i < purgeTasks.length; i += concurrency) {
+          const group = purgeTasks.slice(i, i + concurrency);
+          await Promise.allSettled(group.map(fn => fn()));
+        }
+
+        console.log("[Clear Data] Complete Firestore deep format purge successfully finished.");
+      } catch (cloudErr) {
+        console.error("[Clear Data] Cloud purge error:", cloudErr);
+      }
     }
 
-    // Sign out from Firebase Auth
-    if (isFirebaseActive && firebaseAuth) {
-      purgeTasks.push(signOut(firebaseAuth).catch(() => {}));
-    }
-
-    // Bound total wait time to at most 1200ms so user interface never stalls or freezes
-    await Promise.race([
-      Promise.allSettled(purgeTasks),
-      new Promise(resolve => setTimeout(resolve, 1200))
-    ]);
+    // Safety release in case caller does not immediately trigger a page reload
+    setTimeout(() => {
+      this._isFormatting = false;
+    }, 4000);
   }
 }

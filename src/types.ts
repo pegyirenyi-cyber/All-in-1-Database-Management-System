@@ -258,12 +258,20 @@ export interface Teacher {
     canEditGrades?: boolean;
     canApproveAttendance?: boolean;
     canExportReports?: boolean;
+    canAccessStudents?: boolean;
+    canAccessAttendance?: boolean;
+    canAccessAssessments?: boolean;
+    canAccessSystemControl?: boolean;
+    canEditStudents?: boolean;
   };
   status?: string;
   title?: string;
   isClassTeacher?: boolean;
   classTeacherOf?: string;
   sectionTeacherOf?: string;
+  headteacherUserId?: string;
+  headteacherName?: string;
+  lastModified?: string;
 }
 
 export type AttendanceStatus = 'Present' | 'Holiday' | 'Absent' | 'Unmarked';

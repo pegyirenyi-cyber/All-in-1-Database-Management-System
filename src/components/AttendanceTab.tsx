@@ -7,7 +7,7 @@ import { CalendarCheck, Users, ToggleLeft, ToggleRight, CheckSquare, Coffee, Cli
 
 import GoogleDriveExportControl from './GoogleDriveExportControl';
 import { generatePdfFromHtml, downloadBlobLocally } from '../pdfHelper';
-import { getWatermarkHtml, formatIdentifiableFilename } from '../utils';
+import { getWatermarkHtml, formatIdentifiableFilename, triggerToast } from '../utils';
 import { DefaultCrest } from './DefaultCrest';
 import AttendanceSummaryView from './AttendanceSummaryView';
 import StudentQRScanner from './StudentQRScanner';
@@ -60,6 +60,7 @@ interface Props {
   assignedSubjects?: SubjectType[];
   userRole?: UserRole;
   teacherPermissions?: {
+    canAccessAttendance?: boolean;
     canEditGrades?: boolean;
     canApproveAttendance?: boolean;
     canExportReports?: boolean;
@@ -429,8 +430,14 @@ export default function AttendanceTab({
       return;
     }
     DbController.saveAttendanceBatch(attendanceSheet);
+    DbController.writeActivityLog(
+      'Attendance Records Saved',
+      `Saved class attendance for ${attendanceSheet.length} students in ${selectedClass} (${selectedDate}).`,
+      'info'
+    );
     onManualSave();
-    setSaveStatus('Session synced to Cloud Firestore!');
+    setSaveStatus('Session saved and synced to Cloud Firestore!');
+    triggerToast(`🎉 Attendance for ${selectedClass} saved & synchronized to Cloud Firestore!`, 'success');
     setTimeout(() => setSaveStatus(''), 3000);
   };
 
@@ -442,7 +449,13 @@ export default function AttendanceTab({
     const updated = attendanceSheet.map(item => ({ ...item, status }));
     setAttendanceSheet(updated);
     DbController.saveAttendanceBatch(updated);
+    DbController.writeActivityLog(
+      'Bulk Attendance Updated',
+      `Marked all students as '${status}' for ${selectedClass} (${selectedDate}).`,
+      'info'
+    );
     setSaveStatus('Synced all as ' + status + ' to Cloud Firestore');
+    triggerToast(`Marked all ${selectedClass} students as '${status}' in Cloud Firestore!`, 'success');
     setTimeout(() => setSaveStatus(''), 2000);
   };
 
@@ -632,6 +645,21 @@ export default function AttendanceTab({
       });
     }
   };
+
+  if (userRole === 'Teacher' && teacherPermissions?.canAccessAttendance === false) {
+    return (
+      <div className="bg-rose-50/60 border border-rose-200 text-rose-900 p-8 rounded-2xl text-center space-y-4 max-w-xl mx-auto my-12 shadow-sm">
+        <ShieldAlert size={48} className="text-rose-500 mx-auto animate-pulse" />
+        <h3 className="font-bold text-lg">Class Attendance Roster Access Restricted</h3>
+        <p className="text-sm text-rose-700 leading-relaxed">
+          Your Headteacher has not assigned the <strong>Class Attendance Roster</strong> role to your staff account.
+        </p>
+        <p className="text-xs text-rose-600 font-mono">
+          Please contact your Headteacher to enable Class Attendance Roster under Teacher Permissions.
+        </p>
+      </div>
+    );
+  }
 
   const hasAnyAssignment = (assignedClasses.length > 0) || (assignedSubjects.length > 0) || (assignedClass && assignedClass !== 'None');
 
@@ -2092,13 +2120,6 @@ export default function AttendanceTab({
                       </p>
                     </div>
                   </div>
-                </div>
-
-                <div className="bg-amber-50 p-2.5 rounded-lg border border-amber-200/60 text-[10px] text-amber-800 leading-relaxed space-y-1">
-                  <strong>💡 Tip for Sandbox Environments:</strong>
-                  <p className="leading-normal">
-                    Some browsers limit script popups within frame sandboxes. If the trigger fails, please click the <strong className="font-bold">"Open in a new tab" ↗</strong> button on the top right, then trigger print.
-                  </p>
                 </div>
               </div>
 

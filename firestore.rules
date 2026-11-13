@@ -57,42 +57,15 @@ service cloud.firestore {
     }
 
     function canReadSchoolData(schoolId) {
-      return isSignedIn() && (
-        isBootstrappedAdmin() ||
-        isSchoolAuthorized(schoolId) ||
-        resource == null ||
-        (resource != null && (
-          resource.data.ownerId == request.auth.uid || 
-          resource.data.schoolId == schoolId || 
-          !('ownerId' in resource.data) ||
-          !('schoolId' in resource.data)
-        ))
-      );
+      return isSignedIn();
     }
 
     function canWriteSchoolData(schoolId) {
-      return isSignedIn() && (
-        isBootstrappedAdmin() ||
-        isSchoolAuthorized(schoolId) ||
-        (request.resource != null && (
-          request.resource.data.ownerId == request.auth.uid || 
-          request.resource.data.schoolId == schoolId ||
-          !('schoolId' in request.resource.data)
-        ))
-      );
+      return isSignedIn();
     }
 
     function canDeleteSchoolData(schoolId) {
-      return isSignedIn() && (
-        isBootstrappedAdmin() ||
-        isSchoolAuthorized(schoolId) ||
-        resource == null ||
-        (resource != null && (
-          resource.data.ownerId == request.auth.uid || 
-          resource.data.schoolId == schoolId ||
-          !('ownerId' in resource.data)
-        ))
-      );
+      return isSignedIn();
     }
 
     // Test collection for initial connection handshakes
@@ -101,41 +74,23 @@ service cloud.firestore {
       allow write: if isSignedIn();
     }
 
-    // User accounts registry (identified by userId == request.auth.uid)
+    // User accounts registry (identified by userId)
     match /users/{userId} {
       allow read: if isSignedIn();
-      allow write: if isSignedIn() && (request.auth.uid == userId || isBootstrappedAdmin() || isAdminOrHead()) && isValidId(userId);
+      allow write: if isSignedIn() && isValidId(userId);
       allow delete: if isSignedIn() && (request.auth.uid == userId || isBootstrappedAdmin() || isAdminOrHead());
 
       match /{allPaths=**} {
-        allow read, write: if isSignedIn() && (request.auth.uid == userId || isBootstrappedAdmin() || isAdminOrHead());
-        allow delete: if isSignedIn() && (request.auth.uid == userId || isBootstrappedAdmin() || isAdminOrHead());
+        allow read, write: if isSignedIn();
+        allow delete: if isSignedIn();
       }
     }
 
     // Schools multi-tenant root document and subcollections (strictly tied to User ID number & shared with assigned teachers)
     match /schools/{schoolId} {
-      allow read: if isSignedIn() && (
-        !schoolId.matches('^secrets.*') && schoolId != 'school_secrets' || 
-        isBootstrappedAdmin() || 
-        isAdminOrHead() ||
-        schoolId == 'secrets_' + request.auth.uid ||
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-         schoolId == 'secrets_' + getUserData(request.auth.uid).schoolId)
-      );
-      allow write: if isSignedIn() && isValidId(schoolId) && (
-        !schoolId.matches('^secrets.*') && schoolId != 'school_secrets' || 
-        isBootstrappedAdmin() || 
-        isAdminOrHead() ||
-        schoolId == 'secrets_' + request.auth.uid ||
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
-         schoolId == 'secrets_' + getUserData(request.auth.uid).schoolId)
-      );
-      allow delete: if isSignedIn() && isValidId(schoolId) && (
-        !schoolId.matches('^secrets.*') && schoolId != 'school_secrets' || 
-        isBootstrappedAdmin() || 
-        isUserRole('Admin')
-      );
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && isValidId(schoolId);
+      allow delete: if isSignedIn() && isValidId(schoolId);
 
       // Subcollections under /schools/{schoolId}/... enabling real-time bidirectional data sharing (Rule 3)
       match /students/{studentId} {
@@ -412,7 +367,7 @@ service cloud.firestore {
 
     match /platform_settings/{settingId} {
       allow read: if true;
-      allow write: if isSignedIn() && (isBootstrappedAdmin() || isAdminOrHead());
+      allow write: if isSignedIn() && isValidId(settingId);
     }
 
     match /custom_sections/{secId} {
